@@ -1,0 +1,34 @@
+import httpx
+
+OLLAMA_HOST = "http://localhost:11434"
+DEFAULT_TIMEOUT = 300.0  # 콜드 스타트 대비 넉넉하게
+
+
+def chat(prompt: str, model: str = "qwen2.5-coder:14b") -> str:
+    """Ollama에 단발성 질의를 보내고 응답 텍스트를 반환"""
+    resp = httpx.post(
+        f"{OLLAMA_HOST}/api/chat",
+        json={
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+        },
+        timeout=DEFAULT_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.json()["message"]["content"]
+
+
+def embed(text: str, model: str = "bge-m3:latest") -> list[float]:
+    """텍스트를 bge-m3로 임베딩해서 float 벡터로 반환"""
+    resp = httpx.post(
+        f"{OLLAMA_HOST}/api/embed",
+        json={
+            "model": model,
+            "input": text,
+        },
+        timeout=DEFAULT_TIMEOUT,
+    )
+    resp.raise_for_status()
+    # /api/embed는 embeddings: [[...]] 형태로 반환 (배치 입력 대비 리스트의 리스트)
+    return resp.json()["embeddings"][0]
