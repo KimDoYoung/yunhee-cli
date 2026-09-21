@@ -1,9 +1,22 @@
 import typer
 from yunhee.ollama_client import chat, embed
 from yunhee.store.vectorstore import add_texts, search as vector_search
+from yunhee.ui.repl import run_repl
 
 app = typer.Typer()
 
+
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context, model: str = "qwen2.5-coder:14b"):
+    """서브커맨드 없이 실행하면 바로 REPL 진입"""
+    if ctx.invoked_subcommand is None:
+        run_repl(model=model)
+
+
+@app.command()
+def chat_cmd(model: str = "qwen2.5-coder:14b"):
+    """대화형 REPL 시작 (명시적으로)"""
+    run_repl(model=model)
 
 @app.command()
 def hello():

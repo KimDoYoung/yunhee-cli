@@ -1,4 +1,6 @@
 import httpx
+import json
+from collections.abc import Iterator
 
 OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_TIMEOUT = 300.0  # 콜드 스타트 대비 넉넉하게
@@ -32,3 +34,23 @@ def embed(text: str, model: str = "bge-m3:latest") -> list[float]:
     resp.raise_for_status()
     # /api/embed는 embeddings: [[...]] 형태로 반환 (배치 입력 대비 리스트의 리스트)
     return resp.json()["embeddings"][0]
+
+
+def chat_stream(messages: list[dict], model: str = "qwen2.5-coder:14b") -> Iterator[str]:
+    """Ollama에 멀티턴 대화를 보내고, 응답을 토큰(청크) 단위로 yield"""
+    with httpx.stream(
+        "POST",
+        f"{OLLAMA_HOST}/api/chat",
+        json={"model": model, "messages": messages, "stream": True},
+        timeout=DEFAULT_TIMEOUT,
+    ) as resp:
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            data = json.loads(line)
+            content = data.get("message", {}).get("content", "")
+            if content:
+                yield content
+            if data.get("done"):
+                break
