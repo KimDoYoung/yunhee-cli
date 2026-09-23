@@ -29,6 +29,9 @@ CHROMA_PORT = int(os.getenv("YUNHEE_CHROMA_PORT", "8000"))
 TEST_DB = os.getenv("TEST_DB")
 LOCAL_DB = os.getenv("LOCAL_DB")
 
+# ASIS(AssetERP, GWT/GXT) 소스 루트 - yunhee prepare가 페이지 파일을 찾는 기준
+ASIS_SRC_DIR = Path(os.getenv("YUNHEE_ASIS_SRC_DIR", "/home/kdy987/oms-data/src/Asset-ERP"))
+
 
 def _redact(url: str | None) -> str:
     """postgresql://user:password@host/db 형태에서 비밀번호를 가린다."""
@@ -55,4 +58,5 @@ def summary() -> dict[str, str]:
         "chroma-port": str(CHROMA_PORT),
         "test-db": _redact(TEST_DB),
         "local-db": _redact(LOCAL_DB),
+        "asis-src": str(ASIS_SRC_DIR),
     }

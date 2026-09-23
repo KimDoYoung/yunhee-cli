@@ -2,6 +2,7 @@ import typer
 
 from yunhee import project
 from yunhee.config import OLLAMA_MODEL
+from yunhee.context.analyzer import summarize_page
 from yunhee.ollama_client import chat, embed
 from yunhee.store.vectorstore import add_texts
 from yunhee.store.vectorstore import search as vector_search
@@ -69,6 +70,51 @@ def search(query_text: str, n: int = 3):
     dists = results["distances"][0]
     for doc, dist in zip(docs, dists):
         print(f"[{dist:.4f}] {doc}")
+
+def _prepare(
+    page_code: str,
+    model: str = OLLAMA_MODEL,
+    force: bool = False,
+    show: bool = False,
+    delete: bool = False,
+):
+    """ASIS 페이지 소스를 qwen으로 요약해 .yunhee/prep/<page_code>.md에 캐시 (prepare == prep, 완전히 동일)"""
+    cache_dir = project.PROJECT_DIR / "prep"
+    cache_file = cache_dir / f"{page_code}.md"
+
+    if delete:
+        if cache_file.exists():
+            cache_file.unlink()
+            print(f"삭제됨: {cache_file}")
+        else:
+            print(f"캐시가 없습니다: {cache_file}")
+        return
+
+    if show:
+        if not cache_file.exists():
+            print(f"캐시가 없습니다: {cache_file} (먼저 'yunhee prepare {page_code}' 실행하세요)")
+            raise typer.Exit(code=1)
+        print(cache_file.read_text())
+        return
+
+    if cache_file.exists() and not force:
+        print(cache_file.read_text())
+        return
+
+    try:
+        summary = summarize_page(page_code, model=model)
+    except ValueError as e:
+        print(f"오류: {e}")
+        raise typer.Exit(code=1) from e
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file.write_text(summary)
+    print(summary)
+
+
+app.command(name="prepare")(_prepare)
+app.command(name="prep")(_prepare)
+
 
 if __name__ == "__main__":
     app()
