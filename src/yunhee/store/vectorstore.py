@@ -1,6 +1,7 @@
 from pathlib import Path
+
 import chromadb
-from chromadb.api.types import EmbeddingFunction, Documents, Embeddings
+from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
 from yunhee.ollama_client import embed
 

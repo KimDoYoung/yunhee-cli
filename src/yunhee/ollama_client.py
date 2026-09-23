@@ -1,6 +1,7 @@
-import httpx
 import json
 from collections.abc import Iterator
+
+import httpx
 
 OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_TIMEOUT = 300.0  # 콜드 스타트 대비 넉넉하게

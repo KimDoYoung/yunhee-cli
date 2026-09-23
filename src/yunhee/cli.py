@@ -1,6 +1,8 @@
 import typer
+
 from yunhee.ollama_client import chat, embed
-from yunhee.store.vectorstore import add_texts, search as vector_search
+from yunhee.store.vectorstore import add_texts
+from yunhee.store.vectorstore import search as vector_search
 from yunhee.ui.repl import run_repl
 
 app = typer.Typer()
