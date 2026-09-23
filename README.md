@@ -19,7 +19,10 @@
 
 ## 실행
 
-run.sh을 작성해 둠.
+- run.sh을 작성해 둠.
+- run.sh install로 yunhee를 수행가능하게 함
+- 다른 폴더에서는 yunhee로 실행
+- yunhee는 .env.local을 읽어서 그 변수들을 활용함.
 
 ## 자원
 

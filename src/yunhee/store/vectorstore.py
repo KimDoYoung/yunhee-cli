@@ -1,11 +1,8 @@
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
+from yunhee.config import CHROMA_HOST, CHROMA_PORT
 from yunhee.ollama_client import embed
-
-# docker-compose.yml (docs/docker-compose.yml) chromadb 서비스 참고 - 8000 포트로 노출됨
-CHROMA_HOST = "localhost"
-CHROMA_PORT = 8000
 
 
 class OllamaEmbeddingFunction(EmbeddingFunction):

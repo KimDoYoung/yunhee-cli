@@ -3,11 +3,12 @@ from collections.abc import Iterator
 
 import httpx
 
-OLLAMA_HOST = "http://localhost:11434"
+from yunhee.config import EMBED_MODEL, OLLAMA_HOST, OLLAMA_MODEL
+
 DEFAULT_TIMEOUT = 300.0  # 콜드 스타트 대비 넉넉하게
 
 
-def chat(prompt: str, model: str = "qwen2.5-coder:14b") -> str:
+def chat(prompt: str, model: str = OLLAMA_MODEL) -> str:
     """Ollama에 단발성 질의를 보내고 응답 텍스트를 반환"""
     resp = httpx.post(
         f"{OLLAMA_HOST}/api/chat",
@@ -22,7 +23,7 @@ def chat(prompt: str, model: str = "qwen2.5-coder:14b") -> str:
     return resp.json()["message"]["content"]
 
 
-def embed(text: str, model: str = "bge-m3:latest") -> list[float]:
+def embed(text: str, model: str = EMBED_MODEL) -> list[float]:
     """텍스트를 bge-m3로 임베딩해서 float 벡터로 반환"""
     resp = httpx.post(
         f"{OLLAMA_HOST}/api/embed",
@@ -37,7 +38,7 @@ def embed(text: str, model: str = "bge-m3:latest") -> list[float]:
     return resp.json()["embeddings"][0]
 
 
-def chat_stream(messages: list[dict], model: str = "qwen2.5-coder:14b") -> Iterator[str]:
+def chat_stream(messages: list[dict], model: str = OLLAMA_MODEL) -> Iterator[str]:
     """Ollama에 멀티턴 대화를 보내고, 응답을 토큰(청크) 단위로 yield"""
     with httpx.stream(
         "POST",

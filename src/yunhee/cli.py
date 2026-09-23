@@ -1,5 +1,6 @@
 import typer
 
+from yunhee.config import OLLAMA_MODEL
 from yunhee.ollama_client import chat, embed
 from yunhee.store.vectorstore import add_texts
 from yunhee.store.vectorstore import search as vector_search
@@ -9,14 +10,14 @@ app = typer.Typer()
 
 
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context, model: str = "qwen2.5-coder:14b"):
+def main(ctx: typer.Context, model: str = OLLAMA_MODEL):
     """서브커맨드 없이 실행하면 바로 REPL 진입"""
     if ctx.invoked_subcommand is None:
         run_repl(model=model)
 
 
 @app.command()
-def chat_cmd(model: str = "qwen2.5-coder:14b"):
+def chat_cmd(model: str = OLLAMA_MODEL):
     """대화형 REPL 시작 (명시적으로)"""
     run_repl(model=model)
 
@@ -27,7 +28,7 @@ def hello():
 
 
 @app.command()
-def ask(prompt: str, model: str = "qwen2.5-coder:14b"):
+def ask(prompt: str, model: str = OLLAMA_MODEL):
     """로컬 LLM(qwen2.5-coder 등)에게 질문"""
     print(chat(prompt, model=model))
 

@@ -5,6 +5,7 @@ from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.history import FileHistory
 from rich.console import Console
 
+from yunhee.config import OLLAMA_MODEL
 from yunhee.ollama_client import chat_stream
 
 HISTORY_FILE = Path.home() / ".yunhee_history"
@@ -21,7 +22,7 @@ HELP_TEXT = """\
 """
 
 
-def run_repl(model: str = "qwen2.5-coder:14b") -> None:
+def run_repl(model: str = OLLAMA_MODEL) -> None:
     completer = WordCompleter(COMMANDS, ignore_case=True, sentence=True)
     session = PromptSession(
         history=FileHistory(str(HISTORY_FILE)),
