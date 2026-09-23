@@ -21,4 +21,10 @@
 
 run.sh을 작성해 둠.
 
+## 자원
+
+- docs/docker-compose.yml 참조
+    - chroma db : yunhee가 사용하는 vector db
+    - postgresql : 
+- data/db/yunhee.db : sqlite 
 

@@ -1,0 +1,70 @@
+services:
+  # 1. PostgreSQL (5432)
+  postgres:
+    image: postgres:15
+    container_name: t3600_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: kdy987
+      POSTGRES_PASSWORD: kalpa987!
+      POSTGRES_DB: asseterpdb
+      POSTGRES_INITDB_ARGS: "--locale=C.UTF-8 --lc-collate=C.UTF-8 --lc-ctype=C.UTF-8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - /data/docker/database/postgresql:/var/lib/postgresql/data
+
+  # 2. Redis (6379) - 신규 추가
+  redis:
+    image: redis:7-alpine
+    container_name: t3600_redis
+    restart: always
+    # 1. 외부 접근 차단: 로컬 호스트(127.0.0.1)에서만 접속 허용
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - /data/docker/database/redis:/data
+    # 2. 강력한 비밀번호 설정 및 위험 명령어 차단
+    command: >
+      redis-server
+      --requirepass "kalpa987!-wearetheworldzaq1@WSX"
+      --appendonly yes
+      --rename-command FLUSHALL ""
+      --rename-command FLUSHDB ""
+      --rename-command CONFIG ""
+
+  # 3. T3600 Tomcat (8082) - 신규 개발/배포용
+  t3600-tomcat:
+    image: tomcat:10.1-jdk21
+    container_name: t3600-tomcat
+    restart: always
+    ports:
+      - "8082:8080"
+    volumes:
+      - /data/docker/t3600-tomcat/webapps:/usr/local/tomcat/webapps    
+    
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: chromadb
+    ports:
+      - "8000:8000"
+    volumes:
+      - /data/docker/database/chroma_data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    restart: unless-stopped
+  # 4. GXT Demo (8081) - Tomcat
+  gxt-demo:
+    image: tomcat:9-jre11
+    container_name: gxt-demo
+    restart: always
+    ports:
+      - "8081:8080"
+    volumes:
+      - /data/docker/gxt-root:/usr/local/tomcat/webapps/ROOT:ro
+      - /home/kdy987/oms-data/gxt-demo/gxt-demo-explorer/target/gxt-demo-explorer-1.0.0:/usr/local/tomcat/webapps/explorer:ro
+      - /home/kdy987/oms-data/gxt-demo/gxt-demo-edash/com.sencha.gxt.edash/target/gxt-edash-1.0.0-SNAPSHOT:/usr/local/tomcat/webapps/edash:ro
+      - /home/kdy987/oms-data/gxt-demo/gxt-demo-grids/webapp:/usr/local/tomcat/webapps/grids:ro
+
+

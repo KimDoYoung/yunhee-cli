@@ -1,12 +1,11 @@
-from pathlib import Path
-
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
 from yunhee.ollama_client import embed
 
-# store/vectorstore.py 기준 4단계 위 = 프로젝트 루트 (src/yunhee/store -> src/yunhee -> src -> root)
-DATA_DIR = Path(__file__).resolve().parents[3] / "data" / "chroma"
+# docker-compose.yml (docs/docker-compose.yml) chromadb 서비스 참고 - 8000 포트로 노출됨
+CHROMA_HOST = "localhost"
+CHROMA_PORT = 8000
 
 
 class OllamaEmbeddingFunction(EmbeddingFunction):
@@ -17,8 +16,7 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
 
 
 def get_collection(name: str = "yunhee"):
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    client = chromadb.PersistentClient(path=str(DATA_DIR))
+    client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
     return client.get_or_create_collection(
         name=name,
         embedding_function=OllamaEmbeddingFunction(),
