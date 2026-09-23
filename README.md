@@ -28,6 +28,13 @@
 
 - docs/docker-compose.yml 참조
     - chroma db : yunhee가 사용하는 vector db
-    - postgresql : 
+    - postgresql : postgresql://kdy987:kalpa987!@localhost:5432/asseterpdb 는 AssetERP의 db이다.
 - data/db/yunhee.db : sqlite 
 
+## 폴더 정의
+
+- src/yunhee 소스폴더
+- tests : pytest 코드들
+- tools : yunhee가 자체적으로 활용하는 shell 또는 execute utility 프로그램
+- data  : yunhee가 사용하는 데이터
+- docs  : 문서들
