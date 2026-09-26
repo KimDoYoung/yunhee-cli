@@ -71,21 +71,109 @@ uv run tools/parse_mapper.py
 - 실제로 위 5번의 환각을 이 테이블로 대조해서 잡아낼 수 있음을 확인함 (`SELECT * FROM mapper_index WHERE mapper_name LIKE '%ast02%detail%'`로 크로스오버 환각 확인).
 - ASIS 소스가 바뀌면(브랜치 갱신 등) 다시 실행해서 인덱스를 갱신해야 함 — 아직 staleness 체크(파일 mtime 등)는 없음.
 
-## 7. 다음 할 일 (미구현, 우선순위 순)
+## 7. 2차 구현 내용 (2026-09-26)
 
-1. **grounding 검증 패스를 `analyzer.py`에 연결.** `summarize_page()`가 만든 요약에서 mapperName/sqlId를 정규식/패턴으로 뽑아 `mapper_index`에 실제로 존재하는지 조회 → 없으면 그 사실을 qwen에게 다시 보여주고 "이 항목은 원본에 없다, 삭제하거나 고쳐라"로 재질의(재검증 루프). 로컬 모델이라 전기값만 들지 비용이 안 드니 반복 호출에 부담 없음.
-2. **파일별 분할 요약(2단계 요약).** 지금은 7개 파일을 한 프롬프트에 우겨넣고 나머지 11개는 통째로 버리는데, 대신 mapper/server/Tab_ 파일 각각을 개별적으로 작게 요약(작은 컨텍스트 → 지시 순응도 높음, 4번 항목에서 이미 확인된 효과)한 뒤 마지막에 합치면 18개 파일을 전부 반영하면서 truncation도 사실상 없앨 수 있음.
-3. **mapper_index staleness 체크** — ASIS 소스 변경 감지 후 자동/수동 재인덱싱.
-4. (보류 중, 아직 근거 부족) chromadb 기반 legacy_scanner/chunker(Phase 1), tracker(Phase 4) — `docs/yunhee-cli-설계.md` 참고. framework-sprt에 실제 변환 예시가 쌓이기 전까지는 우선순위 낮음.
+설계서 "다음 할 일" 1~3번 + 보안 취약점 수정을 구현함.
 
-## 8. 관련 파일 위치 (요약)
+### 7-1. 보안: `page_code` 입력 검증
+
+`validate_page_code(page_code)` (`tools/legacy_page.py`) — allowlist `[a-zA-Z0-9_-]+`로 검증.  
+`../etc`, `ast01/../evil`, `ast01;drop` 등 path traversal·injection 패턴 전부 차단.  
+`cli.py`의 `_prepare()`에서 캐시 경로 생성 전에 호출.
+
+### 7-2. Model/VO 파일 tier 수정
+
+`_priority()` 함수에서 `/model/` 경로 파일을 tier 3 → **tier 1**로 올림.  
+`Ast01_ClassTreeModel.java`, `Ast01_ClassTreeModelProperties.java` 등 DTO/VO 클래스가  
+40,000자 예산 내에서 server 클래스와 동급 우선순위로 담기게 됨.  
+(Spring Boot 마이그레이션 시 Entity/DTO 구조 파악에 필수.)
+
+변경 후 `ast01` 우선순위 실측:
+```
+tier 0  application/.../mapper/ast01_class_tree.xml
+tier 1  application/.../model/Ast01_ClassTreeModel.java
+tier 1  application/.../model/Ast01_ClassTreeModelProperties.java
+tier 1  application/.../server/ast/Ast01_ClassTree.java
+tier 2  application/.../Ast01_Tab_ClassTreeIntrinsic.java
+...
+```
+
+### 7-3. Grounding 검증 패스 (`tools/mapper_verify.py` 신규 + `analyzer.py` 연결)
+
+**`tools/mapper_verify.py`**:
+- `extract_mapper_refs(summary)` — `namespace.sqlId` 패턴(`[a-z][a-z0-9]*(?:_[a-z0-9]+)+\.[a-zA-Z][a-zA-Z0-9_]*`)으로 요약 전체에서 쌍 추출.
+- `verify_mapper_refs(refs)` — `mapper_index`에 없는 쌍을 반환. mapper_name은 있지만 sql_id가 없으면 실제 sql_id 목록도 함께 반환 (교정 힌트용). DB 없으면 빈 리스트 반환(graceful skip).
+- `check_staleness()` — `mapper_index_meta.built_at`(float, epoch) vs ASIS mapper/*.xml 최신 mtime 비교. stale이면 `(True, 경고 메시지)` 반환.
+
+**`analyzer.py`의 grounding 흐름**:
+```
+summarize_page() 호출
+  → (단일 패스 or 2단계) qwen 요약 생성
+  → extract_mapper_refs(summary) 로 (namespace, sql_id) 쌍 추출
+  → verify_mapper_refs(refs) 로 DB 조회
+  → invalid 존재 시 교정 프롬프트 구성 → qwen 재질의 (1회)
+  → 교정된 요약 반환 + 메타에 "환각 감지 → 교정됨" 기록
+```
+
+교정 프롬프트 전략: 환각 항목 + 해당 mapper_name의 실제 sql_id 목록을 함께 제시해 qwen이 정확한 값으로 대체할 수 있게 함.
+
+### 7-4. 2단계 요약 (`--two-stage`)
+
+`find_all_page_files(page_code)` (`tools/legacy_page.py` 신규) — 총량 40,000자 제한 없이 전체 파일 반환. 파일별 6,000자 제한은 유지.
+
+2단계 흐름:
+1. 각 파일마다 `FILE_MINI_PROMPT_TEMPLATE`으로 mini-summary (3줄, mapper면 namespace·sql_id·테이블, Java면 클래스역할·메서드·호출 sqlId)
+2. 모든 mini-summary를 `COMBINE_PROMPT_TEMPLATE`으로 최종 5섹션 요약으로 합산
+
+`ast01` 기준: 단일 패스 8파일 → 2단계 **18파일** 전부 반영. truncation 없음.  
+대신 qwen 호출 횟수 18+1=19회로 증가 → 시간 대폭 증가.
+
+### 7-5. Staleness 체크 (`tools/parse_mapper.py` 수정)
+
+`mapper_index_meta` 테이블 추가 (`key TEXT PK, built_at REAL`).  
+`build_index()` 완료 시 `time.time()`을 `built_at` 키에 저장.  
+이후 `check_staleness()`가 이 값과 ASIS 소스 mtime을 비교.
+
+## 8. 사용법 (현재 기준)
+
+```bash
+# 기본 실행 (단일 패스 + grounding, 캐시 재사용)
+yunhee prepare ast01
+yunhee prep ast01
+
+# 강제 재생성
+yunhee prepare ast01 --force
+
+# 2단계 요약 (전체 18파일, 느림 ~3-5분)
+yunhee prepare ast01 --two-stage --force
+
+# grounding 없이 빠르게
+yunhee prepare ast01 --no-grounding --force
+
+# 캐시 조회/삭제
+yunhee prepare ast01 --show
+yunhee prepare ast01 --delete
+
+# mapper_index 빌드 (최초 1회, ASIS 소스 변경 시 재실행)
+uv run tools/parse_mapper.py
+```
+
+**grounding 활성화 전제**: `mapper_index`가 없으면 grounding 패스는 자동 skip (경고 메시지 표시).  
+ASIS 소스가 인덱싱 이후 변경됐으면 요약 메타에 재실행 권장 메시지 출력.
+
+## 9. 남은 할 일
+
+1. (보류 중, 아직 근거 부족) chromadb 기반 legacy_scanner/chunker(Phase 1), tracker(Phase 4) — `docs/yunhee-cli-설계.md` 참고. framework-sprt에 실제 변환 예시가 쌓이기 전까지는 우선순위 낮음.
+
+## 10. 관련 파일 위치 (요약)
 
 | 파일 | 역할 |
 |---|---|
 | `src/yunhee/config.py` | `ASIS_SRC_DIR` (env: `YUNHEE_ASIS_SRC_DIR`) |
 | `src/yunhee/tools/base.py` | `ToolResult` 공통 스키마 |
-| `src/yunhee/tools/legacy_page.py` | 페이지 코드 → 파일 목록+내용 (예산/우선순위 적용) |
-| `src/yunhee/context/analyzer.py` | qwen 요약 프롬프트 + 호출 |
-| `src/yunhee/cli.py` (`_prepare`) | `prepare`/`prep` 커맨드, 캐시(`--force`/`--show`/`--delete`) |
-| `tools/parse_mapper.py` | mapper XML → `data/db/yunhee.db`의 `mapper_index` (grounding용, 독립 실행 스크립트) |
+| `src/yunhee/tools/legacy_page.py` | 페이지 코드 → 파일 목록+내용 (예산/우선순위/입력검증), `find_all_page_files` |
+| `src/yunhee/tools/mapper_verify.py` | grounding 검증 (`extract_mapper_refs`, `verify_mapper_refs`), staleness 체크 |
+| `src/yunhee/context/analyzer.py` | qwen 요약 (단일 패스 / 2단계), grounding 교정 루프 |
+| `src/yunhee/cli.py` (`_prepare`) | `prepare`/`prep` 커맨드, 캐시(`--force`/`--show`/`--delete`/`--two-stage`/`--no-grounding`) |
+| `tools/parse_mapper.py` | mapper XML → `mapper_index` + `mapper_index_meta`(staleness용 타임스탬프) |
 | `tests/test_legacy_page.py` | `find_page_files` 순수 로직 테스트 |

@@ -77,8 +77,17 @@ def _prepare(
     force: bool = False,
     show: bool = False,
     delete: bool = False,
+    two_stage: bool = typer.Option(False, "--two-stage", help="파일별 mini-summary 후 합산 (느리지만 전체 파일 반영)"),
+    no_grounding: bool = typer.Option(False, "--no-grounding", help="mapper_index 환각 검증 패스 건너뜀"),
 ):
     """ASIS 페이지 소스를 qwen으로 요약해 .yunhee/prep/<page_code>.md에 캐시 (prepare == prep, 완전히 동일)"""
+    from yunhee.tools.legacy_page import validate_page_code
+
+    err = validate_page_code(page_code)
+    if err:
+        print(f"오류: {err}")
+        raise typer.Exit(code=1)
+
     cache_dir = project.PROJECT_DIR / "prep"
     cache_file = cache_dir / f"{page_code}.md"
 
@@ -102,7 +111,12 @@ def _prepare(
         return
 
     try:
-        summary = summarize_page(page_code, model=model)
+        summary = summarize_page(
+            page_code,
+            model=model,
+            two_stage=two_stage,
+            grounding=not no_grounding,
+        )
     except ValueError as e:
         print(f"오류: {e}")
         raise typer.Exit(code=1) from e

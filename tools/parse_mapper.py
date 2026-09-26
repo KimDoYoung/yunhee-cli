@@ -58,6 +58,14 @@ def build_index() -> int:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mapper_index_meta (
+            key   TEXT PRIMARY KEY,
+            built_at REAL NOT NULL
+        )
+        """
+    )
 
     count = 0
     skipped = 0
@@ -83,6 +91,11 @@ def build_index() -> int:
                     (namespace, sql_id, sql_type, tables, rel_path),
                 )
                 count += 1
+    import time
+    conn.execute(
+        "INSERT OR REPLACE INTO mapper_index_meta (key, built_at) VALUES ('built_at', ?)",
+        (time.time(),),
+    )
     conn.commit()
     conn.close()
 
