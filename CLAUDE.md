@@ -63,7 +63,7 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 - `context/analyzer.py`, `context/assembler.py` — qwen으로 GXT 페이지 구조 요약 후 검색결과+요약+스키마+패턴을 최종 컨텍스트로 조립
 - `store/patterns.py`, `store/tracker.py`(sqlite: project, page_name, status, complexity, last_touched)
 
-로드맵 우선순위(가장 ROI 큰 것부터): 레거시 소스 인덱싱 → `yunhee prep <PageName>` 컨텍스트 압축·조립(핵심) → `yunhee similar <PageName>` 패턴 재사용 → `yunhee status`/`yunhee next` 진행상황 트래커 → (선택) agent loop.
+로드맵 우선순위(가장 ROI 큰 것부터): 레거시 소스 인덱싱 → `yunhee prep <PageName>` 컨텍스트 압축·조립(핵심) → `yunhee similar <PageName>` 패턴 재사용 → `yunhee status`/`yunhee next` 진행상황 트래커 → 판정자가 있는 루프(`fix-build`/`check-sql`, 컴파일러·스키마 등 기계가 판정 — 설계 문서 7.1) → (선택) 범용 agent loop.
 
 ## 폴더 구조
 
