@@ -33,7 +33,7 @@ LOCAL_DB = os.getenv("LOCAL_DB")
 ASIS_SRC_DIR = Path(os.getenv("YUNHEE_ASIS_SRC_DIR", "/home/kdy987/oms-data/src/Asset-ERP"))
 
 
-def _redact(url: str | None) -> str:
+def redact(url: str | None) -> str:
     """postgresql://user:password@host/db 형태에서 비밀번호를 가린다."""
     if not url:
         return "(not set)"
@@ -56,7 +56,7 @@ def summary() -> dict[str, str]:
         "embed-model": EMBED_MODEL,
         "chroma-host": CHROMA_HOST,
         "chroma-port": str(CHROMA_PORT),
-        "test-db": _redact(TEST_DB),
-        "local-db": _redact(LOCAL_DB),
+        "test-db": redact(TEST_DB),
+        "local-db": redact(LOCAL_DB),
         "asis-src": str(ASIS_SRC_DIR),
     }

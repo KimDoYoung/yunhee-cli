@@ -1,7 +1,12 @@
+import os
+import re
+from pathlib import Path
+from typing import Annotated
+
 import typer
 
 from yunhee import project
-from yunhee.config import OLLAMA_MODEL
+from yunhee.config import OLLAMA_MODEL, WORK_DIR, redact
 from yunhee.context.analyzer import summarize_page
 from yunhee.ollama_client import chat, embed
 from yunhee.store.vectorstore import add_texts
@@ -128,6 +133,50 @@ def _prepare(
 
 app.command(name="prepare")(_prepare)
 app.command(name="prep")(_prepare)
+
+
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _make_dbml(
+    env_name: str,
+    output: Annotated[
+        Path | None, typer.Option("--output", "-o", help="출력 파일 (기본: <ENV_NAME>-dbml.md)")
+    ] = None,
+    schema: Annotated[
+        list[str] | None,
+        typer.Option("--schema", help="대상 스키마 (여러 번 지정 가능, 기본: 시스템 스키마 제외 전체)"),
+    ] = None,
+):
+    """환경변수(LOCAL_DB 등)의 PostgreSQL에 읽기 전용으로 접속해 스키마를 DBML+SQL 마크다운으로 저장 (make-dbml == dbml, 완전히 동일)"""
+    from yunhee.dbml import counts, render_markdown
+    from yunhee.tools.pg_schema import fetch_schema
+
+    if not _ENV_NAME_RE.match(env_name):
+        print(f"오류: 환경변수 이름이 올바르지 않습니다: {env_name}")
+        raise typer.Exit(code=1)
+
+    dsn = os.getenv(env_name)
+    if not dsn:
+        print(f"오류: 환경변수 {env_name}가 설정되어 있지 않습니다 (.env.local 확인).")
+        raise typer.Exit(code=1)
+    if not dsn.startswith(("postgresql://", "postgres://")):
+        print(f"오류: {env_name}가 PostgreSQL 접속 URL이 아닙니다: {redact(dsn)}")
+        raise typer.Exit(code=1)
+
+    result = fetch_schema(dsn, schemas=schema or None)
+    if not result.ok:
+        print(f"오류: {result.error}")
+        raise typer.Exit(code=1)
+
+    out_file = output or WORK_DIR / f"{env_name}-dbml.md"
+    out_file.write_text(render_markdown(result.data, source=env_name, source_url=redact(dsn)))
+    summary = ", ".join(f"{k} {v}" for k, v in counts(result.data).items() if v)
+    print(f"저장됨: {out_file} ({summary or '객체 없음'})")
+
+
+app.command(name="make-dbml")(_make_dbml)
+app.command(name="dbml")(_make_dbml)
 
 
 if __name__ == "__main__":

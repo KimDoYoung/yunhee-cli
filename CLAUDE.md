@@ -22,8 +22,12 @@ uv run yunhee ask "질문"          # 단발성 질의
 uv run yunhee vec "텍스트"        # bge-m3 임베딩 확인
 uv run yunhee index "텍스트"      # chromadb에 텍스트 저장
 uv run yunhee search "쿼리" -n 3  # 저장된 텍스트 중 유사 검색
+uv run yunhee prepare <PageCode> # ASIS 페이지 요약 (prep과 동일). --force/--show/--delete/--two-stage/--no-grounding
+uv run yunhee make-dbml LOCAL_DB # 환경변수의 PostgreSQL 스키마 → ./LOCAL_DB-dbml.md (dbml과 동일). --output/-o, --schema(반복 가능)
 
-uv run pytest                    # 테스트 실행 (tests/ 디렉토리는 아직 비어있음)
+uv run tools/parse_mapper.py     # ASIS mapper XML → sqlite mapper_index 빌드 (prepare grounding 검증용)
+
+uv run pytest                    # 테스트 실행
 uv run ruff check .              # lint
 
 uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (다른 프로젝트 폴더에서 yunhee로 바로 실행하기 위함)
@@ -32,14 +36,17 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 동작 전제:
 - Ollama가 `YUNHEE_OLLAMA_URL`(기본 `http://localhost:11434`)에서 `qwen2.5-coder:14b`, `bge-m3:latest` 모델을 서빙 중이어야 `ask`/`chat`/`vec`/`index`/`search`/REPL이 동작한다.
 - chromadb는 `docs/docker-compose.yml`의 `chromadb` 서비스(docker, 8000 포트)로 띄워져 있어야 한다. 로컬 파일 기반이 아니라 `chromadb.HttpClient`로 접속한다.
+- `make-dbml`은 인자로 받은 이름의 환경변수(`.env.local`의 `LOCAL_DB`/`TEST_DB` 등)에 `postgresql://` URL이 있어야 한다. `TEST_DB`는 사무실에서만 접속 가능.
+- `prepare`는 `YUNHEE_ASIS_SRC_DIR`(ASIS AssetERP 소스 루트)가 존재해야 동작한다. grounding 검증은 `tools/parse_mapper.py`로 `mapper_index`를 미리 빌드해둬야 효과가 있다 (없으면 조용히 skip하고 경고만 붙임).
 
 ## 아키텍처
 
-### 현재 구현된 레이어 (스캐폴드 완료)
+### 현재 구현된 레이어
 
 - `src/yunhee/config.py` — 설정의 단일 진입점. 패키지 임포트 시점(`__init__.py`)에 `YUNHEE_DIR/.env.local`을 `load_dotenv()`로 로드하고, 이후 다른 모듈들은 하드코딩 대신 여기서 값을 가져온다.
   - `YUNHEE_DIR`: yunhee-cli 설치 위치(`.env.local`이 있는 곳, `__file__` 기준 고정 경로). `WORK_DIR`: yunhee가 **실행된** cwd = 작업 대상 프로젝트 루트. 이 둘을 구분하는 게 핵심 — `uv tool install --editable`로 설치해서 `framework-sprt` 같은 다른 프로젝트 폴더에서 `yunhee`를 실행해도, 자체 설정(`YUNHEE_DIR`)과 작업 대상(`WORK_DIR`)이 섞이지 않는다. **앞으로 만들 grep/파일 검색/legacy_scanner 등 "작업 대상"을 다루는 tool은 전부 `WORK_DIR` 기준으로 동작해야 한다.**
   - `OLLAMA_HOST`는 `YUNHEE_OLLAMA_URL` 환경변수로 읽는다 (`OLLAMA_HOST`라는 이름은 Ollama 서버 자체의 bind address 환경변수와 충돌하므로 의도적으로 `YUNHEE_` 접두사를 씀 — 실제로 시스템에 `OLLAMA_HOST=0.0.0.0`이 이미 설정돼 있어서 한 번 겪은 문제).
+  - `ASIS_SRC_DIR`(`YUNHEE_ASIS_SRC_DIR`): ASIS 레거시 소스 루트. `WORK_DIR`과 별개의 고정 경로로, ASIS 소스를 읽는 tool(`legacy_page`, `mapper_verify`, `parse_mapper`)은 이 경로를 기준으로 한다.
   - `summary()`가 `/config` 커맨드에서 쓰는 설정 요약(DB URL은 비밀번호 마스킹)을 반환.
 - `src/yunhee/project.py` — 작업 대상 프로젝트(`WORK_DIR`)를 yunhee에 등록하는 로직. `WORK_DIR/.yunhee/project.json`에 `name`/`created_at`/`updated_at`/`yunhee_version`을 저장. `status()`가 `missing`(미등록)/`outdated`(yunhee 버전 변경됨)/`ok`를 판별 — REPL 시작 시 자동으로 체크해서 필요하면 `/init` 안내. `current_version()`은 `importlib.metadata.version("yunhee")`로 `pyproject.toml`의 버전을 그대로 읽는다.
 - `src/yunhee/ollama_client.py` — Ollama HTTP API 래퍼. `chat()`(단발성), `chat_stream()`(멀티턴, 토큰 단위 yield), `embed()`(bge-m3 임베딩). Ollama `/api/chat`은 stateless이므로 멀티턴 대화는 매 요청마다 전체 히스토리를 다시 보내야 한다 — REPL의 `/clear`가 실질적 의미를 갖는 이유.
@@ -47,33 +54,47 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 - `src/yunhee/store/db.py` — sqlite 연결 헬퍼. `data/db/yunhee.db`(`YUNHEE_DIR` 기준, docker가 아니라 로컬 파일)에 연결하며 `get_connection()`이 부모 폴더를 자동 생성한다. 패턴 캐시·트래커 등 로컬 단일 사용자용 상태를 저장할 위치.
 - `src/yunhee/ui/repl.py` — claude-cli 스타일 대화형 REPL. `prompt_toolkit`(히스토리 파일 `~/.yunhee_history`, 슬래시 커맨드 자동완성) + `rich`(스트리밍 출력). 지원 커맨드: `/help`, `/exit`(`/quit`), `/clear`, `/config`(현재 설정값 전부 나열), `/init`(`.yunhee/project.json` 생성/갱신). `/model`은 VRAM 제약상 모델 고정이라 의도적으로 제외. 시작 시 배너와 `/help`/`/config`에 현재 yunhee 버전을 항상 표시한다.
 - `src/yunhee/cli.py` — typer app 진입점(`yunhee` 스크립트). 서브커맨드 없이 실행하면 바로 REPL 진입. `--version`은 `is_eager` 콜백으로 다른 옵션보다 먼저 처리되고 `project.current_version()`을 그대로 출력한다.
+  - `prepare`/`prep`: 같은 `_prepare` 함수를 두 이름으로 등록한 인자형 명령. `page_code`를 검증한 뒤 `context.analyzer.summarize_page()` 결과를 `WORK_DIR/.yunhee/prep/<page_code>.md`에 캐시한다. 캐시가 있으면 재생성 없이 출력하고, `--force`로 재생성, `--show`는 캐시만 출력, `--delete`는 캐시 삭제.
+  - `make-dbml`/`dbml`: 같은 `_make_dbml` 함수를 두 이름으로 등록한 인자형 명령. 인자는 **DB URL이 아니라 환경변수 이름**(`^[A-Za-z_][A-Za-z0-9_]*$` 검증). `tools.pg_schema.fetch_schema()` → `dbml.render_markdown()` 결과를 `--output`(기본 `WORK_DIR/<ENV_NAME>-dbml.md`)에 저장. 모든 출력의 URL은 `config.redact()`로 비밀번호 마스킹.
+- `src/yunhee/tools/base.py` — `ToolResult`(ok/data/error/truncated) dataclass. 모든 tool의 공통 반환 스키마.
+- `src/yunhee/tools/legacy_page.py` — ASIS 페이지 소스 수집 tool. 페이지 코드는 GXT 파일명 접두사로 인코딩돼 있어서(`Ast01_Tab_InfoManagement.java`, `ast01_class_tree.xml`) `ASIS_SRC_DIR` 아래에서 파일명이 `<page_code>_`로 시작하는 `.java`/`.xml`을 찾는다(`target/` 제외).
+  - `validate_page_code()`: 영문자·숫자·`_`·`-`만 허용하는 allowlist (path traversal 방지).
+  - 우선순위 정렬: mapper XML(0) → server/model 클래스(1) → `_Tab_` 메인화면(2) → 나머지 팝업(3).
+  - `find_page_files()`: 파일당 `PER_FILE_CHAR_LIMIT`(6000자) + 총량 `TOTAL_CHAR_LIMIT`(40000자) 예산 강제, 초과 시 `truncated=True`. `find_all_page_files()`: 총량 제한 없이 반환 (2단계 요약용, 파일당 제한은 유지).
+- `src/yunhee/tools/mapper_verify.py` — `mapper_index` 기반 환각 검증. `extract_mapper_refs()`가 요약에서 `mapper_name.sqlId` 패턴을 뽑고 `verify_mapper_refs()`가 실제 존재 여부를 조회한다. `check_staleness()`는 ASIS `mapper/*.xml`의 최신 mtime과 `mapper_index_meta.built_at`을 비교해 인덱스가 낡았는지 판단. `mapper_index`가 없으면 조용히 skip.
+- `src/yunhee/context/analyzer.py` — `summarize_page(page_code, model, two_stage, grounding)`. qwen으로 ASIS 페이지 요약 마크다운을 생성한다.
+  - 기본: `find_page_files()` 결과를 한 프롬프트로 요약. `two_stage=True`: 파일별 mini-summary → combine (전체 파일 반영, 느림).
+  - `grounding=True`: 요약 후 `_grounding_pass()`로 존재하지 않는 mapper 참조를 찾아 qwen에게 교정 요청.
+  - 결과 앞에 원본 파일 목록·잘림 여부·staleness 경고·grounding 교정 내역 메타데이터를 붙인다.
+- `src/yunhee/tools/pg_schema.py` — `fetch_schema(dsn, schemas)`. psycopg(3)로 접속해 `conn.read_only = True` 읽기 전용 세션에서 시스템 카탈로그만 조회해 테이블/컬럼/PK·UNIQUE·FK/인덱스/enum/view·materialized view/function·procedure/sequence/trigger를 dict로 반환. 시스템 스키마(`pg_catalog`, `information_schema`, `pg_toast*`, `pg_temp*`), 파티션 자식 테이블, 확장 소유 객체(`pg_depend.deptype='e'`)는 제외. 파일 스냅샷 용도라 truncation하지 않는다.
+- `src/yunhee/dbml.py` — `render_markdown(schema, source, source_url)` 순수 렌더러 (DB 접속 없음). DBML은 테이블/인덱스/Ref/Enum만 표현 가능하므로 ```` ```dbml ```` 블록 뒤에 view/function/procedure는 `## <종류>` 섹션의 ```` ```sql ```` 정의문, sequence는 표, trigger는 SQL 블록으로 기록한다. 타입은 항상 큰따옴표로 감싸고(`"character varying(20)"`), 복합 PK/UNIQUE는 `indexes` 블록, 출력 범위(`--schema`) 밖 테이블을 가리키는 FK는 DBML 파싱 오류를 피하려고 `// Ref ...` 주석으로 남긴다. 생성된 DBML은 `npx -p @dbml/cli dbml2sql`로 파싱 검증 가능.
+- `tools/parse_mapper.py` — (패키지 밖 유틸리티) ASIS MyBatis mapper XML 전체를 스캔해 `mapper_index`(mapperName/sqlId/참조 테이블 등)와 `mapper_index_meta`(빌드 시각)를 `data/db/yunhee.db`에 만든다. ASIS 소스가 바뀌면 재실행.
 
 ### 설계 원칙 (미구현 레이어에도 적용)
 
 - **부수효과가 있는 실행(DB 조회, grep, 파일 검색 등)은 전부 `tools/` 폴더에 독립 함수로 분리**하고, 상위 레이어(컨텍스트 조립기, 이후의 agent loop)는 정형화된 결과(`ToolResult`: ok/data/error/truncated)만 소비한다. 이렇게 분리해두면 나중에 agent loop을 붙일 때 이 함수들이 그대로 tool-calling 스키마가 된다.
 - **토큰 예산 관리는 tools 레이어에서 강제한다.** grep/쿼리 결과를 이 레이어에서 자르면 위쪽 레이어는 항상 절제된 크기만 다루게 된다 — 이것이 "토큰 절약"의 실질적 관문이다.
 - DB 쿼리 tool은 `SELECT`만 허용하는 가드가 필수다 (테스트 DB라도 안전장치로).
-- PostgreSQL 테스트 DB는 **사무실에서만 접근 가능**하므로, 스키마는 라이브 커넥션에 의존하지 않고 `pg_dump --schema-only` 스냅샷 기반 **오프라인 캐시**로 관리한다.
+- PostgreSQL 테스트 DB는 **사무실에서만 접근 가능**하므로, 스키마는 라이브 커넥션에 의존하지 않고 **오프라인 캐시**로 관리한다 (`yunhee make-dbml TEST_DB`로 사무실에서 스냅샷 생성).
 - 패턴 캐시·진행상황 추적은 sqlite(`data/db/yunhee.db`) 하나에 `project` 컬럼으로 여러 작업 대상 프로젝트를 구분해서 담는다 (프로젝트별로 db 파일을 나누지 않기로 결정 — `.yunhee/project.json`에 등록된 `name`을 project 식별자로 재사용). PostgreSQL은 AssetERP 테스트 DB 읽기 전용 조회에만 사용한다.
 
 ### 아직 설계만 되고 미구현인 것
 
-- `tools/base.py`(`ToolResult` 공통 스키마), `tools/grep_source.py`, `tools/db_query.py`, `tools/schema_dump.py`
+- `tools/grep_source.py`, `tools/db_query.py` (`tools/schema_dump.py`로 계획했던 오프라인 스키마 스냅샷은 `make-dbml`로 대체됨)
 - `indexer/legacy_scanner.py`, `indexer/chunker.py` — 레거시 소스를 페이지 단위(View+Presenter+Mapper+도메인)로 청킹, 파일 해시 기반 변경 감지로 재인덱싱 최소화
-- `context/analyzer.py`, `context/assembler.py` — qwen으로 GXT 페이지 구조 요약 후 검색결과+요약+스키마+패턴을 최종 컨텍스트로 조립
+- `context/assembler.py` — `analyzer`의 요약 + 검색결과 + 스키마 + 패턴을 최종 컨텍스트로 조립 (현재 `prepare`는 요약까지만 만든다)
 - `store/patterns.py`, `store/tracker.py`(sqlite: project, page_name, status, complexity, last_touched)
 
-로드맵 우선순위(가장 ROI 큰 것부터): 레거시 소스 인덱싱 → `yunhee prep <PageName>` 컨텍스트 압축·조립(핵심) → `yunhee similar <PageName>` 패턴 재사용 → `yunhee status`/`yunhee next` 진행상황 트래커 → 판정자가 있는 루프(`fix-build`/`check-sql`, 컴파일러·스키마 등 기계가 판정 — 설계 문서 7.1) → (선택) 범용 agent loop.
+로드맵 우선순위(가장 ROI 큰 것부터): 레거시 소스 인덱싱 → `yunhee prep <PageName>` 컨텍스트 압축·조립(핵심, 페이지 요약 단계까지 구현됨) → `yunhee similar <PageName>` 패턴 재사용 → `yunhee status`/`yunhee next` 진행상황 트래커 → 판정자가 있는 루프(`fix-build`/`check-sql`, 컴파일러·스키마 등 기계가 판정 — 설계 문서 7.1) → (선택) 범용 agent loop.
 
 ## 폴더 구조
 
 - `src/yunhee` — 소스
-- `tests` — pytest 코드 (현재 비어있음)
-- `tools` — yunhee가 자체적으로 활용하는 shell/executable 유틸리티
+- `tests` — pytest 코드 (`test_legacy_page.py`, `test_dbml.py` — DB 없이 렌더러·CLI 검증)
+- `tools` — yunhee가 자체적으로 활용하는 shell/executable 유틸리티 (`parse_mapper.py`). `src/yunhee/tools/`(tool 함수 레이어)와 이름만 같고 별개다.
 - `data` — yunhee가 사용하는 로컬 데이터 (`data/db/yunhee.db` 등). `.gitignore`에서 `data/` 전체 제외.
 - `docs` — 설계 문서, `docker-compose.yml`(postgres/redis/chromadb 등 인프라 정의)
 
 ## 주의사항
 
-- `.env.local`, `tools/.env.local`에 DB 접속 정보(자격 증명 포함)가 있다. 커밋하지 말 것 (`.gitignore`에서 `.env*` 제외 처리됨). 환경변수를 새로 추가할 때는 `OLLAMA_HOST`처럼 이미 다른 도구가 쓰는 이름과 겹치지 않는지 확인하고, 겹칠 여지가 있으면 `YUNHEE_` 접두사를 쓴다.
-- `tests/`는 현재 비어있다.
+- `.env.local`, `tools/.env.local`에 DB 접속 정보(자격 증명 포함)가 있다. 커밋하지 말 것 (`.gitignore`에서 `.env*` 제외 처리됨). 새 환경변수는 `.env.local.sample`에도 함께 추가한다. 환경변수를 새로 추가할 때는 `OLLAMA_HOST`처럼 이미 다른 도구가 쓰는 이름과 겹치지 않는지 확인하고, 겹칠 여지가 있으면 `YUNHEE_` 접두사를 쓴다.
