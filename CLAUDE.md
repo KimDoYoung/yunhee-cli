@@ -46,10 +46,11 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 - `src/yunhee/config.py` — 설정의 단일 진입점. 패키지 임포트 시점(`__init__.py`)에 `YUNHEE_DIR/.env.local`을 `load_dotenv()`로 로드하고, 이후 다른 모듈들은 하드코딩 대신 여기서 값을 가져온다.
   - `YUNHEE_DIR`: yunhee-cli 설치 위치(`.env.local`이 있는 곳, `__file__` 기준 고정 경로). `WORK_DIR`: yunhee가 **실행된** cwd = 작업 대상 프로젝트 루트. 이 둘을 구분하는 게 핵심 — `uv tool install --editable`로 설치해서 `framework-sprt` 같은 다른 프로젝트 폴더에서 `yunhee`를 실행해도, 자체 설정(`YUNHEE_DIR`)과 작업 대상(`WORK_DIR`)이 섞이지 않는다. **앞으로 만들 grep/파일 검색/legacy_scanner 등 "작업 대상"을 다루는 tool은 전부 `WORK_DIR` 기준으로 동작해야 한다.**
   - `OLLAMA_HOST`는 `YUNHEE_OLLAMA_URL` 환경변수로 읽는다 (`OLLAMA_HOST`라는 이름은 Ollama 서버 자체의 bind address 환경변수와 충돌하므로 의도적으로 `YUNHEE_` 접두사를 씀 — 실제로 시스템에 `OLLAMA_HOST=0.0.0.0`이 이미 설정돼 있어서 한 번 겪은 문제).
+  - `NUM_CTX`(`YUNHEE_NUM_CTX`, 기본 16384): 매 Ollama 요청에 `options.num_ctx`로 넘기는 컨텍스트 토큰 수. **넘기지 않으면 Ollama 기본값 4096이 적용되어 긴 프롬프트 앞부분이 조용히 잘린다** (실측으로 확인한 문제). 16384에서 VRAM 약 13GB. tools 레이어의 문자 예산(`legacy_page.TOTAL_CHAR_LIMIT` 등)은 이 값에 맞춰 잡는다.
   - `ASIS_SRC_DIR`(`YUNHEE_ASIS_SRC_DIR`): ASIS 레거시 소스 루트. `WORK_DIR`과 별개의 고정 경로로, ASIS 소스를 읽는 tool(`legacy_page`, `mapper_verify`, `parse_mapper`)은 이 경로를 기준으로 한다.
   - `summary()`가 `/config` 커맨드에서 쓰는 설정 요약(DB URL은 비밀번호 마스킹)을 반환.
 - `src/yunhee/project.py` — 작업 대상 프로젝트(`WORK_DIR`)를 yunhee에 등록하는 로직. `WORK_DIR/.yunhee/project.json`에 `name`/`created_at`/`updated_at`/`yunhee_version`을 저장. `status()`가 `missing`(미등록)/`outdated`(yunhee 버전 변경됨)/`ok`를 판별 — REPL 시작 시 자동으로 체크해서 필요하면 `/init` 안내. `current_version()`은 `importlib.metadata.version("yunhee")`로 `pyproject.toml`의 버전을 그대로 읽는다.
-- `src/yunhee/ollama_client.py` — Ollama HTTP API 래퍼. `chat()`(단발성), `chat_stream()`(멀티턴, 토큰 단위 yield), `embed()`(bge-m3 임베딩). Ollama `/api/chat`은 stateless이므로 멀티턴 대화는 매 요청마다 전체 히스토리를 다시 보내야 한다 — REPL의 `/clear`가 실질적 의미를 갖는 이유.
+- `src/yunhee/ollama_client.py` — Ollama HTTP API 래퍼. `chat()`(단발성), `chat_stream()`(멀티턴, 토큰 단위 yield), `embed()`(bge-m3 임베딩). 모든 chat 요청에 `num_ctx`를 넘기고, 응답의 `prompt_eval_count`가 `num_ctx`에 닿으면(=잘림) stderr로 경고한다. Ollama `/api/chat`은 stateless이므로 멀티턴 대화는 매 요청마다 전체 히스토리를 다시 보내야 한다 — REPL의 `/clear`가 실질적 의미를 갖는 이유.
 - `src/yunhee/store/vectorstore.py` — `chromadb.HttpClient(config.CHROMA_HOST, config.CHROMA_PORT)` + `OllamaEmbeddingFunction`(내부적으로 `ollama_client.embed()` 호출)로 bge-m3 임베딩을 연결. `add_texts()` / `search()` 제공.
 - `src/yunhee/store/db.py` — sqlite 연결 헬퍼. `data/db/yunhee.db`(`YUNHEE_DIR` 기준, docker가 아니라 로컬 파일)에 연결하며 `get_connection()`이 부모 폴더를 자동 생성한다. 패턴 캐시·트래커 등 로컬 단일 사용자용 상태를 저장할 위치.
 - `src/yunhee/ui/repl.py` — claude-cli 스타일 대화형 REPL. `prompt_toolkit`(히스토리 파일 `~/.yunhee_history`, 슬래시 커맨드 자동완성) + `rich`(스트리밍 출력). 지원 커맨드: `/help`, `/exit`(`/quit`), `/clear`, `/config`(현재 설정값 전부 나열), `/init`(`.yunhee/project.json` 생성/갱신). `/model`은 VRAM 제약상 모델 고정이라 의도적으로 제외. 시작 시 배너와 `/help`/`/config`에 현재 yunhee 버전을 항상 표시한다.
@@ -90,7 +91,7 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 ## 폴더 구조
 
 - `src/yunhee` — 소스
-- `tests` — pytest 코드 (`test_legacy_page.py`, `test_dbml.py` — DB 없이 렌더러·CLI 검증)
+- `tests` — pytest 코드 (`test_legacy_page.py`, `test_dbml.py` — DB 없이 렌더러·CLI 검증, `test_ollama_client.py` — httpx monkeypatch로 num_ctx 전달·잘림 경고 검증)
 - `tools` — yunhee가 자체적으로 활용하는 shell/executable 유틸리티 (`parse_mapper.py`). `src/yunhee/tools/`(tool 함수 레이어)와 이름만 같고 별개다.
 - `data` — yunhee가 사용하는 로컬 데이터 (`data/db/yunhee.db` 등). `.gitignore`에서 `data/` 전체 제외.
 - `docs` — 설계 문서, `docker-compose.yml`(postgres/redis/chromadb 등 인프라 정의)

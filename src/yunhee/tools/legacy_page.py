@@ -6,6 +6,8 @@ from yunhee.tools.base import ToolResult
 
 SOURCE_EXTENSIONS = (".java", ".xml")
 PER_FILE_CHAR_LIMIT = 6000
+# config.NUM_CTX(기본 16384 토큰)에 맞춘 예산. ast01 실측: 40,000자 ≈ 10,700 토큰(Java/XML 약 3.8자/토큰)
+# → 프롬프트 지시문 + 요약 출력에 약 5,000 토큰이 남는다. NUM_CTX를 줄이면 이 값도 같이 줄일 것.
 TOTAL_CHAR_LIMIT = 40000
 
 # page_code allowlist: 영문자·숫자·밑줄·하이픈만 허용 (path traversal 방지)

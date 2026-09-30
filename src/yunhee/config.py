@@ -20,6 +20,9 @@ load_dotenv(ENV_FILE)
 OLLAMA_HOST = os.getenv("YUNHEE_OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("YUNHEE_OLLAMA_MODEL", "qwen2.5-coder:14b")
 EMBED_MODEL = os.getenv("YUNHEE_EMBED_MODEL", "bge-m3:latest")
+# 요청마다 Ollama에 넘기는 컨텍스트 크기(토큰, 입력+출력 합계). 넘기지 않으면 Ollama 기본값(4096)이 적용되어
+# 긴 프롬프트의 앞부분이 조용히 잘린다. qwen2.5-coder:14b는 16384에서 VRAM 약 13GB (16GB 제약 안).
+NUM_CTX = int(os.getenv("YUNHEE_NUM_CTX", "16384"))
 
 # docs/docker-compose.yml의 chromadb 서비스 참고
 CHROMA_HOST = os.getenv("YUNHEE_CHROMA_HOST", "localhost")
@@ -54,6 +57,7 @@ def summary() -> dict[str, str]:
         "ollama-url": OLLAMA_HOST,
         "ollama-model": OLLAMA_MODEL,
         "embed-model": EMBED_MODEL,
+        "num-ctx": str(NUM_CTX),
         "chroma-host": CHROMA_HOST,
         "chroma-port": str(CHROMA_PORT),
         "test-db": redact(TEST_DB),
