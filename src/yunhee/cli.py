@@ -6,7 +6,7 @@ from typing import Annotated
 import typer
 
 from yunhee import project
-from yunhee.config import OLLAMA_MODEL, WORK_DIR, redact
+from yunhee.config import OLLAMA_MODEL, SCHEMA_ENV, WORK_DIR, redact
 from yunhee.context.analyzer import summarize_page
 from yunhee.ollama_client import chat, embed
 from yunhee.store.vectorstore import add_texts
@@ -84,6 +84,8 @@ def _prepare(
     delete: bool = False,
     two_stage: bool = typer.Option(False, "--two-stage", help="파일별 mini-summary 후 합산 (느리지만 전체 파일 반영)"),
     no_grounding: bool = typer.Option(False, "--no-grounding", help="mapper_index 환각 검증 패스 건너뜀"),
+    no_schema: bool = typer.Option(False, "--no-schema", help="연관 테이블 DBML 섹션을 붙이지 않음"),
+    db: str = typer.Option(SCHEMA_ENV, "--db", help="연관 테이블을 조회할 스키마 스냅샷 (make-dbml의 환경변수 이름)"),
 ):
     """ASIS 페이지 소스를 qwen으로 요약해 .yunhee/prep/<page_code>.md에 캐시 (prepare == prep, 완전히 동일)"""
     from yunhee.tools.legacy_page import validate_page_code
@@ -126,6 +128,11 @@ def _prepare(
         print(f"오류: {e}")
         raise typer.Exit(code=1) from e
 
+    if not no_schema:
+        from yunhee.context.schema_context import page_schema_section
+
+        summary = f"{summary.rstrip()}\n\n{page_schema_section(page_code, db)}"
+
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file.write_text(summary)
     print(summary)
@@ -151,6 +158,7 @@ def _make_dbml(
     """환경변수(LOCAL_DB 등)의 PostgreSQL에 읽기 전용으로 접속해 스키마를 DBML+SQL 마크다운으로 저장 (make-dbml == dbml, 완전히 동일)"""
     from yunhee.dbml import counts, render_markdown
     from yunhee.tools.pg_schema import fetch_schema
+    from yunhee.tools.schema_snapshot import save_snapshot
 
     if not _ENV_NAME_RE.match(env_name):
         print(f"오류: 환경변수 이름이 올바르지 않습니다: {env_name}")
@@ -173,10 +181,50 @@ def _make_dbml(
     out_file.write_text(render_markdown(result.data, source=env_name, source_url=redact(dsn)))
     summary = ", ".join(f"{k} {v}" for k, v in counts(result.data).items() if v)
     print(f"저장됨: {out_file} ({summary or '객체 없음'})")
+    print(f"스냅샷: {save_snapshot(env_name, result.data)} ('yunhee table'/'prepare'가 사용)")
 
 
 app.command(name="make-dbml")(_make_dbml)
 app.command(name="dbml")(_make_dbml)
+
+
+@app.command()
+def table(
+    names: Annotated[list[str] | None, typer.Argument(help="테이블 이름 (schema.table, glob * ? 가능)")] = None,
+    page: Annotated[str | None, typer.Option("--page", help="ASIS 페이지 코드 — mapper가 참조하는 테이블 전부")] = None,
+    db: Annotated[str, typer.Option("--db", help="스키마 스냅샷 (make-dbml의 환경변수 이름)")] = SCHEMA_ENV,
+):
+    """스키마 스냅샷에서 지정한 테이블만 DBML로 출력 (DB 접속·LLM 호출 없음)"""
+    from yunhee.tools.page_schema import page_tables
+    from yunhee.tools.schema_snapshot import load_snapshot, slice_tables
+
+    patterns = list(names or [])
+    if page:
+        found = page_tables(page)
+        if not found.ok:
+            print(f"오류: {found.error}")
+            raise typer.Exit(code=1)
+        patterns += found.data
+    if not patterns:
+        print("오류: 테이블 이름 또는 --page를 지정하세요.")
+        raise typer.Exit(code=1)
+
+    snapshot = load_snapshot(db)
+    if not snapshot.ok:
+        print(f"오류: {snapshot.error}")
+        raise typer.Exit(code=1)
+
+    result = slice_tables(snapshot.data, patterns)
+    info = result.data
+    if info["dbml"]:
+        print(info["dbml"])
+    # 안내는 stderr로 — stdout은 DBML만 남겨서 파이프/리다이렉트로 그대로 쓸 수 있게
+    if info["omitted"]:
+        typer.echo(f"// 예산 초과로 제외: {', '.join(info['omitted'])}", err=True)
+    if info["missing"]:
+        typer.echo(f"// 스냅샷에 없음: {', '.join(info['missing'])}", err=True)
+    if not info["tables"]:
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

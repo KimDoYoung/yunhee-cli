@@ -127,7 +127,7 @@ PK·UNIQUE 제약조건이 만든 인덱스는 `pg_index`에서 제외하고 제
 
 ## 5. 알려진 한계 / 남은 할 일
 
-1. **파일이 너무 크다.** 다음 단계는 "페이지에 필요한 테이블만 뽑기"다. `mapper_index.tables`(`tools/parse_mapper.py`가 만든 mapper별 참조 테이블 목록)와 조합하면, `prepare <page_code>` 때 그 페이지 mapper가 쓰는 테이블의 DBML 블록만 잘라서 요약에 붙일 수 있다. 이를 위해선 `.md`를 다시 파싱하기보다 `fetch_schema()` 결과(dict)를 JSON이나 sqlite로도 같이 저장해두는 게 낫다.
+1. ~~**파일이 너무 크다.** 페이지에 필요한 테이블만 뽑기~~ → 7번에서 구현.
 2. **함수 본문 필터링 옵션.** 함수가 77%를 차지하므로 `--no-functions` 또는 시그니처만 기록하는 옵션을 고려.
 3. **기록하지 않는 것:** CHECK 제약조건, domain/composite 타입, 권한(GRANT)·소유자, RLS policy, 시퀀스 현재값(`last_value`), 설치된 extension 목록. 필요해지면 추가.
 4. **enum 컬럼 연결:** 타입을 항상 큰따옴표로 감싸기 때문에 dbdiagram.io에서 enum 컬럼과 `Enum` 정의가 시각적으로 연결되지 않는다 (현재 DB엔 enum이 없어서 보류).
@@ -143,4 +143,19 @@ PK·UNIQUE 제약조건이 만든 인덱스는 `pg_index`에서 제외하고 제
 | `src/yunhee/dbml.py` | `render_markdown()`, `counts()` — DBML + SQL 섹션 렌더링 (순수 함수) |
 | `src/yunhee/config.py` | `redact()` — URL 비밀번호 마스킹 |
 | `tests/test_dbml.py` | 렌더러 규칙 + CLI 오류 경로/기본 출력 파일명 (DB 불필요, `fetch_schema` monkeypatch) |
+| `src/yunhee/tools/schema_snapshot.py` | 스냅샷 JSON 저장/로드, `slice_tables()` (예산 적용) |
+| `src/yunhee/tools/page_schema.py` | `page_tables()` — 페이지 → mapper_index 참조 테이블 |
+| `src/yunhee/context/schema_context.py` | prepare에 붙일 연관 테이블 섹션 |
+| `src/yunhee/cli.py` (`table`) | `table` 커맨드 |
+| `tests/test_schema_snapshot.py` | slice/예산/page_tables/`table` CLI |
 | `pyproject.toml` | `psycopg[binary]` 의존성 |
+
+## 7. 필요한 테이블만 뽑기 — 스냅샷 + `yunhee table` + prepare 연동 (2026-09-30)
+
+2.6M자 파일을 LLM에 통째로 줄 수는 없으므로, **LLM 없이 기계적으로** 필요한 테이블만 잘라낸다.
+
+- `make-dbml`이 `.md`와 함께 `fetch_schema()` 결과를 `YUNHEE_DIR/data/schema/<ENV>.json`(약 3.7MB)으로 저장. 로드 포함 조회 약 1초.
+- `yunhee table <이름|glob|schema.table ...> [--page <code>] [--db <ENV>]` — stdout에는 DBML만 찍어서 `yunhee table --page ast01 > ctx.dbml`처럼 그대로 claude에 넘길 수 있다. 없는 이름·예산 초과 안내는 stderr.
+- 페이지 → 테이블: 페이지 mapper XML의 `mapper_index.tables`를 참조 횟수 순으로. `ast01` 실측: 후보 9개 중 스냅샷에 있는 8개(`ast01_class_tree`, `ast10_manager`, `sys09_code`, …) 7.5K자, `ast_tree`는 CTE 별칭이라 "스냅샷에 없음"으로 표시.
+- `prepare`: qwen 요약 뒤에 "연관 테이블 스키마 (DBML, `<ENV>` 스냅샷)" 섹션을 붙인다. qwen 프롬프트에는 넣지 않는다 (qwen 컨텍스트 16K를 아끼고, 스키마는 요약할 필요 없이 원문이 더 정확). `ast01` 전체 결과 약 10K자.
+- 예산: `SCHEMA_CHAR_LIMIT` 30,000자. 패턴 순서(= 참조 횟수 순)대로 채우고 넘치면 뒤쪽 테이블을 `omitted`로 빼서 이름만 안내.

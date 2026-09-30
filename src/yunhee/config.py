@@ -31,6 +31,8 @@ CHROMA_PORT = int(os.getenv("YUNHEE_CHROMA_PORT", "8000"))
 # AssetERP 테스트/로컬 DB (읽기 전용 조회용, docs/yunhee-cli-설계.md 참고)
 TEST_DB = os.getenv("TEST_DB")
 LOCAL_DB = os.getenv("LOCAL_DB")
+# `table`/`prepare`가 기본으로 읽을 스키마 스냅샷(`make-dbml <ENV>`로 생성)의 환경변수 이름
+SCHEMA_ENV = os.getenv("YUNHEE_SCHEMA_ENV", "LOCAL_DB")
 
 # ASIS(AssetERP, GWT/GXT) 소스 루트 - yunhee prepare가 페이지 파일을 찾는 기준
 ASIS_SRC_DIR = Path(os.getenv("YUNHEE_ASIS_SRC_DIR", "/home/kdy987/oms-data/src/Asset-ERP"))
@@ -62,5 +64,6 @@ def summary() -> dict[str, str]:
         "chroma-port": str(CHROMA_PORT),
         "test-db": redact(TEST_DB),
         "local-db": redact(LOCAL_DB),
+        "schema-env": SCHEMA_ENV,
         "asis-src": str(ASIS_SRC_DIR),
     }

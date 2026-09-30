@@ -60,6 +60,16 @@ def _collect_matches(page_code: str) -> list[str] | ToolResult:
     return matches
 
 
+def find_page_mapper_paths(page_code: str) -> ToolResult:
+    """페이지의 mapper XML 경로 목록(ASIS_SRC_DIR 기준 상대경로, mapper_index.file_path와 같은 형식)."""
+    result = _collect_matches(page_code)
+    if isinstance(result, ToolResult):
+        return result
+    return ToolResult(ok=True, data=[
+        os.path.relpath(p, ASIS_SRC_DIR) for p in result if _priority(p)[0] == 0 and p.endswith(".xml")
+    ])
+
+
 def find_page_files(page_code: str) -> ToolResult:
     """ASIS_SRC_DIR 아래에서 파일명이 `<page_code>_`로 시작하는 소스 파일을 찾아 예산 내에서 반환한다.
 

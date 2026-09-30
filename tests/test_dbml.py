@@ -122,6 +122,7 @@ def test_cli_rejects_missing_or_invalid_env(monkeypatch):
 def test_cli_default_and_custom_output(monkeypatch, tmp_path):
     monkeypatch.setenv("MY_DB", "postgresql://u:secret@h/db")
     monkeypatch.setattr(cli, "WORK_DIR", tmp_path)
+    monkeypatch.setattr("yunhee.tools.schema_snapshot.SNAPSHOT_DIR", tmp_path / "schema")
     captured = {}
 
     def fake_fetch(dsn, schemas=None):
@@ -136,6 +137,7 @@ def test_cli_default_and_custom_output(monkeypatch, tmp_path):
     assert 'Table "public"."t"' in out
     assert "secret" not in out
     assert captured["schemas"] is None
+    assert (tmp_path / "schema" / "MY_DB.json").exists()
 
     custom = tmp_path / "a.md"
     result = runner.invoke(cli.app, ["dbml", "MY_DB", "--output", str(custom), "--schema", "public"])

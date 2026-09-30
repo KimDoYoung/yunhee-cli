@@ -120,7 +120,8 @@ def _ref_line(r: dict, rendered: set[tuple[str, str]]) -> str:
     return line
 
 
-def _dbml(schema: dict) -> str:
+def render_dbml(schema: dict) -> str:
+    """schema의 enums/tables/refs만 DBML 텍스트로 렌더링 (전체 스냅샷이든 일부 테이블 slice든 동일)."""
     blocks = []
     for e in schema["enums"]:
         values = "\n".join(f"  {_q(v)}" for v in e["values"])
@@ -176,7 +177,7 @@ def render_markdown(schema: dict, *, source: str, source_url: str) -> str:
         "## DBML",
         "",
         "```dbml",
-        _dbml(schema),
+        render_dbml(schema),
         "```",
         "",
     ]
