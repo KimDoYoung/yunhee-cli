@@ -43,8 +43,7 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 동작 전제:
 - Ollama가 `YUNHEE_OLLAMA_URL`(기본 `http://localhost:11434`)에서 `qwen2.5-coder:14b`, `bge-m3:latest` 모델을 서빙 중이어야 `ask`/`chat`/`vec`/`index`/`search`/REPL이 동작한다.
 - chromadb는 `docs/docker-compose.yml`의 `chromadb` 서비스(docker, 8000 포트)로 띄워져 있어야 한다. 로컬 파일 기반이 아니라 `chromadb.HttpClient`로 접속한다.
-- `make-dbml`은 인자로 받은 이름의 환경변수(`.env.local`의 `LOCAL_DB`/`TEST_DB` 등)에 `postgresql://` URL이 있어야 한다. `TEST_DB`는 사무실에서만 접속 가능.
-- `prepare`는 `YUNHEE_ASIS_SRC_DIR`(ASIS AssetERP 소스 루트)가 존재해야 동작한다. grounding 검증은 `tools/parse_mapper.py`로 `mapper_index`를 미리 빌드해둬야 효과가 있다 (없으면 조용히 skip하고 경고만 붙임).
+- `table --page`는 `YUNHEE_ASIS_SRC_DIR`(ASIS AssetERP 소스 루트)가 존재해야 동작한다. 매퍼 연관 테이블 추출은 `tools/parse_mapper.py`로 `mapper_index`를 미리 빌드해두어야 동작한다.
 
 ## 아키텍처
 
@@ -71,8 +70,8 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
   - `outline`: 소스 파일/디렉터리의 클래스·메서드 시그니처와 줄 번호를 LLM 없이 정적 파싱하여 추출.
   - `api`: 테스트 계정 자동 로그인 세션 기반 API 스모크 테스트 (행수/필드 요약 반환).
 - `src/yunhee/tools/runner.py` — 외부 프로세스 실행(`subprocess.run`). 타임아웃, 원시 로그 파일 영구 저장, 출력 미리보기 자르기(`truncated=True`), `ToolResult` 반환.
-- `src/yunhee/tools/outliner.py` — Java, MyBatis XML, TypeScript, Python 소스의 시그니처와 줄 번호를 추출하는 순수 정적 파서.
-- `src/yunhee/tools/api_client.py` — 자동 로그인 및 세션 관리(`WORK_DIR/.yunhee/sessions/<user>.json`), API 호출 및 응답 압축 요약 도구.
+- `src/yunhee/tools/outliner.py` — Java, MyBatis XML, TypeScript/TSX, Python 소스의 시그니처와 줄 번호를 추출하는 순수 정적 파서. Java의 여러 줄 파라미터, 점(`.`)이 포함된 제네릭 반환형(`List<MenuRes.Level1>`), 인터페이스 메서드(`SysRoleMapper.java`), TSX 객체 리터럴 함수(`export const sysApi = { ... }`), React.FC 컴포넌트, TS 제네릭 함수(`useTreeGrid<T>`, `editableCol = <T,>`), Java enum 상수 요약(`constants(N): ...`), record 파라미터 구성요소 인라인 및 본문 메서드 보존을 완벽히 지원한다.
+- `src/yunhee/tools/api_client.py` — 자동 로그인, Host 헤더 기반 테넌트 분리(`_tenant_headers`), 테넌트별 세션 격리(`WORK_DIR/.yunhee/sessions/<host>_<tenant>_<user>.json`), `companyCode` 지원, 공통 응답 봉투(success·code·data) 언래핑 및 숫자/문자/객체 Data 표기, 로그인 실패 시 즉시 중단(계정 잠금 5회 락 방지) API 스모크 테스트 도구.
 - `src/yunhee/store/run_tracker.py` — SQLite `runs` 테이블에 실행 이력(명령어, exit code, 소요시간, 로그 경로, 요약 등) 저장 및 조회.
 - `src/yunhee/context/run_analyzer.py` — 실행 결과 압축 요약. 성공 시 1줄, 실패 시 로컬 Qwen 14B로 원인·관련 파일·핵심 에러 원문 추출.
 - `src/yunhee/tools/base.py` — `ToolResult`(ok/data/error/truncated) dataclass. 모든 tool의 공통 반환 스키마.

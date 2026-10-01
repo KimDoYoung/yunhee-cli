@@ -34,8 +34,16 @@ LOCAL_DB = os.getenv("LOCAL_DB")
 # `table`/`prepare`가 기본으로 읽을 스키마 스냅샷(`make-dbml <ENV>`로 생성)의 환경변수 이름
 SCHEMA_ENV = os.getenv("YUNHEE_SCHEMA_ENV", "LOCAL_DB")
 
-# ASIS(AssetERP, GWT/GXT) 소스 루트 - yunhee prepare가 페이지 파일을 찾는 기준
+# ASIS(AssetERP, GWT/GXT) 소스 루트 - yunhee가 레거시 페이지/매퍼를 찾는 기준
 ASIS_SRC_DIR = Path(os.getenv("YUNHEE_ASIS_SRC_DIR", "/home/kdy987/oms-data/src/Asset-ERP"))
+
+# API 스모크 테스트 기본 설정
+API_BASE_URL = os.getenv("YUNHEE_API_BASE_URL", "http://localhost:8082/OMS")
+API_LOGIN_PATH = os.getenv("YUNHEE_API_LOGIN_PATH", "/api/auth/login")
+TEST_ADMIN_USER = os.getenv("YUNHEE_TEST_ADMIN_USER", "admin")
+TEST_ADMIN_PASS = os.getenv("YUNHEE_TEST_ADMIN_PASS", "1111")
+TEST_COMPANY = os.getenv("YUNHEE_TEST_COMPANY")
+API_TENANT_HOST = os.getenv("YUNHEE_API_TENANT_HOST", "{tenant}.localhost")
 
 
 def redact(url: str | None) -> str:
@@ -66,4 +74,9 @@ def summary() -> dict[str, str]:
         "local-db": redact(LOCAL_DB),
         "schema-env": SCHEMA_ENV,
         "asis-src": str(ASIS_SRC_DIR),
+        "api-base": API_BASE_URL,
+        "api-login-path": API_LOGIN_PATH,
+        "api-tenant-host": API_TENANT_HOST,
+        "test-admin-user": TEST_ADMIN_USER,
+        "test-company": TEST_COMPANY or "(not set)",
     }

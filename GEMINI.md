@@ -94,8 +94,8 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 ### 3. Tools 및 Context 레이어
 - `src/yunhee/tools/base.py`: 모든 tool의 공통 반환 규격인 `ToolResult` (ok/data/error/truncated) 정의.
 - `src/yunhee/tools/runner.py`: 외부 프로세스 실행 도구 (`subprocess.run`). 타임아웃, 원시 로그 영구 저장, 출력 미리보기 자르기(`truncated=True`), `ToolResult` 반환.
-- `src/yunhee/tools/outliner.py`: Java, MyBatis XML, TypeScript, Python 소스의 시그니처와 줄 번호를 추출하는 순수 정적 파서.
-- `src/yunhee/tools/api_client.py`: 자동 로그인 및 세션 관리(`WORK_DIR/.yunhee/sessions/<user>.json`), API 호출 및 응답 압축 요약 도구.
+- `src/yunhee/tools/outliner.py`: Java, MyBatis XML, TypeScript/TSX, Python 소스의 시그니처와 줄 번호를 추출하는 순수 정적 파서. Java의 여러 줄 파라미터, 점(`.`)이 포함된 제네릭 반환형(`List<MenuRes.Level1>`), 인터페이스 메서드(`SysRoleMapper.java`), TSX 객체 리터럴 함수(`export const sysApi = { ... }`), React.FC 컴포넌트, TS 제네릭 함수(`useTreeGrid<T>`, `editableCol = <T,>`), Java enum 상수 요약(`constants(N): ...`), record 파라미터 구성요소 인라인 및 본문 메서드 보존을 완벽히 지원.
+- `src/yunhee/tools/api_client.py`: 자동 로그인, Host 헤더 기반 테넌트 분리(`_tenant_headers`), 테넌트별 세션 격리(`WORK_DIR/.yunhee/sessions/<host>_<tenant>_<user>.json`), `companyCode` 지원, 공통 응답 봉투(success·code·data) 언래핑 및 숫자/문자/객체 Data 표기, 로그인 실패 시 즉시 중단(계정 잠금 5회 락 방지) API 스모크 테스트 도구.
 - `src/yunhee/context/run_analyzer.py`: 실행 결과 압축 요약. 성공 시 1줄, 실패 시 로컬 Qwen 14B로 원인·관련 파일·핵심 에러 원문 추출.
 - `src/yunhee/tools/legacy_page.py`: ASIS 소스 수집.
   - GXT 파일명 접두사 규칙(`<page_code>_`) 기반 파일 수집 (`target/` 제외).

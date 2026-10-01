@@ -109,6 +109,11 @@ def config_cmd():
     table.add_row("Env File", cfg["env-file"], "설정 파일 (.env.local)")
     table.add_row("Ollama URL", cfg["ollama-url"], ".env.local의 YUNHEE_OLLAMA_URL")
     table.add_row("Ollama Model", cfg["ollama-model"], ".env.local의 YUNHEE_OLLAMA_MODEL")
+    table.add_row("API Base URL", cfg["api-base"], ".env.local의 YUNHEE_API_BASE_URL")
+    table.add_row("API Login Path", cfg["api-login-path"], ".env.local의 YUNHEE_API_LOGIN_PATH")
+    table.add_row("API Admin User", cfg["test-admin-user"], ".env.local의 YUNHEE_TEST_ADMIN_USER")
+    table.add_row("API Company", cfg["test-company"], ".env.local의 YUNHEE_TEST_COMPANY")
+    table.add_row("API Tenant Host", cfg["api-tenant-host"], ".env.local의 YUNHEE_API_TENANT_HOST")
 
     console = Console()
     console.print(table)
@@ -353,6 +358,9 @@ def api(
     path: Annotated[str, typer.Argument(help="호출할 API 경로 (예: /api/v1/sys/roles)")],
     as_role: Annotated[str, typer.Option("--as", help="로그인 역할 (admin 또는 user)")] = "admin",
     base: Annotated[str | None, typer.Option("--base", help="기본 URL")] = None,
+    login_path: Annotated[str | None, typer.Option("--login-path", help="로그인 엔드포인트 경로 (기본: .env.local의 YUNHEE_API_LOGIN_PATH 또는 /api/auth/login)")] = None,
+    company: Annotated[str | None, typer.Option("--company", "-c", help="로그인 시 전달할 회사 코드 (companyCode)")] = None,
+    tenant: Annotated[str | None, typer.Option("--tenant", "-t", help="테넌트 식별자 (세션 분리 및 X-Tenant-Id 헤더)")] = None,
     param: Annotated[list[str] | None, typer.Option("--param", "-p", help="쿼리 파라미터 key=val (반복 가능)")] = None,
     body: Annotated[str | None, typer.Option("--body", "-b", help="JSON 요청 본문")] = None,
     raw: Annotated[bool, typer.Option("--raw", help="압축 요약 대신 원본 JSON 본문 출력")] = False,
@@ -384,6 +392,12 @@ def api(
     kw = {}
     if base:
         kw["base_url"] = base
+    if login_path:
+        kw["login_path"] = login_path
+    if company:
+        kw["company_code"] = company
+    if tenant:
+        kw["tenant"] = tenant
 
     res = api_client.request_api(
         method=method,
@@ -444,10 +458,12 @@ def agent_guide():
 
 ## 4. 로그인 기반 API 스모크 검증 시 (토큰 95% 절약)
 - ❌ 절대 금지: curl 등으로 직접 로그인하고 수천 줄의 JSON 응답을 그대로 터미널에 쏟아내지 마세요.
-- ✅ 권장 명령: `yunhee api <METHOD> <PATH> [--as admin|user]`
+- ✅ 권장 명령: `yunhee api <METHOD> <PATH> [--as admin|user] [--company CODE] [--tenant TENANT]`
+  - 예: `yunhee api GET /api/v1/sys/menus/company`
   - 예: `yunhee api GET /api/v1/sys/roles --as admin`
+  - 예: `yunhee api GET /api/v1/sys/user-roles/companies/28000?roleId=28118`
   - 예: `yunhee api POST /api/v1/sys/roles --body '{"role_cd":"TEST"}'`
-- 📄 산출물: 세션 쿠키/JWT가 자동 관리되며, 응답은 `HTTP 200 (rows=12, fields: [...])` 압축 헤더로 요약됩니다.
+- 📄 산출물: 세션 쿠키/JWT가 자동 관리되며(계정 잠금 방지 안전 가드 내장), 응답은 `HTTP 200 (rows=12, fields: [...])` 압축 헤더로 요약됩니다.
 
 ## 5. 현재 설정 및 경로 확인
 - `yunhee config`: Target 디렉터리, Source 디렉터리, DB URL 등 환경 확인.
