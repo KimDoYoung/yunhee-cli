@@ -24,26 +24,9 @@ def summarize_run(
     """명령어 실행 결과를 상용 AI 에이전트 및 사용자가 소비하기 좋은 압축 마크다운으로 가공한다."""
     duration_sec = f"{duration_ms / 1000:.2f}s"
 
-    # 1. 성공 케이스 (exit_code == 0)
+    # 1. 성공 케이스 (exit_code == 0): 정확히 1줄로 단축하여 토큰 낭비 제거
     if exit_code == 0:
-        total_len = len(stdout.strip())
-        lines = [
-            f"### ✅ Execution Succeeded ({duration_sec})",
-            f"- **Command**: `{command}`",
-            f"- **Log File**: `{log_path}`",
-        ]
-        if total_len <= 500:
-            if total_len > 0:
-                lines.append("\n```text")
-                lines.append(stdout.strip())
-                lines.append("```")
-        else:
-            lines.append("\n**Output Summary (Tail):**")
-            lines.append("```text")
-            lines.append(_extract_tail_lines(stdout, n=15))
-            lines.append("```")
-            lines.append(f"_Full output ({total_len} chars) saved to log file._")
-        return "\n".join(lines)
+        return f"✅ Execution Succeeded in {duration_sec}: `{command}` (log: {log_path})"
 
     # 2. 실패 케이스 (exit_code != 0)
     lines = [
@@ -62,7 +45,7 @@ def summarize_run(
         lines.append("\n_No output was produced by the command._")
         return "\n".join(lines)
 
-    # LLM 요약 시도
+    # LLM 요약 시도 (지어내지 않고 원본 로그의 실제 에러 라인을 그대로 발췌하도록 지시)
     llm_summary = None
     if use_llm:
         truncated_output = combined_output
@@ -72,11 +55,11 @@ def summarize_run(
 
         prompt = (
             f"다음은 명령어 `{command}`의 실행 실패 로그입니다.\n"
-            "AI 코딩 에이전트(Claude, Antigravity)가 토큰 낭비 없이 에러를 즉시 파악하고 수정할 수 있도록 핵심만 간결하게 요약해 주세요.\n\n"
-            "반드시 다음 3가지 항목 형식으로 작성해 주세요:\n"
-            "1. **실패 원인**: 1~2줄로 명확한 원인 설명\n"
+            "AI 코딩 에이전트(Claude, Antigravity)가 즉시 원인을 파악할 수 있도록, 원본 로그에서 핵심 줄을 골라 원문 그대로 발췌하세요.\n"
+            "임의로 문장을 지어내거나 추정하지 말고, 로그에 실제로 적힌 내용을 바탕으로만 아래 형식으로 작성해 주세요:\n\n"
+            "1. **실패 원인**: 1줄 요약\n"
             "2. **관련 파일**: 발견된 파일 경로 및 라인 (`경로/파일명:라인번호`), 없으면 '없음'\n"
-            "3. **핵심 에러**: 실제 에러 메시지 2~5줄 발췌 (장황한 스택트레이스는 생략)\n\n"
+            "3. **핵심 에러 (원문 발췌)**:\n```text\n(실제 에러가 발생한 핵심 로그 원문 3~5줄 그대로 인용)\n```\n\n"
             f"[실행 로그]\n{truncated_output}"
         )
         try:

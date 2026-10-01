@@ -94,9 +94,7 @@ def test_summarize_run_success():
         stderr="",
         use_llm=False,
     )
-    assert "✅ Execution Succeeded (1.23s)" in summary
-    assert "`npm test`" in summary
-    assert "Test Suites: 5 passed" in summary
+    assert summary == "✅ Execution Succeeded in 1.23s: `npm test` (log: /path/to/log.log)"
 
 
 def test_summarize_run_failure_without_llm():
@@ -140,7 +138,17 @@ def test_cli_agent_guide():
     res = runner_cli.invoke(cli.app, ["agent-guide"])
     assert res.exit_code == 0
     assert "YUNHEE AI AGENT PROTOCOL" in res.output
-    assert "yunhee prepare" in res.output
+    assert "yunhee outline" in res.output
     assert "yunhee table" in res.output
     assert "yunhee run" in res.output
+
+
+def test_cli_config():
+    runner_cli = CliRunner()
+    res = runner_cli.invoke(cli.app, ["config"])
+    assert res.exit_code == 0
+    assert "Target (Work Dir)" in res.output
+    assert "Source (ASIS)" in res.output
+    assert "Local DB" in res.output
+
 

@@ -21,14 +21,15 @@ uv run yunhee --version          # 버전 출력
 uv run yunhee ask "질문"          # 단발성 질의
 uv run yunhee vec "텍스트"        # bge-m3 임베딩 확인
 uv run yunhee index "텍스트"      # chromadb에 텍스트 저장
-uv run yunhee search "쿼리" -n 3  # 저장된 텍스트 중 유사 검색
-uv run yunhee prepare <PageCode> # ASIS 페이지 요약 (prep과 동일). --force/--show/--delete/--two-stage/--no-grounding
+uv run yunhee config             # 현재 바라보는 Source/Target/DB 설정 확인
 uv run yunhee make-dbml LOCAL_DB # 환경변수의 PostgreSQL 스키마 → ./LOCAL_DB-dbml.md + data/schema/LOCAL_DB.json 스냅샷 (dbml과 동일). --output/-o, --schema(반복 가능)
+uv run yunhee outline src/main/java/.../SysService.java # Java/XML/TS 클래스·메서드 시그니처와 줄 번호 추출 (LLM 없음)
 uv run yunhee table act01_account_code 'sys0*'   # 스냅샷에서 해당 테이블만 DBML로 (stdout은 DBML만, 안내는 stderr)
 uv run yunhee table --page ast01                 # 페이지 mapper가 참조하는 테이블 전부. --db로 스냅샷 선택
-uv run yunhee run "mvn compile"                  # 외부 명령어 실행, 로그 격리 저장 및 Qwen 에러 요약 (exec과 동일)
+uv run yunhee run "mvn compile"                  # 외부 명령어 실행, 성공 시 1줄 / 실패 시 Qwen 원문 에러 요약 (exec과 동일)
 uv run yunhee last-run                           # 가장 최근 실행 결과 및 요약 확인
 uv run yunhee runs                               # 최근 실행 이력 테이블 출력
+uv run yunhee api GET /api/v1/sys/roles          # 테스트 계정 자동 로그인 기반 API 스모크 테스트 (행수/필드 요약)
 uv run yunhee agent-guide                        # 상용 AI 에이전트용 토큰 절약 지침서(Markdown) 출력
 
 uv run tools/parse_mapper.py     # ASIS mapper XML → sqlite mapper_index 빌드 (prepare grounding 검증용)
@@ -62,14 +63,18 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 - `src/yunhee/store/db.py` — sqlite 연결 헬퍼. `data/db/yunhee.db`(`YUNHEE_DIR` 기준, docker가 아니라 로컬 파일)에 연결하며 `get_connection()`이 부모 폴더를 자동 생성한다. 패턴 캐시·트래커 등 로컬 단일 사용자용 상태를 저장할 위치.
 - `src/yunhee/ui/repl.py` — claude-cli 스타일 대화형 REPL. `prompt_toolkit`(히스토리 파일 `~/.yunhee_history`, 슬래시 커맨드 자동완성) + `rich`(스트리밍 출력). 지원 커맨드: `/help`, `/exit`(`/quit`), `/clear`, `/config`(현재 설정값 전부 나열), `/init`(`.yunhee/project.json` 생성/갱신). `/model`은 VRAM 제약상 모델 고정이라 의도적으로 제외. 시작 시 배너와 `/help`/`/config`에 현재 yunhee 버전을 항상 표시한다.
 - `src/yunhee/cli.py` — typer app 진입점(`yunhee` 스크립트). 서브커맨드 없이 실행하면 바로 REPL 진입. `--version`은 `is_eager` 콜백으로 다른 옵션보다 먼저 처리되고 `project.current_version()`을 그대로 출력한다.
-  - `prepare`/`prep`: 같은 `_prepare` 함수를 두 이름으로 등록한 인자형 명령. `page_code`를 검증한 뒤 `context.analyzer.summarize_page()` 결과를 `WORK_DIR/.yunhee/prep/<page_code>.md`에 캐시한다. 캐시가 있으면 재생성 없이 출력하고, `--force`로 재생성, `--show`는 캐시만 출력, `--delete`는 캐시 삭제. qwen 요약 뒤에 `context.schema_context.page_schema_section()`이 만든 "연관 테이블 스키마(DBML)" 섹션을 기계적으로 붙인다 (`--no-schema`로 끔, `--db`로 스냅샷 선택).
+  - `config`: 현재 바라보는 Source/Target 디렉터리, DB URL, 스냅샷 설정 테이블 출력.
   - `make-dbml`/`dbml`: 같은 `_make_dbml` 함수를 두 이름으로 등록한 인자형 명령. 인자는 **DB URL이 아니라 환경변수 이름**(`^[A-Za-z_][A-Za-z0-9_]*$` 검증). `tools.pg_schema.fetch_schema()` → `dbml.render_markdown()` 결과를 `--output`(기본 `WORK_DIR/<ENV_NAME>-dbml.md`)에 저장. 모든 출력의 URL은 `config.redact()`로 비밀번호 마스킹. 같은 결과를 `tools.schema_snapshot.save_snapshot()`으로 JSON 스냅샷에도 저장.
   - `table`: 스냅샷에서 이름/glob/`schema.table` 또는 `--page`로 고른 테이블만 DBML로 출력. DB 접속·LLM 호출 없음.
-  - `run`/`exec`: 외부 명령어를 실행하고 원본 로그는 `WORK_DIR/.yunhee/runs/<run_id>.log`에 저장하며, 로컬 Qwen 14B를 통해 에러를 10~20줄로 압축 요약 리포팅.
+  - `run`/`exec`: 외부 명령어를 실행하고 원본 로그는 `WORK_DIR/.yunhee/runs/<run_id>.log`에 저장하며, 성공 시 정확히 1줄 / 실패 시 Qwen 14B를 통해 에러를 10~20줄로 압축 요약 리포팅.
   - `last-run`/`runs`: 직전 실행 요약 확인 및 실행 이력 목록 테이블 표시.
+  - `outline`: 소스 파일/디렉터리의 클래스·메서드 시그니처와 줄 번호를 LLM 없이 정적 파싱하여 추출.
+  - `api`: 테스트 계정 자동 로그인 세션 기반 API 스모크 테스트 (행수/필드 요약 반환).
 - `src/yunhee/tools/runner.py` — 외부 프로세스 실행(`subprocess.run`). 타임아웃, 원시 로그 파일 영구 저장, 출력 미리보기 자르기(`truncated=True`), `ToolResult` 반환.
+- `src/yunhee/tools/outliner.py` — Java, MyBatis XML, TypeScript, Python 소스의 시그니처와 줄 번호를 추출하는 순수 정적 파서.
+- `src/yunhee/tools/api_client.py` — 자동 로그인 및 세션 관리(`WORK_DIR/.yunhee/sessions/<user>.json`), API 호출 및 응답 압축 요약 도구.
 - `src/yunhee/store/run_tracker.py` — SQLite `runs` 테이블에 실행 이력(명령어, exit code, 소요시간, 로그 경로, 요약 등) 저장 및 조회.
-- `src/yunhee/context/run_analyzer.py` — 실행 결과 압축 요약. 성공 시 간결 헤더, 실패 시 로컬 Qwen 14B로 원인·관련 파일·핵심 에러 추출.
+- `src/yunhee/context/run_analyzer.py` — 실행 결과 압축 요약. 성공 시 1줄, 실패 시 로컬 Qwen 14B로 원인·관련 파일·핵심 에러 원문 추출.
 - `src/yunhee/tools/base.py` — `ToolResult`(ok/data/error/truncated) dataclass. 모든 tool의 공통 반환 스키마.
 - `src/yunhee/tools/legacy_page.py` — ASIS 페이지 소스 수집 tool. 페이지 코드는 GXT 파일명 접두사로 인코딩돼 있어서(`Ast01_Tab_InfoManagement.java`, `ast01_class_tree.xml`) `ASIS_SRC_DIR` 아래에서 파일명이 `<page_code>_`로 시작하는 `.java`/`.xml`을 찾는다(`target/` 제외).
   - `validate_page_code()`: 영문자·숫자·`_`·`-`만 허용하는 allowlist (path traversal 방지).

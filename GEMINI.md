@@ -24,13 +24,15 @@ uv run yunhee ask "질문"          # 단발성 질의
 uv run yunhee vec "텍스트"        # bge-m3 임베딩 확인
 uv run yunhee index "텍스트"      # chromadb에 텍스트 저장
 uv run yunhee search "쿼리" -n 3  # 저장된 텍스트 중 유사 검색
-uv run yunhee prepare <PageCode> # ASIS 페이지 요약 (prep과 동일). --force/--show/--delete/--two-stage/--no-grounding
+uv run yunhee config             # 현재 설정(작업폴더, ASIS소스, DB, Ollama 등) 조회
 uv run yunhee make-dbml LOCAL_DB # 환경변수의 PostgreSQL 스키마 → ./LOCAL_DB-dbml.md + data/schema/LOCAL_DB.json 스냅샷 (dbml과 동일). --output/-o, --schema(반복 가능)
+uv run yunhee outline src/main/java/.../SysService.java # Java/XML/TS 클래스·메서드 시그니처와 줄 번호 추출 (LLM 없음)
 uv run yunhee table act01_account_code 'sys0*'   # 스냅샷에서 해당 테이블만 DBML로 (stdout은 DBML만, 안내는 stderr)
 uv run yunhee table --page ast01                 # 페이지 mapper가 참조하는 테이블 전부. --db로 스냅샷 선택
-uv run yunhee run "mvn compile"                  # 외부 명령어 실행, 로그 격리 저장 및 Qwen 에러 요약 (exec과 동일)
+uv run yunhee run "mvn compile"                  # 외부 명령어 실행, 성공 시 1줄 / 실패 시 Qwen 원문 에러 요약 (exec과 동일)
 uv run yunhee last-run                           # 가장 최근 실행 결과 및 요약 확인
 uv run yunhee runs                               # 최근 실행 이력 테이블 출력
+uv run yunhee api GET /api/v1/sys/roles          # 테스트 계정 자동 로그인 기반 API 스모크 테스트 (행수/필드 요약)
 uv run yunhee agent-guide                        # 상용 AI 에이전트용 토큰 절약 지침서(Markdown) 출력
 
 uv run tools/parse_mapper.py     # ASIS mapper XML → sqlite mapper_index 빌드 (prepare grounding 검증용)
@@ -45,7 +47,7 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 - **Ollama**: `YUNHEE_OLLAMA_URL`(기본 `http://localhost:11434`)에서 `qwen2.5-coder:14b`, `bge-m3:latest` 모델을 서빙 중이어야 `ask`/`chat`/`vec`/`index`/`search`/REPL이 동작한다.
 - **ChromaDB**: `docs/docker-compose.yml`의 `chromadb` 서비스(docker, 8000 포트)로 구동 중이어야 한다. 로컬 파일 기반이 아닌 `chromadb.HttpClient`로 접속한다.
 - **PostgreSQL / DBML**: `make-dbml`은 인자로 받은 이름의 환경변수(`.env.local`의 `LOCAL_DB`, `TEST_DB` 등)에 `postgresql://` URL이 있어야 한다 (`TEST_DB`는 사무실 내부망 전용).
-- **ASIS 소스 및 mapper_index**: `prepare`는 `YUNHEE_ASIS_SRC_DIR`(ASIS 소스 루트)가 유효해야 동작한다. grounding 검증은 `tools/parse_mapper.py`로 `mapper_index`를 미리 빌드해 두어야 정상 작동한다 (인덱스가 없으면 조용히 skip하고 경고만 표시).
+- **ASIS 소스 및 mapper_index**: `table --page` 등 매퍼 연관 테이블 추출 시 `YUNHEE_ASIS_SRC_DIR`(ASIS 소스 루트)가 유효해야 동작한다. 매퍼 인덱스는 `tools/parse_mapper.py`로 빌드할 수 있다.
 
 ---
 
@@ -80,17 +82,21 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
   - VRAM 제약으로 모델 고정이므로 `/model`은 미지원. 시작 배너에 버전 정보 표시.
 - `src/yunhee/cli.py`: Typer 진입점.
   - 서브커맨드 없이 실행 시 REPL 실행. `--version` eager 콜백 지원.
-  - `prepare` (`prep`): ASIS 페이지 요약 마크다운 생성 및 `WORK_DIR/.yunhee/prep/<page_code>.md` 캐싱. 연관 테이블 스키마(DBML) 섹션 부착.
+  - `config`: 현재 환경 설정(작업 대상 폴더 WORK_DIR, ASIS 소스 폴더, DB 접속 정보 마스킹, Ollama URL 등) 조회.
   - `make-dbml` (`dbml`): 환경변수 이름 지정 PostgreSQL 카탈로그 추출 → DBML md 및 JSON 스냅샷 저장. 비밀번호 마스킹.
   - `table`: 스냅샷에서 지정한 테이블/glob/페이지 연관 테이블 DBML 출력.
-  - `run` (`exec`): 외부 명령어 실행, 로그 격리 저장(`.yunhee/runs/<run_id>.log`) 및 로컬 Qwen 14B 에러 압축 리포트.
+  - `run` (`exec`): 외부 명령어 실행, 로그 격리 저장(`.yunhee/runs/<run_id>.log`) 및 성공 시 1줄 / 실패 시 Qwen 14B 에러 압축 리포트.
   - `last-run` / `runs`: 직전 실행 요약 확인 및 실행 이력 목록 테이블 표시.
+  - `outline`: 소스 파일/디렉터리의 클래스·메서드 시그니처와 줄 번호를 LLM 없이 정적 파싱하여 추출.
+  - `api`: 테스트 계정 자동 로그인 세션 기반 API 스모크 테스트 (행수/필드 요약 반환).
 - `src/yunhee/store/run_tracker.py`: SQLite `runs` 테이블에 실행 이력(명령어, exit code, 소요시간, 로그 경로, 요약 등) 저장 및 조회.
 
 ### 3. Tools 및 Context 레이어
 - `src/yunhee/tools/base.py`: 모든 tool의 공통 반환 규격인 `ToolResult` (ok/data/error/truncated) 정의.
 - `src/yunhee/tools/runner.py`: 외부 프로세스 실행 도구 (`subprocess.run`). 타임아웃, 원시 로그 영구 저장, 출력 미리보기 자르기(`truncated=True`), `ToolResult` 반환.
-- `src/yunhee/context/run_analyzer.py`: 실행 결과 압축 요약. 성공 시 간결 헤더, 실패 시 로컬 Qwen 14B로 원인·관련 파일·핵심 에러 추출.
+- `src/yunhee/tools/outliner.py`: Java, MyBatis XML, TypeScript, Python 소스의 시그니처와 줄 번호를 추출하는 순수 정적 파서.
+- `src/yunhee/tools/api_client.py`: 자동 로그인 및 세션 관리(`WORK_DIR/.yunhee/sessions/<user>.json`), API 호출 및 응답 압축 요약 도구.
+- `src/yunhee/context/run_analyzer.py`: 실행 결과 압축 요약. 성공 시 1줄, 실패 시 로컬 Qwen 14B로 원인·관련 파일·핵심 에러 원문 추출.
 - `src/yunhee/tools/legacy_page.py`: ASIS 소스 수집.
   - GXT 파일명 접두사 규칙(`<page_code>_`) 기반 파일 수집 (`target/` 제외).
   - `validate_page_code()`로 경로 순회 방지 allowlist 검증.
@@ -136,7 +142,7 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 - `store/patterns.py`, `store/tracker.py` (진행 상태 추적)
 - **우선순위 로드맵**:
   1. 레거시 소스 인덱싱
-  2. `yunhee prep <PageName>` 컨텍스트 압축·조립 (페이지 요약 단계까지 완료)
+  2. 컨텍스트 압축·조립 최적화 (outline, table, run, api 등)
   3. `yunhee similar <PageName>` 패턴 재사용
   4. `yunhee status` / `yunhee next` 진행 상황 트래커
   5. 기계 판정 기반 루프 (`fix-build`, `check-sql`)

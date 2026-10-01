@@ -7,7 +7,6 @@ import typer
 
 from yunhee import project
 from yunhee.config import OLLAMA_MODEL, SCHEMA_ENV, WORK_DIR, redact
-from yunhee.context.analyzer import summarize_page
 from yunhee.ollama_client import chat, embed
 from yunhee.store.vectorstore import add_texts
 from yunhee.store.vectorstore import search as vector_search
@@ -33,10 +32,12 @@ def main(
     """[bold cyan]yunhee[/bold cyan]: 상용 AI 코딩 에이전트(Claude CLI, Antigravity CLI 등)의 토큰 절약을 위한 독립 로컬 Agent CLI.
 
 [bold yellow]🤖 AI Coding Agent 권장 워크플로우 (Token-Saving Protocol)[/bold yellow]
-  1. [bold green]화면 분석[/bold green]: ASIS Java/XML 소스를 직접 열람하지 말고 [cyan]yunhee prepare <PageCode>[/cyan] 실행 (토큰 95% 절감)
-  2. [bold green]스키마 조회[/bold green]: DDL 검색 대신 [cyan]yunhee table <TablePattern>[/cyan] 또는 [cyan]--page <PageCode>[/cyan] 사용
-  3. [bold green]빌드/테스트[/bold green]: 셸에서 직접 돌리지 말고 [cyan]yunhee run "<Command>"[/cyan] 로 감싸서 실행 (원시 로그 격리, Qwen 에러 요약 수신)
-  4. [bold green]에이전트 지침서[/bold green]: [cyan]yunhee agent-guide[/cyan] 명령으로 AI 행동 지침서 마크다운 전문 출력
+  1. [bold green]TOBE 위치 파악[/bold green]: 파일 전체 읽기 금지! [cyan]yunhee outline <경로>[/cyan] 로 시그니처와 줄 번호만 확인
+  2. [bold green]DB 스키마 조회[/bold green]: DDL 검색 대신 [cyan]yunhee table <TablePattern>[/cyan] 로 필요한 DBML만 추출
+  3. [bold green]빌드/테스트[/bold green]: 셸 직실행 금지! [cyan]yunhee run "<Command>"[/cyan] 로 1줄 성공 / 에러 압축 리포트 수신
+  4. [bold green]API 검증[/bold green]: [cyan]yunhee api GET <경로> --as admin[/cyan] 으로 자동 로그인 스모크 테스트 (행 수/키 목록)
+  5. [bold green]설정 확인[/bold green]: [cyan]yunhee config[/cyan] 로 Source/Target 폴더 및 DB 설정 확인
+  6. [bold green]에이전트 지침서[/bold green]: [cyan]yunhee agent-guide[/cyan] 명령으로 AI 행동 지침서 마크다운 전문 출력
 
 서브커맨드 없이 실행하면 대화형 REPL로 진입합니다.
 """
@@ -85,74 +86,33 @@ def search(query_text: str, n: int = 3):
     for doc, dist in zip(docs, dists):
         print(f"[{dist:.4f}] {doc}")
 
-def _prepare(
-    page_code: str,
-    model: str = OLLAMA_MODEL,
-    force: bool = False,
-    show: bool = False,
-    delete: bool = False,
-    two_stage: bool = typer.Option(False, "--two-stage", help="파일별 mini-summary 후 합산 (느리지만 전체 파일 반영)"),
-    no_grounding: bool = typer.Option(False, "--no-grounding", help="mapper_index 환각 검증 패스 건너뜀"),
-    no_schema: bool = typer.Option(False, "--no-schema", help="연관 테이블 DBML 섹션을 붙이지 않음"),
-    db: str = typer.Option(SCHEMA_ENV, "--db", help="연관 테이블을 조회할 스키마 스냅샷 (make-dbml의 환경변수 이름)"),
-):
-    """ASIS 페이지 소스를 Qwen 14B로 요약해 캐시하고 연관 DBML을 부착 (prepare == prep)
+@app.command(name="config")
+def config_cmd():
+    """현재 yunhee가 바라보는 설정(Source 경로, Target 경로, DB 접속 정보 등)을 확인"""
+    from rich.console import Console
+    from rich.table import Table
 
-[bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
-  ASIS 소스(Java/GXT/XML)를 직접 대량 열람하지 마세요. 이 명령의 결과 마크다운만 소비하면 토큰의 95%가 절약됩니다.
-"""
-    from yunhee.tools.legacy_page import validate_page_code
+    from yunhee import config
 
-    err = validate_page_code(page_code)
-    if err:
-        print(f"오류: {err}")
-        raise typer.Exit(code=1)
+    table = Table(title="yunhee 설정 정보")
+    table.add_column("항목", style="cyan", no_wrap=True)
+    table.add_column("현재 설정값", style="green")
+    table.add_column("설명 및 변경 방법", style="dim")
 
-    cache_dir = project.PROJECT_DIR / "prep"
-    cache_file = cache_dir / f"{page_code}.md"
+    cfg = config.summary()
+    table.add_row("Target (Work Dir)", cfg["work-dir"], "현재 터미널 작업 디렉터리 (cd로 이동하여 변경)")
+    table.add_row("Source (ASIS)", cfg["asis-src"], ".env.local의 YUNHEE_ASIS_SRC_DIR")
+    table.add_row("Local DB", cfg["local-db"], ".env.local의 LOCAL_DB")
+    table.add_row("Test DB", cfg["test-db"], ".env.local의 TEST_DB")
+    table.add_row("Schema Snapshot", cfg["schema-env"], ".env.local의 YUNHEE_SCHEMA_ENV")
+    table.add_row("Yunhee Home", cfg["yunhee-dir"], "yunhee-cli 설치 경로")
+    table.add_row("Env File", cfg["env-file"], "설정 파일 (.env.local)")
+    table.add_row("Ollama URL", cfg["ollama-url"], ".env.local의 YUNHEE_OLLAMA_URL")
+    table.add_row("Ollama Model", cfg["ollama-model"], ".env.local의 YUNHEE_OLLAMA_MODEL")
 
-    if delete:
-        if cache_file.exists():
-            cache_file.unlink()
-            print(f"삭제됨: {cache_file}")
-        else:
-            print(f"캐시가 없습니다: {cache_file}")
-        return
+    console = Console()
+    console.print(table)
 
-    if show:
-        if not cache_file.exists():
-            print(f"캐시가 없습니다: {cache_file} (먼저 'yunhee prepare {page_code}' 실행하세요)")
-            raise typer.Exit(code=1)
-        print(cache_file.read_text())
-        return
-
-    if cache_file.exists() and not force:
-        print(cache_file.read_text())
-        return
-
-    try:
-        summary = summarize_page(
-            page_code,
-            model=model,
-            two_stage=two_stage,
-            grounding=not no_grounding,
-        )
-    except ValueError as e:
-        print(f"오류: {e}")
-        raise typer.Exit(code=1) from e
-
-    if not no_schema:
-        from yunhee.context.schema_context import page_schema_section
-
-        summary = f"{summary.rstrip()}\n\n{page_schema_section(page_code, db)}"
-
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_file.write_text(summary)
-    print(summary)
-
-
-app.command(name="prepare")(_prepare)
-app.command(name="prep")(_prepare)
 
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -368,6 +328,85 @@ def list_runs_cmd(
     console.print(table)
 
 
+@app.command()
+def outline(
+    path: Annotated[str, typer.Argument(help="분석할 파일 또는 디렉터리 경로")],
+    limit: Annotated[int, typer.Option("--limit", help="최대 글자 수 제한")] = 30000,
+):
+    """소스 파일(Java, XML, TS/TSX, Python) 또는 디렉터리의 클래스·메서드·시그니처와 줄 번호를 추출 (LLM 호출 없음)
+
+[bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
+  TOBE 기존 코드(Service, Controller, Mapper XML 등) 전체를 읽지 마세요. 이 명령으로 메서드 위치와 줄 번호를 파악한 뒤 필요한 줄만 핀포인트로 읽으세요.
+"""
+    from yunhee.tools.outliner import outline_path
+
+    res = outline_path(path, char_limit=limit)
+    if not res.ok:
+        typer.echo(f"오류: {res.error}", err=True)
+        raise typer.Exit(code=1)
+    print(res.data)
+
+
+@app.command()
+def api(
+    method: Annotated[str, typer.Argument(help="HTTP 메서드 (GET, POST, PUT, DELETE)")],
+    path: Annotated[str, typer.Argument(help="호출할 API 경로 (예: /api/v1/sys/roles)")],
+    as_role: Annotated[str, typer.Option("--as", help="로그인 역할 (admin 또는 user)")] = "admin",
+    base: Annotated[str | None, typer.Option("--base", help="기본 URL")] = None,
+    param: Annotated[list[str] | None, typer.Option("--param", "-p", help="쿼리 파라미터 key=val (반복 가능)")] = None,
+    body: Annotated[str | None, typer.Option("--body", "-b", help="JSON 요청 본문")] = None,
+    raw: Annotated[bool, typer.Option("--raw", help="압축 요약 대신 원본 JSON 본문 출력")] = False,
+):
+    """테스트 계정으로 자동 로그인하여 API를 호출하고 응답 요약(상태코드, 행수, 필드목록)을 확인 (LLM 호출 없음)
+
+[bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
+  수천 줄의 원시 응답 JSON 대신 이 명령으로 행 수(rows=N)와 키 목록만 2~3줄로 확인하여 토큰을 절약하세요.
+"""
+    import json
+
+    from yunhee.tools import api_client
+
+    params_dict = {}
+    if param:
+        for p in param:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                params_dict[k] = v
+
+    json_body = None
+    if body:
+        try:
+            json_body = json.loads(body)
+        except Exception as e:  # noqa: BLE001
+            typer.echo(f"오류: JSON 본문 파싱 실패: {e}", err=True)
+            raise typer.Exit(code=1)
+
+    kw = {}
+    if base:
+        kw["base_url"] = base
+
+    res = api_client.request_api(
+        method=method,
+        path=path,
+        as_role=as_role,
+        params=params_dict or None,
+        json_body=json_body,
+        **kw,
+    )
+
+    if not res.ok and not res.data:
+        typer.echo(f"오류: {res.error}", err=True)
+        raise typer.Exit(code=1)
+
+    if raw:
+        print(res.data.get("text", ""))
+    else:
+        print(res.data.get("summary", ""))
+
+    if not res.ok:
+        raise typer.Exit(code=1)
+
+
 @app.command(name="agent-guide")
 def agent_guide():
     """상용 AI 에이전트(Claude, Antigravity)가 따라야 할 토큰 절약 지침서(Markdown)를 출력"""
@@ -379,28 +418,39 @@ def agent_guide():
 
 ---
 
-## 1. ASIS 레거시 화면 분석 시 (토큰 95% 절약)
-- ❌ 절대 금지: ASIS 소스 디렉터리의 Java/GXT/XML 파일들을 직접 view_file이나 cat으로 대량 열람하지 마세요.
-- ✅ 권장 명령: `yunhee prepare <화면코드>` (예: `yunhee prepare Sys04`, `yunhee prepare Emp00 --two-stage`)
-- 📄 산출물: GXT 보일러플레이트가 제거된 화면 레이아웃, 그리드 컬럼, 폼 필드, 이벤트, 검증된 SQL ID, 연관 테이블 DBML만 약 2,000토큰으로 압축 제공됩니다.
+## 1. TOBE 기존 코드 위치 파악 시 (토큰 95% 절약)
+- ❌ 절대 금지: Service, Controller, Mapper XML, TypeScript 파일을 통째로 view_file로 읽지 마세요.
+- ✅ 권장 명령: `yunhee outline <파일 또는 디렉터리 경로>`
+  - 예: `yunhee outline src/main/java/.../SysMenuService.java`
+  - 예: `yunhee outline src/main/resources/mapper/`
+  - 예: `yunhee outline frontend/src/api/sys.ts`
+- 📄 산출물: 클래스/메서드 시그니처, 스프링 @GetMapping/PostMapping 경로, MyBatis statement id, TS export 함수와 **줄 번호**만 정밀 추출됩니다. 줄 번호를 확인한 뒤 꼭 필요한 몇 줄만 읽으세요.
 
 ## 2. DB 스키마 확인 시 (토큰 90% 절약)
 - ❌ 절대 금지: 전체 DB DDL이나 거대한 스키마 파일을 검색하거나, PostgreSQL 카탈로그를 직접 조회하지 마세요.
 - ✅ 권장 명령:
   - 특정 테이블: `yunhee table <테이블명>` (예: `yunhee table sys04_role`)
   - 패턴 검색: `yunhee table '<패턴>'` (예: `yunhee table 'emp00_*'`)
-  - 화면 연관 테이블: `yunhee table --page <화면코드>` (예: `yunhee table --page Org01`)
 - 📄 산출물: 컬럼, 타입, 코멘트, PK/FK, Enum만 정제된 순수 DBML 블록으로 제공됩니다.
 
-## 3. 컴파일, 빌드, 린트, 테스트 실행 시 (토큰 95% 절약)
+## 3. 컴파일, 빌드, 린트, 테스트 실행 시 (토큰 98% 절약)
 - ❌ 절대 금지: `mvn compile`, `./gradlew build`, `npm run build`, `pytest` 등을 셸에서 직접 실행하지 마세요. (수천 줄의 빌드 로그로 컨텍스트가 오염됩니다)
-- ✅ 권장 명령: `yunhee run "<실행명령어>"` (예: `yunhee run "mvn compile"`, `yunhee run "npx tsc -b --noEmit"`)
+- ✅ 권장 명령: `yunhee run "<실행명령어>"` (예: `yunhee run "./gradlew compileJava"`, `yunhee run "npx tsc -b --noEmit"`)
 - 📄 산출물:
-  - 원시 전체 로그는 `.yunhee/runs/<run_id>.log` 파일에 영구 격리 저장됩니다.
-  - 성공 시: `✅ Execution Succeeded (소요시간)` 1줄만 반환됩니다.
-  - 실패 시: 로컬 Qwen 14B가 1) 실패 원인, 2) 관련 파일:라인, 3) 핵심 에러 메시지만 10~20줄로 요약해 반환합니다.
+  - 성공 시: `✅ Execution Succeeded in X.Xs (log: ...)` 정확히 1줄만 반환됩니다.
+  - 실패 시: 원시 전체 로그는 `.yunhee/runs/<run_id>.log`에 저장되고, 1) 실패 원인, 2) 관련 파일:라인, 3) 핵심 에러 원문 발췌만 요약 제공됩니다.
 - 직전 실행 결과 재확인: `yunhee last-run`
 - 최근 실행 이력 표: `yunhee runs`
+
+## 4. 로그인 기반 API 스모크 검증 시 (토큰 95% 절약)
+- ❌ 절대 금지: curl 등으로 직접 로그인하고 수천 줄의 JSON 응답을 그대로 터미널에 쏟아내지 마세요.
+- ✅ 권장 명령: `yunhee api <METHOD> <PATH> [--as admin|user]`
+  - 예: `yunhee api GET /api/v1/sys/roles --as admin`
+  - 예: `yunhee api POST /api/v1/sys/roles --body '{"role_cd":"TEST"}'`
+- 📄 산출물: 세션 쿠키/JWT가 자동 관리되며, 응답은 `HTTP 200 (rows=12, fields: [...])` 압축 헤더로 요약됩니다.
+
+## 5. 현재 설정 및 경로 확인
+- `yunhee config`: Target 디렉터리, Source 디렉터리, DB URL 등 환경 확인.
 """
     print(guide.strip())
 
