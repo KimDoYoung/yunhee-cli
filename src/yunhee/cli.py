@@ -227,5 +227,125 @@ def table(
         raise typer.Exit(code=1)
 
 
+def _get_project_name() -> str:
+    proj_data = project.load()
+    if proj_data and proj_data.get("name"):
+        return proj_data["name"]
+    return WORK_DIR.name
+
+
+def _run_exec(
+    command: Annotated[str, typer.Argument(help="실행할 셸 명령어")],
+    timeout: Annotated[int, typer.Option("--timeout", "-t", help="타임아웃(초)")] = 120,
+    no_llm: Annotated[bool, typer.Option("--no-llm", help="실패 시 로컬 Qwen 요약을 건너뜀")] = False,
+    raw: Annotated[bool, typer.Option("--raw", help="요약 없이 원시 출력을 그대로 출력")] = False,
+):
+    """외부 명령어를 실행하고 로그를 .yunhee/runs에 저장한 뒤 압축 요약 리포트를 출력 (run == exec)"""
+    from yunhee.context.run_analyzer import summarize_run
+    from yunhee.store import run_tracker
+    from yunhee.tools.runner import execute_command
+
+    result = execute_command(command, timeout=timeout)
+    data = result.data
+    project_name = _get_project_name()
+
+    if raw:
+        if data["stdout"]:
+            print(data["stdout"], end="" if data["stdout"].endswith("\n") else "\n")
+        if data["stderr"]:
+            typer.echo(data["stderr"], err=True)
+        summary = None
+    else:
+        summary = summarize_run(
+            command=data["command"],
+            exit_code=data["exit_code"],
+            duration_ms=data["duration_ms"],
+            log_path=data["log_path"],
+            stdout=data["stdout"],
+            stderr=data["stderr"],
+            use_llm=not no_llm,
+        )
+        print(summary)
+
+    run_tracker.save_run(
+        run_id=data["run_id"],
+        project=project_name,
+        command=data["command"],
+        exit_code=data["exit_code"],
+        duration_ms=data["duration_ms"],
+        log_path=data["log_path"],
+        summary=summary,
+    )
+
+    if data["exit_code"] != 0:
+        raise typer.Exit(code=data["exit_code"] if 0 <= data["exit_code"] <= 255 else 1)
+
+
+app.command(name="run")(_run_exec)
+app.command(name="exec")(_run_exec)
+
+
+@app.command(name="last-run")
+def last_run():
+    """가장 최근에 실행한 외부 명령어 결과와 요약을 확인"""
+    from yunhee.store import run_tracker
+
+    project_name = _get_project_name()
+    last = run_tracker.get_last_run(project_name)
+    if not last:
+        print(f"프로젝트 '{project_name}'의 실행 이력이 없습니다.")
+        return
+
+    if last.get("summary"):
+        print(last["summary"])
+    else:
+        status_icon = "✅" if last["exit_code"] == 0 else "❌"
+        duration_sec = f"{last['duration_ms'] / 1000:.2f}s"
+        print(f"{status_icon} Exit Code: {last['exit_code']} ({duration_sec})")
+        print(f"Command: {last['command']}")
+        print(f"Log: {last['log_path']}")
+        print(f"Created: {last['created_at']}")
+
+
+@app.command(name="runs")
+def list_runs_cmd(
+    limit: Annotated[int, typer.Option("--limit", "-n", help="표시할 최근 실행 수")] = 10,
+):
+    """최근 실행 이력을 표 형태로 출력"""
+    from rich.console import Console
+    from rich.table import Table
+
+    from yunhee.store import run_tracker
+
+    project_name = _get_project_name()
+    records = run_tracker.list_runs(project_name, limit=limit)
+    if not records:
+        print(f"프로젝트 '{project_name}'의 실행 이력이 없습니다.")
+        return
+
+    table = Table(title=f"실행 이력 (Project: {project_name})")
+    table.add_column("Run ID", style="dim", no_wrap=True)
+    table.add_column("Command", style="cyan")
+    table.add_column("Exit", justify="right")
+    table.add_column("Duration", justify="right")
+    table.add_column("Created At", style="dim")
+    table.add_column("Log Path", style="magenta")
+
+    for r in records:
+        exit_style = "green" if r["exit_code"] == 0 else "red"
+        duration_str = f"{r['duration_ms'] / 1000:.2f}s"
+        table.add_row(
+            r["id"],
+            r["command"],
+            f"[{exit_style}]{r['exit_code']}[/{exit_style}]",
+            duration_str,
+            r["created_at"][:19].replace("T", " "),
+            r["log_path"],
+        )
+
+    console = Console()
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()

@@ -13,3 +13,4 @@ wheels/
 
 # Local runtime data (sqlite db, etc.)
 data/
+.yunhee/
