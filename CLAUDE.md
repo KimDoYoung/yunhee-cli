@@ -29,6 +29,7 @@ uv run yunhee table --page ast01                 # 페이지 mapper가 참조하
 uv run yunhee run "mvn compile"                  # 외부 명령어 실행, 로그 격리 저장 및 Qwen 에러 요약 (exec과 동일)
 uv run yunhee last-run                           # 가장 최근 실행 결과 및 요약 확인
 uv run yunhee runs                               # 최근 실행 이력 테이블 출력
+uv run yunhee agent-guide                        # 상용 AI 에이전트용 토큰 절약 지침서(Markdown) 출력
 
 uv run tools/parse_mapper.py     # ASIS mapper XML → sqlite mapper_index 빌드 (prepare grounding 검증용)
 

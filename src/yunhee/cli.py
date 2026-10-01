@@ -13,7 +13,7 @@ from yunhee.store.vectorstore import add_texts
 from yunhee.store.vectorstore import search as vector_search
 from yunhee.ui.repl import run_repl
 
-app = typer.Typer()
+app = typer.Typer(rich_markup_mode="rich")
 
 
 def _version_callback(value: bool) -> None:
@@ -30,7 +30,16 @@ def main(
         False, "--version", callback=_version_callback, is_eager=True, help="버전 출력"
     ),
 ):
-    """서브커맨드 없이 실행하면 바로 REPL 진입"""
+    """[bold cyan]yunhee[/bold cyan]: 상용 AI 코딩 에이전트(Claude CLI, Antigravity CLI 등)의 토큰 절약을 위한 독립 로컬 Agent CLI.
+
+[bold yellow]🤖 AI Coding Agent 권장 워크플로우 (Token-Saving Protocol)[/bold yellow]
+  1. [bold green]화면 분석[/bold green]: ASIS Java/XML 소스를 직접 열람하지 말고 [cyan]yunhee prepare <PageCode>[/cyan] 실행 (토큰 95% 절감)
+  2. [bold green]스키마 조회[/bold green]: DDL 검색 대신 [cyan]yunhee table <TablePattern>[/cyan] 또는 [cyan]--page <PageCode>[/cyan] 사용
+  3. [bold green]빌드/테스트[/bold green]: 셸에서 직접 돌리지 말고 [cyan]yunhee run "<Command>"[/cyan] 로 감싸서 실행 (원시 로그 격리, Qwen 에러 요약 수신)
+  4. [bold green]에이전트 지침서[/bold green]: [cyan]yunhee agent-guide[/cyan] 명령으로 AI 행동 지침서 마크다운 전문 출력
+
+서브커맨드 없이 실행하면 대화형 REPL로 진입합니다.
+"""
     if ctx.invoked_subcommand is None:
         run_repl(model=model)
 
@@ -87,7 +96,11 @@ def _prepare(
     no_schema: bool = typer.Option(False, "--no-schema", help="연관 테이블 DBML 섹션을 붙이지 않음"),
     db: str = typer.Option(SCHEMA_ENV, "--db", help="연관 테이블을 조회할 스키마 스냅샷 (make-dbml의 환경변수 이름)"),
 ):
-    """ASIS 페이지 소스를 qwen으로 요약해 .yunhee/prep/<page_code>.md에 캐시 (prepare == prep, 완전히 동일)"""
+    """ASIS 페이지 소스를 Qwen 14B로 요약해 캐시하고 연관 DBML을 부착 (prepare == prep)
+
+[bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
+  ASIS 소스(Java/GXT/XML)를 직접 대량 열람하지 마세요. 이 명령의 결과 마크다운만 소비하면 토큰의 95%가 절약됩니다.
+"""
     from yunhee.tools.legacy_page import validate_page_code
 
     err = validate_page_code(page_code)
@@ -194,7 +207,11 @@ def table(
     page: Annotated[str | None, typer.Option("--page", help="ASIS 페이지 코드 — mapper가 참조하는 테이블 전부")] = None,
     db: Annotated[str, typer.Option("--db", help="스키마 스냅샷 (make-dbml의 환경변수 이름)")] = SCHEMA_ENV,
 ):
-    """스키마 스냅샷에서 지정한 테이블만 DBML로 출력 (DB 접속·LLM 호출 없음)"""
+    """스키마 스냅샷에서 지정한 테이블만 DBML로 출력 (DB 접속·LLM 호출 없음)
+
+[bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
+  전체 DDL 파일을 검색하거나 DB에 임의 조회하지 마세요. 필요한 테이블 DBML만 이 명령으로 추출해 사용하세요.
+"""
     from yunhee.tools.page_schema import page_tables
     from yunhee.tools.schema_snapshot import load_snapshot, slice_tables
 
@@ -240,7 +257,11 @@ def _run_exec(
     no_llm: Annotated[bool, typer.Option("--no-llm", help="실패 시 로컬 Qwen 요약을 건너뜀")] = False,
     raw: Annotated[bool, typer.Option("--raw", help="요약 없이 원시 출력을 그대로 출력")] = False,
 ):
-    """외부 명령어를 실행하고 로그를 .yunhee/runs에 저장한 뒤 압축 요약 리포트를 출력 (run == exec)"""
+    """외부 명령어(빌드, 테스트, 스크립트 등)를 실행하고 원시 로그는 .yunhee/runs에 격리 저장하며 Qwen 에러 압축 리포트 출력 (run == exec)
+
+[bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
+  mvn, gradle, npm, pytest 등을 직접 실행하지 마세요. 수천 줄의 빌드 로그 대신 이 명령으로 Qwen의 10~20줄 핵심 에러 요약만 받아 디버깅하세요.
+"""
     from yunhee.context.run_analyzer import summarize_run
     from yunhee.store import run_tracker
     from yunhee.tools.runner import execute_command
@@ -345,6 +366,43 @@ def list_runs_cmd(
 
     console = Console()
     console.print(table)
+
+
+@app.command(name="agent-guide")
+def agent_guide():
+    """상용 AI 에이전트(Claude, Antigravity)가 따라야 할 토큰 절약 지침서(Markdown)를 출력"""
+    guide = """# YUNHEE AI AGENT PROTOCOL (토큰 절약 행동 수칙)
+
+당신은 이 프로젝트를 작업하는 상용 AI 코딩 어시스턴트(Claude, Antigravity, Gemini 등)입니다.
+이 환경에는 토큰 소모를 극적으로 줄이기 위한 독립 로컬 CLI인 `yunhee`가 설치되어 있습니다.
+작업 시 아래 규칙을 반드시 준수하여 불필요한 토큰 낭비를 원천 차단하세요.
+
+---
+
+## 1. ASIS 레거시 화면 분석 시 (토큰 95% 절약)
+- ❌ 절대 금지: ASIS 소스 디렉터리의 Java/GXT/XML 파일들을 직접 view_file이나 cat으로 대량 열람하지 마세요.
+- ✅ 권장 명령: `yunhee prepare <화면코드>` (예: `yunhee prepare Sys04`, `yunhee prepare Emp00 --two-stage`)
+- 📄 산출물: GXT 보일러플레이트가 제거된 화면 레이아웃, 그리드 컬럼, 폼 필드, 이벤트, 검증된 SQL ID, 연관 테이블 DBML만 약 2,000토큰으로 압축 제공됩니다.
+
+## 2. DB 스키마 확인 시 (토큰 90% 절약)
+- ❌ 절대 금지: 전체 DB DDL이나 거대한 스키마 파일을 검색하거나, PostgreSQL 카탈로그를 직접 조회하지 마세요.
+- ✅ 권장 명령:
+  - 특정 테이블: `yunhee table <테이블명>` (예: `yunhee table sys04_role`)
+  - 패턴 검색: `yunhee table '<패턴>'` (예: `yunhee table 'emp00_*'`)
+  - 화면 연관 테이블: `yunhee table --page <화면코드>` (예: `yunhee table --page Org01`)
+- 📄 산출물: 컬럼, 타입, 코멘트, PK/FK, Enum만 정제된 순수 DBML 블록으로 제공됩니다.
+
+## 3. 컴파일, 빌드, 린트, 테스트 실행 시 (토큰 95% 절약)
+- ❌ 절대 금지: `mvn compile`, `./gradlew build`, `npm run build`, `pytest` 등을 셸에서 직접 실행하지 마세요. (수천 줄의 빌드 로그로 컨텍스트가 오염됩니다)
+- ✅ 권장 명령: `yunhee run "<실행명령어>"` (예: `yunhee run "mvn compile"`, `yunhee run "npx tsc -b --noEmit"`)
+- 📄 산출물:
+  - 원시 전체 로그는 `.yunhee/runs/<run_id>.log` 파일에 영구 격리 저장됩니다.
+  - 성공 시: `✅ Execution Succeeded (소요시간)` 1줄만 반환됩니다.
+  - 실패 시: 로컬 Qwen 14B가 1) 실패 원인, 2) 관련 파일:라인, 3) 핵심 에러 메시지만 10~20줄로 요약해 반환합니다.
+- 직전 실행 결과 재확인: `yunhee last-run`
+- 최근 실행 이력 표: `yunhee runs`
+"""
+    print(guide.strip())
 
 
 if __name__ == "__main__":

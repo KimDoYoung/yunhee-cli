@@ -133,3 +133,14 @@ def test_cli_run_and_history(tmp_path: Path, monkeypatch):
     assert res_runs.exit_code == 0
     assert "echo" in res_runs.output
     assert "test" in res_runs.output
+
+
+def test_cli_agent_guide():
+    runner_cli = CliRunner()
+    res = runner_cli.invoke(cli.app, ["agent-guide"])
+    assert res.exit_code == 0
+    assert "YUNHEE AI AGENT PROTOCOL" in res.output
+    assert "yunhee prepare" in res.output
+    assert "yunhee table" in res.output
+    assert "yunhee run" in res.output
+
