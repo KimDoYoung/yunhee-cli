@@ -364,6 +364,7 @@ def api(
     param: Annotated[list[str] | None, typer.Option("--param", "-p", help="쿼리 파라미터 key=val (반복 가능)")] = None,
     body: Annotated[str | None, typer.Option("--body", "-b", help="JSON 요청 본문")] = None,
     raw: Annotated[bool, typer.Option("--raw", help="압축 요약 대신 원본 JSON 본문 출력")] = False,
+    timeout: Annotated[float | None, typer.Option("--timeout", help="요청 타임아웃(초) (기본: .env.local의 YUNHEE_API_TIMEOUT 또는 15)")] = None,
 ):
     """테스트 계정으로 자동 로그인하여 API를 호출하고 응답 요약(상태코드, 행수, 필드목록)을 확인 (LLM 호출 없음)
 
@@ -405,6 +406,7 @@ def api(
         as_role=as_role,
         params=params_dict or None,
         json_body=json_body,
+        timeout=timeout,
         **kw,
     )
 

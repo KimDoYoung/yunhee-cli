@@ -104,6 +104,8 @@ def login(
             headers=req_headers,
             timeout=10.0,
         )
+    except httpx.TimeoutException:
+        return ToolResult(ok=False, error=f"로그인 응답 시간 초과 (10s) — POST {url}")
     except Exception as exc:  # noqa: BLE001
         return ToolResult(ok=False, error=f"로그인 연결 실패 ({url}): {exc}")
 
@@ -188,6 +190,14 @@ def summarize_response(status_code: int, text: str, duration_ms: int, tenant: st
     return "\n".join(lines)
 
 
+def _timeout_message(timeout: float, method: str, path: str) -> str:
+    """시간 초과는 느린 SQL 신호로 쓰이므로 연결 실패와 다른 문구로 낸다."""
+    return (
+        f"응답 시간 초과 ({timeout:g}s) — {method.upper()} {path}\n"
+        f"      서버 처리가 느립니다. 필요하면 --timeout 60 으로 늘리세요."
+    )
+
+
 def request_api(
     method: str,
     path: str,
@@ -199,6 +209,7 @@ def request_api(
     params: dict[str, Any] | None = None,
     json_body: Any | None = None,
     auto_login: bool = True,
+    timeout: float | None = None,
 ) -> ToolResult:
     """인증 세션을 사용하여 API를 호출하고 결과를 요약 반환한다.
     
@@ -234,6 +245,9 @@ def request_api(
 
     import time
 
+    if timeout is None:
+        timeout = config.API_TIMEOUT
+
     start = time.perf_counter()
     try:
         resp = httpx.request(
@@ -243,9 +257,11 @@ def request_api(
             json=json_body,
             cookies=cookies,
             headers=headers,
-            timeout=15.0,
+            timeout=timeout,
         )
         duration_ms = int((time.perf_counter() - start) * 1000)
+    except httpx.TimeoutException:
+        return ToolResult(ok=False, error=_timeout_message(timeout, method, path))
     except Exception as exc:  # noqa: BLE001
         return ToolResult(ok=False, error=f"API 요청 실패 ({method} {url}): {exc}")
 
@@ -276,9 +292,11 @@ def request_api(
                 json=json_body,
                 cookies=session.get("cookies", {}),
                 headers=new_headers,
-                timeout=15.0,
+                timeout=timeout,
             )
             duration_ms = int((time.perf_counter() - start) * 1000)
+        except httpx.TimeoutException:
+            return ToolResult(ok=False, error=_timeout_message(timeout, method, path))
         except Exception as exc:  # noqa: BLE001
             return ToolResult(ok=False, error=f"재시도 요청 실패: {exc}")
 

@@ -46,6 +46,18 @@ TEST_COMPANY = os.getenv("YUNHEE_TEST_COMPANY")
 API_TENANT_HOST = os.getenv("YUNHEE_API_TENANT_HOST", "{tenant}.localhost")
 
 
+def _float_env(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, ""))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+# yunhee api 요청 타임아웃(초). 로그인 요청은 10초 고정.
+API_TIMEOUT = _float_env("YUNHEE_API_TIMEOUT", 15.0)
+
+
 def redact(url: str | None) -> str:
     """postgresql://user:password@host/db 형태에서 비밀번호를 가린다."""
     if not url:
@@ -77,6 +89,7 @@ def summary() -> dict[str, str]:
         "api-base": API_BASE_URL,
         "api-login-path": API_LOGIN_PATH,
         "api-tenant-host": API_TENANT_HOST,
+        "api-timeout": f"{API_TIMEOUT:g}s",
         "test-admin-user": TEST_ADMIN_USER,
         "test-company": TEST_COMPANY or "(not set)",
     }

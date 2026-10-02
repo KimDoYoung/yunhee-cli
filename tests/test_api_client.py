@@ -288,3 +288,34 @@ def test_tenant_host_header_behavior(monkeypatch, tmp_path: Path):
     assert "Host" not in captured_req_headers
 
 
+
+
+def test_request_api_timeout_message(monkeypatch, tmp_path: Path):
+    import httpx
+
+    monkeypatch.setattr(api_client, "get_sessions_dir", lambda: tmp_path)
+    seen: dict = {}
+
+    def mock_request(*args, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr("httpx.request", mock_request)
+
+    res = api_client.request_api("GET", "/api/v1/sys/login-histories", auto_login=False, timeout=0.5)
+    assert res.ok is False
+    assert seen["timeout"] == 0.5
+    assert "응답 시간 초과 (0.5s) — GET /api/v1/sys/login-histories" in res.error
+    assert "--timeout 60" in res.error
+    assert "API 요청 실패" not in res.error
+
+    # 미지정 시 config.API_TIMEOUT 기본값 사용
+    monkeypatch.setattr(api_client.config, "API_TIMEOUT", 7.0)
+    api_client.request_api("GET", "/x", auto_login=False)
+    assert seen["timeout"] == 7.0
+
+    # CLI --timeout 전달
+    cli_res = CliRunner().invoke(cli.app, ["api", "GET", "/x", "--timeout", "0.001"])
+    assert cli_res.exit_code == 1
+    assert seen["timeout"] == 0.001
+    assert "응답 시간 초과 (0.001s)" in cli_res.output

@@ -315,3 +315,150 @@ class Service {
     tenant_lines = [line for line in lines if "Tenant" in line]
     assert len(tenant_lines) == 1
 
+
+
+def test_outline_java_annotation_with_equals_multiline_throws(tmp_path: Path):
+    java_code = """package com.example.demo;
+
+public class FileController {
+
+    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasRole('ADMIN') and hasAuthority(foo(1))")
+    public ApiResponse<FileItemDto> uploadFile(
+            @RequestParam("file") MultipartFile file,
+            @AuthenticationPrincipal UserPrincipal principal) throws IOException {
+        log.info("upload: {}", file.getOriginalFilename());
+        auditLogService.record(AuditEventType.FILE_UPLOAD, principal);
+        return ApiResponse.ok(null);
+    }
+
+    @Transactional(readOnly = true)
+    public List<FileItemDto> listFiles() {
+        return List.of();
+    }
+}
+"""
+    f = tmp_path / "FileController.java"
+    f.write_text(java_code, encoding="utf-8")
+
+    lines = outliner.outline_file(f)
+    joined = "\n".join(lines)
+    assert "ApiResponse<FileItemDto> uploadFile(MultipartFile file, UserPrincipal principal)" in joined
+    assert "List<FileItemDto> listFiles()" in joined
+    assert "log." not in joined
+    assert "auditLogService." not in joined
+
+
+def test_outline_java_korean_test_methods(tmp_path: Path):
+    java_code = """package com.example.demo;
+
+class SysMenuServiceTest {
+
+    @Test
+    void 사원은_권한그룹_메뉴로_3단계_트리를_만든다() {
+        when(mapper.search(any())).thenReturn(List.of());
+        assertThat(service.menus()).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("저장")
+    void 권한그룹_메뉴_저장은_행이_없으면_INSERT_있으면_UPDATE() throws Exception {
+        verify(mapper).insert(any());
+    }
+}
+"""
+    f = tmp_path / "SysMenuServiceTest.java"
+    f.write_text(java_code, encoding="utf-8")
+
+    lines = outliner.outline_file(f)
+    joined = "\n".join(lines)
+    assert "void 사원은_권한그룹_메뉴로_3단계_트리를_만든다()" in joined
+    assert "void 권한그룹_메뉴_저장은_행이_없으면_INSERT_있으면_UPDATE()" in joined
+    assert "thenReturn" not in joined
+    assert "assertThat" not in joined
+    assert len(lines) == 3
+
+
+def test_outline_java_enum_without_args_and_annotated_constants(tmp_path: Path):
+    java_code = """package com.example.demo;
+
+public class RedisTokenService {
+
+    public enum RotationStatus {
+        ROTATED, GRACE, MISMATCH, NOT_FOUND, REUSED
+    }
+
+    public enum Legacy {
+        @Deprecated
+        OLD,
+        @JsonProperty("new") NEW;
+
+        public boolean isOld() {
+            return this == OLD;
+        }
+    }
+}
+"""
+    f = tmp_path / "RedisTokenService.java"
+    f.write_text(java_code, encoding="utf-8")
+
+    lines = outliner.outline_file(f)
+    joined = "\n".join(lines)
+    assert "enum RotationStatus" in joined
+    assert "L   6:   constants(5): ROTATED, GRACE, MISMATCH, NOT_FOUND, REUSED" in joined
+    assert "constants(2): OLD, NEW" in joined
+    assert "L  11:   constants(2)" in joined
+    assert "boolean isOld()" in joined
+
+
+def test_outline_java_no_statement_leak_when_outer_method_missed(tmp_path: Path):
+    # 바깥 메서드 선언이 인식되지 않는 모양(제네릭 와일드카드 + 배열 등)이어도 본문 문장이 새면 안 된다
+    java_code = """package com.example.demo;
+
+public class LoginLockService {
+
+    public LoginLockService(Mapper mapper) {
+        this.mapper = mapper;
+    }
+
+    static {
+        log.warn("static init");
+        validate(DEFAULTS);
+        execute(() -> redisTemplate.delete(KEY));
+    }
+
+    public void recordFailure(Long userId) {
+        redisTemplate.expire(key, ttl);
+    }
+}
+"""
+    f = tmp_path / "LoginLockService.java"
+    f.write_text(java_code, encoding="utf-8")
+
+    lines = outliner.outline_file(f)
+    joined = "\n".join(lines)
+    assert "LoginLockService(Mapper mapper)" in joined
+    assert "void recordFailure(Long userId)" in joined
+    assert "log." not in joined
+    assert "validate(" not in joined
+    assert "execute(" not in joined
+
+
+def test_outline_java_annotation_with_brace_array(tmp_path: Path):
+    java_code = """package com.example.demo;
+
+public class MultiController {
+
+    @RequestMapping(value = {"/a", "/b"}, method = RequestMethod.GET)
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public List<String> multi() {
+        return List.of();
+    }
+}
+"""
+    f = tmp_path / "MultiController.java"
+    f.write_text(java_code, encoding="utf-8")
+
+    lines = outliner.outline_file(f)
+    joined = "\n".join(lines)
+    assert "  List<String> multi()" in joined

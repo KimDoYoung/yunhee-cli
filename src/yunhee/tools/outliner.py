@@ -128,13 +128,34 @@ def line_of(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
 
 
+def _strip_annotations(s: str) -> str:
+    """@Foo, @a.b.Foo(...) 형태의 애너테이션을 지운다. 인자의 중첩 괄호는 paren_end로 짝을 찾는다."""
+    out: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        m = re.match(r"@[\w.]+", s[i:])
+        if m:
+            j = i + m.end()
+            k = j
+            while k < n and s[k].isspace():
+                k += 1
+            if k < n and s[k] == "(":
+                j = paren_end(s, k, "(", ")") + 1
+            out.append(" ")
+            i = j
+            continue
+        out.append(s[i])
+        i += 1
+    return "".join(out)
+
+
 def _clean_java_param(param_str: str) -> str:
     """파라미터 문자열에서 주석/애너테이션/final을 정리하고 '타입 파라미터명'을 남긴다."""
     p = re.sub(r"\s+", " ", param_str).strip()
     if not p:
         return ""
     # 애너테이션 제거
-    p = re.sub(r"@[A-Za-z0-9_]+(?:\([^)]*\))?\s*", "", p).strip()
+    p = _strip_annotations(p).strip()
     # final 제거
     if p.startswith("final "):
         p = p[6:].strip()
@@ -151,6 +172,22 @@ def _find_top_level_semi(bare: str, start: int, end: int) -> int:
         elif c in ")]}":
             p_depth = max(0, p_depth - 1)
         elif c == ";" and p_depth == 0:
+            return idx
+    return -1
+
+
+def _find_prev_delim(bare: str, pos: int) -> int:
+    """pos 앞에서 괄호 밖의 ; { } 위치를 찾는다 (@RequestMapping({"/a"}) 같은 애너테이션 인자 안은 건너뜀). 없으면 -1."""
+    depth = 0
+    for idx in range(pos - 1, -1, -1):
+        c = bare[idx]
+        if c == ")":
+            depth += 1
+        elif c == "(":
+            if depth == 0:
+                return idx
+            depth -= 1
+        elif c in ";{}" and depth == 0:
             return idx
     return -1
 
@@ -180,7 +217,7 @@ def _outline_java(content: str) -> list[str]:
     # 2. 클래스 / 인터페이스 / Enum / Record 탐색
     type_pat = re.compile(
         r"\b(?:public|protected|private)?\s*(?:static\s+)?(?:final\s+)?(?:abstract\s+)?"
-        r"(class|interface|record|enum)\s+([A-Za-z0-9_]+)"
+        r"(class|interface|record|enum)\s+([^\W\d]\w*)"
     )
     type_positions = []
     enum_const_ranges: list[tuple[int, int]] = []
@@ -222,13 +259,14 @@ def _outline_java(content: str) -> list[str]:
                 const_names = []
                 first_const_pos = None
                 for entry in raw_entries:
-                    m_ident = re.search(r"\b([A-Za-z0-9_]+)\b", entry)
+                    # 상수 앞 애너테이션(@Deprecated 등)은 건너뛰고 첫 식별자를 상수 이름으로 쓴다
+                    m_ident = re.match(r"\s*(?:@[\w.]+(?:\([^)]*\))?\s*)*([^\W\d]\w*)", entry)
                     if m_ident:
                         c_name = m_ident.group(1)
                         if c_name not in NOT_JAVA_METHOD and c_name not in JAVA_MODIFIERS:
                             const_names.append(c_name)
                             if first_const_pos is None:
-                                first_const_pos = open_brace + 1 + const_raw.find(c_name)
+                                first_const_pos = open_brace + 1 + const_raw.find(entry) + m_ident.start(1)
 
                 if const_names:
                     n_const = len(const_names)
@@ -243,7 +281,8 @@ def _outline_java(content: str) -> list[str]:
             type_positions.append((pos, line_num, f"{kind} {name}"))
 
     # 3. 메서드 탐색
-    method_ident_pat = re.compile(r"\b([A-Za-z0-9_]+)\s*\(")
+    type_names = {m.group(2) for m in type_pat.finditer(bare)}
+    method_ident_pat = re.compile(r"\b([^\W\d]\w*)\s*\(")
     method_candidates = []
 
     for m in method_ident_pat.finditer(bare):
@@ -273,7 +312,7 @@ def _outline_java(content: str) -> list[str]:
 
         if after_paren.startswith("throws"):
             rest = after_paren[6:].lstrip()
-            m_th = re.match(r"[A-Za-z0-9_,\s.]*([{;])", rest)
+            m_th = re.match(r"[\w,\s.]*([{;])", rest)
             if m_th:
                 delim = m_th.group(1)
                 is_throws_method = True
@@ -286,19 +325,22 @@ def _outline_java(content: str) -> list[str]:
             continue
 
         # 이름 앞의 prefix 확인
-        last_delim = max(
-            bare.rfind(";", 0, name_start),
-            bare.rfind("{", 0, name_start),
-            bare.rfind("}", 0, name_start),
-        )
-        prefix_str = bare[last_delim + 1:name_start].strip()
+        last_delim = _find_prev_delim(bare, name_start)
+        prefix_str = bare[last_delim + 1:name_start]
+
+        # 애너테이션을 먼저 지운다 (@PostMapping(value = ...)의 '='를 대입문으로 오인하지 않도록)
+        clean_prefix = _strip_annotations(prefix_str).strip()
 
         # prefix에 '=' 나 'return' 이 있으면 메서드 선언이 아님
-        if "=" in prefix_str or "return" in prefix_str:
+        if "=" in clean_prefix or "return" in clean_prefix.split():
             continue
 
-        # prefix에서 애너테이션(@...) 제거
-        clean_prefix = re.sub(r"@[A-Za-z0-9_]+(?:\([^)]*\))?", "", prefix_str).strip()
+        # 이름 바로 앞(공백 제외)이 '.'이면 obj.method(...) 호출이다
+        k = name_start - 1
+        while k >= 0 and bare[k].isspace():
+            k -= 1
+        if k >= 0 and bare[k] == ".":
+            continue
 
         # prefix 토큰 검사: record, class, interface, enum, new 가 있으면 메서드가 아님!
         tokens = clean_prefix.split()
@@ -306,6 +348,15 @@ def _outline_java(content: str) -> list[str]:
             continue
 
         ret_type_tokens = [t for t in tokens if t not in JAVA_MODIFIERS]
+
+        # 반환형은 타입 모양이어야 한다
+        if ret_type_tokens and not re.fullmatch(r"[\w$<>\[\],.?&\s]+", " ".join(ret_type_tokens)):
+            continue
+        if ret_type_tokens and ret_type_tokens[-1].endswith("."):
+            continue
+        # 반환형이 없으면 생성자뿐이다 (본문이 있고 이름이 타입명과 같아야 함) — validate(req); 같은 호출 제외
+        if not ret_type_tokens and not (is_body_method and name in type_names):
+            continue
         if ret_type_tokens:
             ret_type = "".join(ret_type_tokens)
         else:
@@ -415,14 +466,14 @@ def _outline_typescript(content: str) -> list[str]:
     results: list[tuple[int, str]] = []
 
     # 1. export interface / type / class / enum
-    type_pat = re.compile(r"\bexport\s+(?:default\s+)?(interface|type|class|enum)\s+([A-Za-z0-9_]+)")
+    type_pat = re.compile(r"\bexport\s+(?:default\s+)?(interface|type|class|enum)\s+([^\W\d]\w*)")
     for m in type_pat.finditer(bare):
         kind, name = m.group(1), m.group(2)
         l_num = line_of(bare, m.start())
         results.append((l_num, f"export {kind} {name}"))
 
     # 2. export (async) function name<...>(...)
-    func_pat = re.compile(r"\bexport\s+(?:default\s+)?(?:async\s+)?function\s+([A-Za-z0-9_]+)")
+    func_pat = re.compile(r"\bexport\s+(?:default\s+)?(?:async\s+)?function\s+([^\W\d]\w*)")
     for m in func_pat.finditer(bare):
         name = m.group(1)
         cursor = m.end()
@@ -447,7 +498,7 @@ def _outline_typescript(content: str) -> list[str]:
 
     # 3. export const Name: Type = ... (예: React.FC 컴포넌트)
     const_typed_pat = re.compile(
-        r"\bexport\s+const\s+([A-Za-z0-9_]+)\s*:\s*([^=;{]+)\s*="
+        r"\bexport\s+const\s+([^\W\d]\w*)\s*:\s*([^=;{]+)\s*="
     )
     for m in const_typed_pat.finditer(bare):
         name = m.group(1)
@@ -457,7 +508,7 @@ def _outline_typescript(content: str) -> list[str]:
 
     # 4. export const Name = (async)? <T,>?(params) => ... (화살표 함수, 제네릭 포함)
     const_arrow_pat = re.compile(
-        r"\bexport\s+const\s+([A-Za-z0-9_]+)\s*=\s*(?:async\s*)?"
+        r"\bexport\s+const\s+([^\W\d]\w*)\s*=\s*(?:async\s*)?"
     )
     for m in const_arrow_pat.finditer(bare):
         name = m.group(1)
@@ -485,7 +536,7 @@ def _outline_typescript(content: str) -> list[str]:
 
     # 5. export const sysApi = { ... } (API 객체 리터럴 모듈)
     api_obj_pat = re.compile(
-        r"\bexport\s+const\s+([A-Za-z0-9_]+)\s*=\s*\{"
+        r"\bexport\s+const\s+([^\W\d]\w*)\s*=\s*\{"
     )
     for m in api_obj_pat.finditer(bare):
         obj_name = m.group(1)
@@ -497,7 +548,7 @@ def _outline_typescript(content: str) -> list[str]:
         inside_bare = bare[open_brace + 1:close_brace]
 
         # prop_name: (async) (params) =>
-        prop_pat = re.compile(r"\b([A-Za-z0-9_]+)\s*:\s*(?:async\s*)?\(")
+        prop_pat = re.compile(r"\b([^\W\d]\w*)\s*:\s*(?:async\s*)?\(")
         for pm in prop_pat.finditer(inside_bare):
             p_name = pm.group(1)
             p_open = open_brace + 1 + pm.end() - 1
