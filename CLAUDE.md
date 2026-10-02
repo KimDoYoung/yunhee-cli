@@ -31,6 +31,7 @@ uv run yunhee last-run                           # 가장 최근 실행 결과 �
 uv run yunhee runs                               # 최근 실행 이력 테이블 출력
 uv run yunhee api GET /api/v1/sys/roles          # 테스트 계정 자동 로그인 기반 API 스모크 테스트 (행수/필드 요약). --timeout <초>(기본 YUNHEE_API_TIMEOUT 또는 15), 시간 초과는 연결 실패와 다른 문구
 uv run yunhee agent-guide                        # 상용 AI 에이전트용 토큰 절약 지침서(Markdown) 출력
+uv run yunhee changelog                          # 현재 버전 변경 내용. 0.1.3(특정 버전) / --since 0.1.1 / --all
 
 uv run tools/parse_mapper.py     # ASIS mapper XML → sqlite mapper_index 빌드 (prepare grounding 검증용)
 
@@ -56,6 +57,7 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
   - `SCHEMA_ENV`(`YUNHEE_SCHEMA_ENV`, 기본 `LOCAL_DB`): `table`/`prepare`가 기본으로 읽을 스키마 스냅샷 이름.
   - `ASIS_SRC_DIR`(`YUNHEE_ASIS_SRC_DIR`): ASIS 레거시 소스 루트. `WORK_DIR`과 별개의 고정 경로로, ASIS 소스를 읽는 tool(`legacy_page`, `mapper_verify`, `parse_mapper`)은 이 경로를 기준으로 한다.
   - `summary()`가 `/config` 커맨드에서 쓰는 설정 요약(DB URL은 비밀번호 마스킹)을 반환.
+- `src/yunhee/changelog.py` — `src/yunhee/CHANGELOG.md`(패키지 리소스, `importlib.resources`로 읽음)를 `## [버전] - 날짜` 단위로 파싱. 버전은 숫자 튜플로 비교(`0.1.10 > 0.1.9`). `yunhee changelog` 명령과, REPL이 `outdated`를 감지했을 때 `project.json`의 이전 버전 이후 변경사항 출력에 쓰인다.
 - `src/yunhee/project.py` — 작업 대상 프로젝트(`WORK_DIR`)를 yunhee에 등록하는 로직. `WORK_DIR/.yunhee/project.json`에 `name`/`created_at`/`updated_at`/`yunhee_version`을 저장. `status()`가 `missing`(미등록)/`outdated`(yunhee 버전 변경됨)/`ok`를 판별 — REPL 시작 시 자동으로 체크해서 필요하면 `/init` 안내. `current_version()`은 `importlib.metadata.version("yunhee")`로 `pyproject.toml`의 버전을 그대로 읽는다.
 - `src/yunhee/ollama_client.py` — Ollama HTTP API 래퍼. `chat()`(단발성), `chat_stream()`(멀티턴, 토큰 단위 yield), `embed()`(bge-m3 임베딩). 모든 chat 요청에 `num_ctx`를 넘기고, 응답의 `prompt_eval_count`가 `num_ctx`에 닿으면(=잘림) stderr로 경고한다. Ollama `/api/chat`은 stateless이므로 멀티턴 대화는 매 요청마다 전체 히스토리를 다시 보내야 한다 — REPL의 `/clear`가 실질적 의미를 갖는 이유.
 - `src/yunhee/store/vectorstore.py` — `chromadb.HttpClient(config.CHROMA_HOST, config.CHROMA_PORT)` + `OllamaEmbeddingFunction`(내부적으로 `ollama_client.embed()` 호출)로 bge-m3 임베딩을 연결. `add_texts()` / `search()` 제공.
@@ -118,4 +120,5 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 
 ## 주의사항
 
+- `pyproject.toml`의 version을 올리면 `src/yunhee/CHANGELOG.md` 맨 위에 같은 버전 항목을 추가한다 (`tests/test_changelog.py`가 검사). 커밋 메시지가 아니라 이 파일이 버전별 변경 내용의 기준이다.
 - `.env.local`, `tools/.env.local`에 DB 접속 정보(자격 증명 포함)가 있다. 커밋하지 말 것 (`.gitignore`에서 `.env*` 제외 처리됨). 새 환경변수는 `.env.local.sample`에도 함께 추가한다. 환경변수를 새로 추가할 때는 `OLLAMA_HOST`처럼 이미 다른 도구가 쓰는 이름과 겹치지 않는지 확인하고, 겹칠 여지가 있으면 `YUNHEE_` 접두사를 쓴다.

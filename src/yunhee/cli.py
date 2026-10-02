@@ -38,6 +38,7 @@ def main(
   4. [bold green]API 검증[/bold green]: [cyan]yunhee api GET <경로> --as admin[/cyan] 으로 자동 로그인 스모크 테스트 (행 수/키 목록)
   5. [bold green]설정 확인[/bold green]: [cyan]yunhee config[/cyan] 로 Source/Target 폴더 및 DB 설정 확인
   6. [bold green]에이전트 지침서[/bold green]: [cyan]yunhee agent-guide[/cyan] 명령으로 AI 행동 지침서 마크다운 전문 출력
+  7. [bold green]변경 이력[/bold green]: [cyan]yunhee changelog --since <이전버전>[/cyan] 으로 yunhee 업데이트 내용만 확인
 
 서브커맨드 없이 실행하면 대화형 REPL로 진입합니다.
 """
@@ -421,6 +422,29 @@ def api(
 
     if not res.ok:
         raise typer.Exit(code=1)
+
+
+@app.command(name="changelog")
+def changelog_cmd(
+    version: Annotated[str | None, typer.Argument(help="볼 버전 (예: 0.1.3). 생략 시 현재 설치된 버전")] = None,
+    since: Annotated[str | None, typer.Option("--since", help="이 버전 이후(미포함) 변경사항 전부")] = None,
+    show_all: Annotated[bool, typer.Option("--all", help="전체 변경 이력")] = False,
+):
+    """버전별 변경 내용을 출력 (LLM 호출 없음)"""
+    from yunhee import changelog
+
+    entries = changelog.select(
+        changelog.parse(changelog.read_text()),
+        version=version,
+        since=since,
+        show_all=show_all,
+        current=project.current_version(),
+    )
+    if not entries:
+        target = f"{since} 이후" if since else (version or project.current_version())
+        typer.echo(f"변경 이력 없음: {target}", err=True)
+        raise typer.Exit(code=1)
+    print("\n\n".join(e.render() for e in entries))
 
 
 @app.command(name="agent-guide")

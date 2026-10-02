@@ -5,7 +5,7 @@ from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.history import FileHistory
 from rich.console import Console
 
-from yunhee import config, project
+from yunhee import changelog, config, project
 from yunhee.config import OLLAMA_MODEL
 from yunhee.ollama_client import chat_stream
 
@@ -41,6 +41,19 @@ def _check_project() -> None:
             f"[yellow].yunhee 설정이 이전 yunhee 버전({data.get('yunhee_version')})으로 만들어졌습니다.[/yellow] "
             f"현재 버전({project.current_version()})으로 갱신하려면 [dim]/init[/dim] 을 실행하세요.\n"
         )
+        _print_changes_since(data.get("yunhee_version"))
+
+
+def _print_changes_since(old_version: str | None) -> None:
+    if not old_version:
+        return
+    entries = changelog.changes_since(old_version, project.current_version())
+    if not entries:
+        return
+    console.print(f"[bold]{old_version} 이후 변경사항[/bold]")
+    for e in entries:
+        console.print(e.render(), markup=False)
+    console.print()
 
 
 def run_repl(model: str = OLLAMA_MODEL) -> None:
