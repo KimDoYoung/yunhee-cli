@@ -33,7 +33,9 @@ uv run yunhee run "mvn compile"                  # 외부 명령어 실행, 성�
 uv run yunhee last-run                           # 가장 최근 실행 결과 및 요약 확인
 uv run yunhee runs                               # 최근 실행 이력 테이블 출력
 uv run yunhee api GET /api/v1/sys/roles          # 테스트 계정 자동 로그인 기반 API 스모크 테스트 (행수/필드 요약)
-uv run yunhee agent-guide                        # 상용 AI 에이전트용 토큰 절약 지침서(Markdown) 출력
+uv run yunhee index-db .yunhee/LOCAL_DB-dbml.md -t docs/as-is/db # 대용량 DBML을 도메인/함수별 소형 파일로 분할 색인
+uv run yunhee index-src ~/workspace26/Asset-OMS -t docs/as-is/src # AS-IS GXT 소스 호출경로(화면→서비스→SQL→테이블) 및 UI/이벤트 색인 빌드
+uv run yunhee sql-check ~/workspace26/Asset-OMS --db asseterpdb   # AS-IS 매퍼 SQL 대상 DB EXPLAIN 정합성 검증 (스키마 차이/영향 화면)
 
 uv run tools/parse_mapper.py     # ASIS mapper XML → sqlite mapper_index 빌드 (prepare grounding 검증용)
 
@@ -96,6 +98,12 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 - `src/yunhee/tools/runner.py`: 외부 프로세스 실행 도구 (`subprocess.run`). 타임아웃, 원시 로그 영구 저장, 출력 미리보기 자르기(`truncated=True`), `ToolResult` 반환.
 - `src/yunhee/tools/outliner.py`: Java, MyBatis XML, TypeScript/TSX, Python 소스의 시그니처와 줄 번호를 추출하는 순수 정적 파서. Java의 여러 줄 파라미터, 점(`.`)이 포함된 제네릭 반환형(`List<MenuRes.Level1>`), 인터페이스 메서드(`SysRoleMapper.java`), TSX 객체 리터럴 함수(`export const sysApi = { ... }`), React.FC 컴포넌트, TS 제네릭 함수(`useTreeGrid<T>`, `editableCol = <T,>`), Java enum 상수 요약(`constants(N): ...`), record 파라미터 구성요소 인라인 및 본문 메서드 보존을 완벽히 지원.
 - `src/yunhee/tools/api_client.py`: 자동 로그인, Host 헤더 기반 테넌트 분리(`_tenant_headers`), 테넌트별 세션 격리(`WORK_DIR/.yunhee/sessions/<host>_<tenant>_<user>.json`), `companyCode` 지원, 공통 응답 봉투(success·code·data) 언래핑 및 숫자/문자/객체 Data 표기, 로그인 실패 시 즉시 중단(계정 잠금 5회 락 방지) API 스모크 테스트 도구.
+- `src/yunhee/tools/as_is/`: AS-IS 마이그레이션 전용 결정적 정적 분석 및 검증 도구 모음 (LLM 미개입, 100% 결정적).
+  - `dbml_indexer.py` (`yunhee index-db`): 수 MB에 달하는 DBML 마크다운을 도메인별 소형 마크다운(`tables/{domain}.md`, `functions/{name}.md`, `views.md`, `triggers.md`)으로 분할 색인하고 pgcrypto 암호키를 자동 마스킹.
+  - `src_indexer.py` (`yunhee index-src`): GXT 프레임워크 호출 구조(`MenuOpener`/`menus.tsv` → `ServiceRequest` → `ServerMethod` → `MyBatis mapper XML` → `tables`)를 완전 추적하여 `docs/as-is/src/` 아래 도메인/화면별 색인 생성. GXT 위젯, GridBuilder 컬럼, 이벤트 핸들러 및 처리 로직 줄 범위를 정적 추출.
+  - `sql_checker.py` (`yunhee sql-check`): MyBatis 매퍼의 동적 SQL(`<choose>`, `<if>`, `<foreach>`, `<include>` 등)을 펼쳐 대상 DB(asseterpdb)에서 `psql EXPLAIN` 읽기전용 실행. 스키마 차이(없는 컬럼/테이블), 환경 차이(collation 등) 및 영향 화면 목록을 생성.
+  - `events.py` (`yunhee events`): AS-IS GXT 화면의 이벤트(생성자 라이프사이클 E0, 위젯 핸들러 E1..En, 원문 조건식, 다이얼로그 중첩 트리), 모든 메서드의 가시성/호출처/동작/구분 테이블, **## Grid Spec** (TOBE React 스타일 `const buildGrid = () => [...]` 코드 블록 및 미존재 시 `Grid 사용하지 않음`), 및 **## 사용된 버튼들** (`1. <Button type="..." onClick={...}>라벨</Button>` 번호 매김 목록, `button_type_map.py` 306개 레이블 매핑 기반 결정적 판정, 미존재 시 `버튼 사용하지 않음`) 정밀 추출. MyBatis resultMap 기반 TOBE 프로퍼티 매핑 및 DB 컬럼 부재 검증(`// ⚠DB없음 L### ...`) 지원.
+  - `button_type_map.py`: AS-IS AssetERP `ColorButtonBar.java`의 306개 레이블을 TOBE 32개 버튼 타입으로 매핑하는 TSV 로더 (`docs/as-is/button-types.tsv` → `docs/button-types.tsv` → `data/button-types.tsv` 우선순위 탐색, 수동 갱신 지원).
 - `src/yunhee/context/run_analyzer.py`: 실행 결과 압축 요약. 성공 시 1줄, 실패 시 로컬 Qwen 14B로 원인·관련 파일·핵심 에러 원문 추출.
 - `src/yunhee/tools/legacy_page.py`: ASIS 소스 수집.
   - GXT 파일명 접두사 규칙(`<page_code>_`) 기반 파일 수집 (`target/` 제외).

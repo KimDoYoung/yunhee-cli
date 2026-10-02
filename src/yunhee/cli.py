@@ -6,10 +6,28 @@ from typing import Annotated
 import typer
 
 from yunhee import project
-from yunhee.config import OLLAMA_MODEL, SCHEMA_ENV, WORK_DIR, redact
+from yunhee.config import (
+    ASIS_SRC_DIR,
+    OLLAMA_MODEL,
+    SCHEMA_ENV,
+    WORK_DIR,
+    YUNHEE_DIR,
+    redact,
+)
 from yunhee.ollama_client import chat, embed
 from yunhee.store.vectorstore import add_texts
 from yunhee.store.vectorstore import search as vector_search
+from yunhee.tools.as_is import find_as_is_dir
+from yunhee.tools.as_is.dbml_indexer import index_dbml
+from yunhee.tools.as_is.events import (
+    extract_buttons,
+    extract_events_and_methods,
+    extract_grid_spec,
+    get_source_label,
+    render_events_markdown,
+)
+from yunhee.tools.as_is.sql_checker import check_sql
+from yunhee.tools.as_is.src_indexer import index_src
 from yunhee.ui.repl import run_repl
 
 app = typer.Typer(rich_markup_mode="rich")
@@ -495,6 +513,261 @@ def agent_guide():
 - `yunhee config`: Target 디렉터리, Source 디렉터리, DB URL 등 환경 확인.
 """
     print(guide.strip())
+
+
+@app.command(name="index-db")
+def index_db_cmd(
+    dbml: Annotated[
+        Path | None,
+        typer.Argument(help="DBML markdown 파일 경로 (미지정 시 자동 탐색)"),
+    ] = None,
+    target: Annotated[
+        Path | None,
+        typer.Option("--target", "-t", help="색인 출력 폴더 (기본: {WORK_DIR}/docs/as-is/db)"),
+    ] = None,
+):
+    """AS-IS DB 스키마(DBML markdown)를 도메인/함수별 소형 파일로 분할 색인"""
+    if dbml is None:
+        candidates = [
+            WORK_DIR / ".yunhee" / f"{SCHEMA_ENV}-dbml.md",
+            WORK_DIR / f"{SCHEMA_ENV}-dbml.md",
+            YUNHEE_DIR / "data" / "schema" / f"{SCHEMA_ENV}-dbml.md",
+            YUNHEE_DIR / f"{SCHEMA_ENV}-dbml.md",
+        ]
+        for c in candidates:
+            if c.is_file():
+                dbml = c
+                break
+        if dbml is None:
+            found = list((WORK_DIR / ".yunhee").glob("*-dbml.md")) or list(WORK_DIR.glob("*-dbml.md"))
+            if found:
+                dbml = found[0]
+
+    if dbml is None or not dbml.is_file():
+        typer.secho(
+            "[ERROR] DBML markdown 파일을 찾을 수 없습니다. 경로를 인자로 넘겨주거나 'yunhee make-dbml'을 먼저 실행하세요.",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(1)
+
+    out_dir = target if target is not None else find_as_is_dir("db")
+    res = index_dbml(dbml, out_dir)
+    if not res.ok:
+        typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    d = res.data
+    typer.secho(f"✅ DB 색인 생성 완료: {d['target_dir']}", fg=typer.colors.GREEN, bold=True)
+    typer.echo(f"  - 원본 DBML: {dbml}")
+    typer.echo(f"  - 테이블: {d['tables_count']}개 → 도메인 {d['domains_count']}개 파일")
+    typer.echo(f"  - 뷰: {d['views_count']}개, 함수·프로시저: {d['routines_count']}개 (트리거 함수 {d['trigger_fns_count']}개 제외)")
+
+
+@app.command(name="index-src")
+def index_src_cmd(
+    src_root: Annotated[
+        Path | None,
+        typer.Argument(help="AS-IS 소스 루트 (미지정 시 YUNHEE_ASIS_SRC_DIR)"),
+    ] = None,
+    target: Annotated[
+        Path | None,
+        typer.Option("--target", "-t", help="색인 출력 폴더 (기본: {repo_root}/docs/as-is/src)"),
+    ] = None,
+    menus: Annotated[
+        Path | None,
+        typer.Option("--menus", help="메뉴 TSV 파일 (미지정 시 {target}/../menus.tsv 탐색)"),
+    ] = None,
+    db_index: Annotated[
+        Path | None,
+        typer.Option("--db-index", help="DB 색인 폴더 (미지정 시 {target}/../db 탐색)"),
+    ] = None,
+):
+    """AS-IS 소스(GXT)에서 화면 → 서비스 → SQL → 테이블 호출 경로 및 UI 색인 생성"""
+    root = src_root if src_root is not None else ASIS_SRC_DIR
+    if not root or not root.is_dir():
+        typer.secho(
+            f"[ERROR] AS-IS 소스 디렉터리를 찾을 수 없습니다: {root}\n"
+            f"인자로 소스 경로를 넘기거나 .env.local의 YUNHEE_ASIS_SRC_DIR를 설정하세요.",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(1)
+
+    out_dir = target if target is not None else find_as_is_dir("src")
+
+    menus_path = menus
+    if menus_path is None:
+        cand = out_dir.parent / "menus.tsv"
+        if cand.is_file():
+            menus_path = cand
+
+    db_dir = db_index
+    if db_dir is None:
+        cand = out_dir.parent / "db"
+        if cand.is_dir():
+            db_dir = cand
+
+    res = index_src(root, out_dir, menus_path=menus_path, db_index_dir=db_dir)
+    if not res.ok:
+        typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    d = res.data
+    typer.secho(f"✅ AS-IS 소스 색인 생성 완료: {d['target_dir']}", fg=typer.colors.GREEN, bold=True)
+    typer.echo(f"  - 원본 소스: {root} ({d['app_package']})")
+    typer.echo(f"  - 클라이언트 클래스: {d['client_classes_count']}개, 메뉴 화면: {d['screens_count']}개, 프레임: {d['frame_screens_count']}개, 컴포넌트: {d['components_count']}개")
+    typer.echo(f"  - 서비스 메서드: {d['service_methods_count']}개, 매퍼 SQL: {d['statements_count']}개, 도메인: {d['domains_count']}개")
+    if d["missing_service_keys_count"] or d["missing_sql_ids_count"]:
+        typer.echo(f"  - 미해결 호출: 서비스 키 {d['missing_service_keys_count']}개, 매퍼 SQL ID {d['missing_sql_ids_count']}개 → unresolved.md")
+
+
+@app.command(name="sql-check")
+def sql_check_cmd(
+    src_root: Annotated[
+        Path | None,
+        typer.Argument(help="AS-IS 소스 루트 (미지정 시 YUNHEE_ASIS_SRC_DIR)"),
+    ] = None,
+    db: Annotated[
+        str,
+        typer.Option("--db", help="검증 대상 PostgreSQL DB 이름"),
+    ] = "asseterpdb",
+    target: Annotated[
+        Path | None,
+        typer.Option("--target", "-t", help="출력 파일 경로 (기본: {repo_root}/docs/as-is/sql-check.md)"),
+    ] = None,
+    src_index: Annotated[
+        Path | None,
+        typer.Option("--src-index", help="src-index 출력 폴더 (기본: docs/as-is/src 탐색)"),
+    ] = None,
+):
+    """AS-IS 매퍼 SQL을 대상 DB에서 EXPLAIN으로 정합성(스키마/환경 차이) 검증"""
+    root = src_root if src_root is not None else ASIS_SRC_DIR
+    if not root or not root.is_dir():
+        typer.secho(
+            f"[ERROR] AS-IS 소스 디렉터리를 찾을 수 없습니다: {root}\n"
+            f"인자로 소스 경로를 넘기거나 .env.local의 YUNHEE_ASIS_SRC_DIR를 설정하세요.",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(1)
+
+    out_file = target if target is not None else find_as_is_dir() / "sql-check.md"
+
+    src_idx = src_index
+    if src_idx is None:
+        cand = find_as_is_dir("src")
+        if cand.is_dir():
+            src_idx = cand
+
+    typer.echo(f"[INFO] AS-IS 매퍼 SQL 정합성 검증 중 (DB: {db}) ...")
+    res = check_sql(root, out_file, db=db, src_index_dir=src_idx)
+    if not res.ok:
+        typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    d = res.data
+    typer.secho(f"✅ SQL 정합성 검증 완료: {d['target_file']}", fg=typer.colors.GREEN, bold=True)
+    typer.echo(f"  - 대상 DB: {db}, 총 SQL: {d['total_sql']}개")
+    typer.echo(f"  - 통과: {d['passed_count']}개")
+    typer.echo(f"  - 스키마 차이(없는 테이블/컬럼): {d['schema_diff_count']}개 (영향 화면 {d['affected_screens_count']}개)")
+    typer.echo(f"  - DB 환경 차이(collation 등): {d['env_diff_count']}개")
+    typer.echo(f"  - 기타/한계: {d['other_count']}개")
+
+
+@app.command(name="events")
+def events_cmd(
+    target: Annotated[
+        str,
+        typer.Argument(help="Java 소스 파일 경로 또는 클래스명 (예: Sys01_Tab_Company)"),
+    ],
+    src: Annotated[
+        Path | None,
+        typer.Option("--src", "-s", help="AS-IS 소스 루트 디렉토리 (미지정 시 YUNHEE_ASIS_SRC_DIR)"),
+    ] = None,
+    button_types: Annotated[
+        Path | None,
+        typer.Option(
+            "--button-types",
+            "-b",
+            help="버튼 타입 매핑 TSV 경로 (기본: docs/as-is/button-types.tsv → docs/button-types.tsv → data/button-types.tsv)",
+        ),
+    ] = None,
+    ids: Annotated[
+        bool,
+        typer.Option("--ids", help="E-id 목록만 간단히 출력 (event-check 대조용)"),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="JSON 형식으로 출력"),
+    ] = False,
+):
+    """AS-IS GXT 화면의 위젯 이벤트(E0..En)와 메서드 호출/하는 일을 정밀 추출"""
+    file_path: Path | None = None
+    p = Path(target)
+    if p.is_file():
+        file_path = p
+    else:
+        target_name = target if target.endswith(".java") else f"{target}.java"
+        # 1. --src 옵션 디렉터리 우선 탐색
+        found = []
+        if src and src.is_dir():
+            found = list(src.glob(f"**/{target_name}"))
+        # 2. ASIS_SRC_DIR 탐색
+        if not found and ASIS_SRC_DIR and ASIS_SRC_DIR.is_dir():
+            found = list(ASIS_SRC_DIR.glob(f"**/{target_name}"))
+        # 3. WORK_DIR 탐색
+        if not found:
+            found = list(WORK_DIR.glob(f"**/{target_name}"))
+
+        if found:
+            file_path = found[0]
+
+    if not file_path or not file_path.is_file():
+        typer.secho(f"[ERROR] 대상 Java 파일을 찾을 수 없습니다: {target}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    text = file_path.read_text(encoding="utf-8", errors="replace")
+    total_lines = text.count("\n") + 1
+    file_label = get_source_label(file_path, total_lines)
+    ev_list, method_list = extract_events_and_methods(text, file_path=file_path)
+    grid_spec = extract_grid_spec(text, file_path=file_path)
+    buttons = extract_buttons(text, events=ev_list, file_path=file_path, button_types_path=button_types)
+
+    unknowns = [b.label for b in buttons if b.button_type == "unknown"]
+    if unknowns and not json_output and not ids:
+        typer.secho(
+            f"💡 [INFO] 미정의 버튼 {len(unknowns)}개 발견: {', '.join(repr(u) for u in unknowns)} (type=\"unknown\")\n"
+            f"   → docs/as-is/button-types.tsv 에 '<레이블>\\t<type>' 형태로 추가하면 반영됩니다.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+
+    if json_output:
+        import json
+        out_obj = {
+            "source": file_label,
+            "events": [e.to_dict() for e in ev_list],
+            "methods": [m.to_dict() for m in method_list],
+            "grid_spec": grid_spec,
+            "buttons": [b.to_dict() for b in buttons],
+        }
+        print(json.dumps(out_obj, ensure_ascii=False, indent=2))
+        return
+
+    if ids:
+        # 상위 및 하위 종속 이벤트 E-id 출력
+        for e in ev_list:
+            if e.id == "E0":
+                typer.echo(f"[{e.id}] {e.source} → {e.action}")
+            elif not e.parent_id:
+                cond_str = f" {e.condition}" if e.condition else ""
+                typer.echo(f"[{e.id}] {e.source}.{e.event_type}{cond_str} (L{e.line}) → {e.action}")
+                for sub in e.sub_events:
+                    s_cond = f" {sub.condition}" if sub.condition else ""
+                    typer.echo(f"       └ [{sub.id}] {sub.source}.{sub.event_type}{s_cond} (L{sub.line}) → {sub.action}")
+        return
+
+    # 기본 마크다운 출력
+    md_text = render_events_markdown(file_label, ev_list, method_list, grid_spec=grid_spec, buttons=buttons)
+    typer.echo(md_text)
 
 
 if __name__ == "__main__":

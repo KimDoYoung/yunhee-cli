@@ -2,6 +2,22 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.1.7] - 2026-10-02
+- events: 버튼 타입 매핑을 외부 TSV 파일로 분리 관리하도록 개선 (`data/button-types.tsv`, `docs/as-is/button-types.tsv`, `docs/button-types.tsv` 우선순위 자동 탐색)
+- events: `--button-types / -b <경로>` 옵션 추가로 사용자 정의 버튼 매핑 TSV 명시적 지정 지원
+- events: 표에 없는 미정의 버튼(`type="unknown"`) 발견 시 `docs/as-is/button-types.tsv` 등록 안내 힌트(stderr) 출력
+
+## [0.1.6] - 2026-10-02
+- events: AS-IS GXT 화면 소스에서 위젯/화면 이벤트를 결정적으로 정밀 추출하는 `yunhee events <target>` 명령어 추가 (`--ids`, `--json`, 클래스명/경로 자동 탐색, 인라인 로직 및 암묵적 이벤트 포착)
+- events: 모든 메서드(public/private/protected)의 호출처, 동작, 줄 범위, 업무/UI구성/유틸 구분 상세 분석 테이블 추가
+- events: **## Grid Spec** 섹션 추가 — AS-IS `buildGrid()`로부터 TOBE React 스타일 `const buildGrid = () => [ gb.xxx(...) ];` 코드 자동 생성 (MyBatis 매퍼 resultMap 기반 DTO 프로퍼티명 변환, DB 컬럼 부재 `// ⚠DB없음 L###` 감지, 그리드 미사용 시 `Grid 사용하지 않음` 출력)
+- events: **## 사용된 버튼들** 섹션 추가 — 화면에 사용된 버튼들을 TOBE React 규격인 `1. <Button type="{type}" onClick={handler}>{label}</Button>` 번호 매김 목록으로 출력 (AS-IS 306개 버튼 레이블 매핑 사전 내장, 미정의 레이블 `type="unknown"` 처리, 버튼 미사용 시 `버튼 사용하지 않음` 출력)
+
+## [0.1.5] - 2026-10-02
+- index-db: 대용량 DBML 마크다운을 도메인/함수별 소형 파일로 분할 색인 (`--target/-t` 옵션, 스마트 기본값, pgcrypto 암호키 마스킹)
+- index-src: AS-IS GXT 소스 호출 체인(화면 → 서비스 → SQL → 테이블) 및 UI/이벤트/줄 번호 색인 빌드 (`--target/-t`, `--menus`, `--db-index` 지원)
+- sql-check: MyBatis 매퍼의 동적 SQL을 전개해 대상 DB(asseterpdb)에서 `psql EXPLAIN`으로 정합성(스키마/환경 차이 및 영향 화면) 검증 (`--db`, `--target/-t`, `--src-index` 지원)
+
 ## [0.1.4] - 2026-10-02
 - outline(Java): `@PostMapping(value = ...)`처럼 `=`가 든 애너테이션이 붙은 메서드가 빠지던 문제 수정
 - outline(Java): `log.info(...)`, `when(...).thenReturn(...)`, `validate(req);` 같은 본문 문장이 메서드로 새던 문제 수정
