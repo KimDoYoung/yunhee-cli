@@ -186,6 +186,22 @@ public class Sys04_Role {
     assert "sys.Sys04_Role.selectList" in screen_md
     assert "sys04_role" in screen_md
     assert "역할코드" in screen_md
+    # events 결과가 UI 절에 함께 들어간다
+    assert data["events_classes_count"] >= 1
+    assert data["events_errors"] == []
+    assert "#### 이벤트" in screen_md
+    assert "#### 메서드" in screen_md
+    assert "#### 사용된 버튼들" in screen_md
+    assert "원본:" not in screen_md
+    assert "- 이벤트:" not in screen_md  # events 절과 겹치는 요약 줄은 생략
+    assert "- 메서드:" not in screen_md
+
+    res = index_src(tmp_path / "src", target_dir, menus_path=menus_file, with_events=False)
+    assert res.ok is True
+    screen_md = (target_dir / "sys" / "screens" / "Sys04_Tab_Role.md").read_text(encoding="utf-8")
+    assert "#### 이벤트" not in screen_md
+    assert "- 이벤트:" in screen_md
+    assert "- 메서드:" in screen_md
 
 
 def test_sql_checker_to_sql():

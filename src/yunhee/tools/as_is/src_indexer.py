@@ -254,8 +254,11 @@ def _strings(expr: str) -> list[str]:
     return UI_STR_RE.findall(expr)
 
 
-def ui_lines(cls: Any) -> list[str]:
-    """클래스 하나의 UI 요약 줄 (화면 파일 '## UI' 절)."""
+def ui_lines(cls: Any, with_events: bool = False) -> list[str]:
+    """클래스 하나의 UI 요약 줄 (화면 파일 '## UI' 절).
+
+    with_events면 '- 이벤트:'·'- 메서드:' 줄은 뒤따르는 events 절과 겹치므로 생략한다.
+    """
     text = cls.path.read_text(encoding="utf-8", errors="replace")
     code, bare = strip_java(text)
     methods = find_methods(bare)
@@ -372,6 +375,10 @@ def ui_lines(cls: Any) -> list[str]:
             hdr += (", " + ", ".join(flags) if flags else "") + "):"
             out.append(hdr)
             out += [f"  - {c}" for c in cols]
+
+    if with_events:
+        out.append("")
+        return out
 
     events, handler_spans = [], []
     for m in UI_HANDLER_RE.finditer(code):
@@ -777,6 +784,11 @@ class Index:
         }
         self.screen_names |= self.frame_names
         self.component_names = {n for n in self.used_by_domains if n not in self.screen_names}
+        # events 절: index_src()가 켠다. 여러 화면이 같은 클래스를 공유하므로 경로별로 캐시한다.
+        self.with_events = False
+        self.button_types_path: Path | None = None
+        self.events_cache: dict[Path, list[str]] = {}
+        self.events_errors: list[tuple[str, str]] = []
 
     def client_class(self, name: str) -> ClientClass | None:
         items = self.client.get(name, [])
@@ -851,6 +863,41 @@ def write(out: Path, rel: str, lines: list[str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def events_lines(idx: Index, cls: ClientClass) -> list[str]:
+    """클래스 하나의 `yunhee events` 결과 (화면 파일 '## UI' 절 안의 '#### 이벤트' 이하)."""
+    if cls.path in idx.events_cache:
+        return idx.events_cache[cls.path]
+    # events.py가 이 모듈을 임포트하므로 순환 임포트를 피해 함수 안에서 가져온다.
+    from yunhee.tools.as_is.events import (
+        extract_buttons,
+        extract_events_and_methods,
+        extract_grid_spec,
+        render_events_markdown,
+    )
+
+    try:
+        text = cls.path.read_text(encoding="utf-8", errors="replace")
+        ev_list, method_list = extract_events_and_methods(text, file_path=cls.path)
+        grid_spec = extract_grid_spec(text, file_path=cls.path)
+        buttons = extract_buttons(text, events=ev_list, file_path=cls.path, button_types_path=idx.button_types_path)
+        md = render_events_markdown("", ev_list, method_list, grid_spec=grid_spec, buttons=buttons)
+    except Exception as e:  # noqa: BLE001 — 한 파일 파싱 실패로 전체 색인을 멈추지 않는다
+        idx.events_errors.append((cls.name, f"{type(e).__name__}: {e}"))
+        out = [f"#### events 추출 실패: `{type(e).__name__}`", ""]
+    else:
+        # '원본:' 줄은 '### 클래스' 제목과 겹치므로 버리고, '## 절'은 '### 클래스' 아래로 내린다.
+        out = [
+            "#" * 2 + line if line.startswith("## ") else line
+            for line in md.splitlines()
+            if not line.startswith("원본:")
+        ]
+        while out and not out[0].strip():
+            out.pop(0)
+        out.append("")
+    idx.events_cache[cls.path] = out
+    return out
+
+
 def write_unit(
     idx: Index,
     out: Path,
@@ -922,7 +969,9 @@ def write_unit(
     if ui:
         lines += ["", "## UI", "", "GXT 소스에서 정적으로 뽑은 화면 구성 (LLM 없음). 처리 로직은 메서드 줄 범위만 원본에서 읽는다.", ""]
         for c in ui:
-            lines += ui_lines(c)
+            lines += ui_lines(c, with_events=idx.with_events)
+            if idx.with_events:
+                lines += events_lines(idx, c)
     write(out, idx.unit_path(name), lines)
     return len(others), len(calls)
 
@@ -1114,6 +1163,7 @@ def write_readme(
         "1. [menus.md](menus.md)에서 메뉴로 화면 파일(`{도메인}/screens/{화면}.md`)을 찾는다.",
         "2. 화면 파일에서 함께 쓰는 클래스, 서비스 → 서버 메서드 → SQL ID, 테이블을 본다.",
         "   다른 화면·컴포넌트(예: 전자결재 문서 편집)는 링크만 있으니 필요할 때만 연다.",
+        "   UI 절의 클래스별 `#### 이벤트`·`#### 메서드`·`#### Grid Spec`·`#### 사용된 버튼들`은 `yunhee events <클래스>` 결과와 같다 (`--no-events`로 생성했으면 없음).",
         "3. 링크를 따라 필요한 것만 연다: 서버 `{도메인}/services/{클래스}.md`, SQL `{도메인}/sql/{namespace}.md`(파일·줄), 테이블은 DB 색인.",
         "4. 실제 코드는 소스 경로의 해당 파일·줄만 연다.", "",
         "## 통계", "",
@@ -1195,8 +1245,13 @@ def index_src(
     target_dir: Path,
     menus_path: Path | None = None,
     db_index_dir: Path | None = None,
+    with_events: bool = True,
+    button_types_path: Path | None = None,
 ) -> ToolResult:
-    """AS-IS 소스의 화면 → 서비스 → SQL → 테이블 호출 경로 색인을 target_dir에 생성한다."""
+    """AS-IS 소스의 화면 → 서비스 → SQL → 테이블 호출 경로 색인을 target_dir에 생성한다.
+
+    with_events면 화면·컴포넌트 파일의 UI 절에 클래스별 `yunhee events` 결과(이벤트·메서드·Grid Spec·버튼)를 함께 넣는다.
+    """
     if not src_root.is_dir():
         return ToolResult(ok=False, error=f"AS-IS 소스 디렉터리를 찾을 수 없습니다: {src_root}")
 
@@ -1233,6 +1288,8 @@ def index_src(
         tables,
         db_rel,
     )
+    idx.with_events = with_events
+    idx.button_types_path = button_types_path
 
     clean_ok, clean_err = clean_generated(target_dir)
     if not clean_ok:
@@ -1257,5 +1314,7 @@ def index_src(
             "domains_count": len(stats),
             "missing_service_keys_count": missing[0],
             "missing_sql_ids_count": missing[1],
+            "events_classes_count": len(idx.events_cache),
+            "events_errors": idx.events_errors,
         },
     )

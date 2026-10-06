@@ -2,6 +2,10 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.1.8] - 2026-10-06
+- index-src: 화면·컴포넌트 파일의 `## UI` 절에 클래스별 `yunhee events` 결과(`#### 이벤트`·`#### 메서드`·`#### Grid Spec`·`#### 사용된 버튼들`)를 함께 생성 — 화면마다 `events`를 따로 돌리지 않아도 됨
+- index-src: `--events/--no-events`(기본 켜짐), `--button-types/-b` 옵션 추가. events를 켜면 기존 UI 요약의 `- 이벤트:`·`- 메서드:` 줄은 중복이라 생략
+
 ## [0.1.7] - 2026-10-02
 - events: 버튼 타입 매핑을 외부 TSV 파일로 분리 관리하도록 개선 (`data/button-types.tsv`, `docs/as-is/button-types.tsv`, `docs/button-types.tsv` 우선순위 자동 탐색)
 - events: `--button-types / -b <경로>` 옵션 추가로 사용자 정의 버튼 매핑 TSV 명시적 지정 지원

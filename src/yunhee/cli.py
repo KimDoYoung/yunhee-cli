@@ -581,8 +581,16 @@ def index_src_cmd(
         Path | None,
         typer.Option("--db-index", help="DB 색인 폴더 (미지정 시 {target}/../db 탐색)"),
     ] = None,
+    events: Annotated[
+        bool,
+        typer.Option("--events/--no-events", help="화면 파일 UI 절에 `yunhee events` 결과(이벤트·메서드·Grid Spec·버튼) 포함"),
+    ] = True,
+    button_types: Annotated[
+        Path | None,
+        typer.Option("--button-types", "-b", help="버튼 타입 매핑 TSV 경로 (events와 동일한 기본 탐색)"),
+    ] = None,
 ):
-    """AS-IS 소스(GXT)에서 화면 → 서비스 → SQL → 테이블 호출 경로 및 UI 색인 생성"""
+    """AS-IS 소스(GXT)에서 화면 → 서비스 → SQL → 테이블 호출 경로 및 UI·이벤트 색인 생성"""
     root = src_root if src_root is not None else ASIS_SRC_DIR
     if not root or not root.is_dir():
         typer.secho(
@@ -606,7 +614,10 @@ def index_src_cmd(
         if cand.is_dir():
             db_dir = cand
 
-    res = index_src(root, out_dir, menus_path=menus_path, db_index_dir=db_dir)
+    res = index_src(
+        root, out_dir, menus_path=menus_path, db_index_dir=db_dir,
+        with_events=events, button_types_path=button_types,
+    )
     if not res.ok:
         typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED)
         raise typer.Exit(1)
@@ -618,6 +629,10 @@ def index_src_cmd(
     typer.echo(f"  - 서비스 메서드: {d['service_methods_count']}개, 매퍼 SQL: {d['statements_count']}개, 도메인: {d['domains_count']}개")
     if d["missing_service_keys_count"] or d["missing_sql_ids_count"]:
         typer.echo(f"  - 미해결 호출: 서비스 키 {d['missing_service_keys_count']}개, 매퍼 SQL ID {d['missing_sql_ids_count']}개 → unresolved.md")
+    if events:
+        typer.echo(f"  - events: 클래스 {d['events_classes_count']}개 분석 (화면 파일 UI 절에 포함)")
+        for name, err in d["events_errors"]:
+            typer.secho(f"    ⚠ {name}: {err}", fg=typer.colors.YELLOW, err=True)
 
 
 @app.command(name="sql-check")
