@@ -331,3 +331,84 @@ def test_find_as_is_dir(tmp_path: Path, monkeypatch):
     resolved_src = find_as_is_dir("src")
     assert resolved_src == docs_as_is / "src"
 
+
+
+def test_select_output_names():
+    from yunhee.tools.as_is.sql_checker import (
+        extract_select_aliases_from_sql,
+        select_output_names,
+    )
+
+    # AS 없는 컬럼, t.col, AS 없는 별칭, 함수명, 이름 없는 식
+    sql = "SELECT audit_id, a.event_type, count(*) cnt, upper(x), 1 + 2, CASE WHEN a THEN 1 END AS flag FROM t a"
+    assert select_output_names(sql) == ["audit_id", "event_type", "cnt", "upper", None, "flag"]
+    # 서브쿼리 안의 별칭은 세지 않는다
+    sql = "SELECT e.id, pw.pwd AS password FROM emp e LEFT JOIN (SELECT x AS pwd, y AS age_days FROM p) pw ON 1=1"
+    assert extract_select_aliases_from_sql(sql) == {"id", "password"}
+    # WITH RECURSIVE의 CTE 컬럼·별칭은 세지 않는다
+    sql = (
+        "WITH RECURSIVE m(id, depth, path) AS (SELECT id, 1 AS depth, ARRAY[id] AS path FROM menu "
+        "UNION ALL SELECT c.id, m.depth + 1, m.path || c.id FROM menu c JOIN m ON 1=1) "
+        "SELECT m.id AS menu_id, n.menu_nm FROM m JOIN menu n ON n.id = m.id ORDER BY path"
+    )
+    assert extract_select_aliases_from_sql(sql) == {"menuId", "menuNm"}
+    # * 이 있으면 대조 불가
+    assert extract_select_aliases_from_sql("SELECT t.*, 1 AS x FROM t") is None
+    # 문자열 안의 콤마·FROM은 무시
+    assert select_output_names("SELECT 'a, b FROM c' AS label, d FROM t") == ["label", "d"]
+
+
+def test_find_record_fields_fqn(tmp_path: Path):
+    from yunhee.tools.as_is.sql_checker import find_record_fields
+
+    a = tmp_path / "kr" / "biz" / "company" / "dto"
+    b = tmp_path / "kr" / "biz" / "sys" / "dto"
+    a.mkdir(parents=True)
+    b.mkdir(parents=True)
+    (a / "CompanyRes.java").write_text("public record CompanyRes(Long companyId, String companyCode) {}")
+    (b / "CompanyRes.java").write_text(
+        "public record CompanyRes(@NotNull Long companyId, Map<String, Object> extra, String note) {}"
+    )
+    fields, warn = find_record_fields("kr.biz.company.dto.CompanyRes", [tmp_path])
+    assert fields == {"companyId", "companyCode"} and warn is None
+    fields, warn = find_record_fields("kr.biz.sys.dto.CompanyRes", [tmp_path])
+    assert fields == {"companyId", "extra", "note"}
+    # 짧은 이름이 여러 개면 경고하고 대조를 건너뛴다
+    fields, warn = find_record_fields("CompanyRes", [tmp_path])
+    assert fields is None and "2개" in warn
+
+
+def test_parse_update_data_model_puts(tmp_path: Path):
+    from yunhee.tools.as_is.src_indexer import java_literal, parse_update_data_model
+
+    assert java_literal('"true"') == "'true'"
+    assert java_literal("0l") == "0"
+    assert java_literal("null") == "NULL"
+    assert java_literal("companyId") is None
+    assert java_literal("String.valueOf(companyId)") is None
+
+    udm = tmp_path / "server" / "utils" / "db" / "UpdateDataModel.java"
+    udm.parent.mkdir(parents=True)
+    udm.write_text(
+        """class UpdateDataModel {
+    void run() {
+        if ("sys01_company".equals(tableName)) {
+            long seq = sqlSession.selectOne("getSeq", null);
+            map.put("orgCd", "10000");
+            sqlSession.insert("org01_code.insertOrg01Code", map);
+            map.clear();
+            map.put("companyId", companyId);
+            map.put("useYn", "true");
+            sqlSession.insert("ast02_detail.insertFromAst02", map);
+        }
+    }
+}
+"""
+    )
+    se = parse_update_data_model(tmp_path)["sys01_company"]
+    first, second = se["items"]
+    # namespace 없는 getSeq도 dbConfig.getSeq로 푼다
+    assert first["seq"][2] == "dbConfig.getSeq"
+    assert first["puts"] == [("orgCd", "'10000'", 5)]
+    # map.clear() 이후 값만
+    assert [(k, v) for k, v, _ in second["puts"]] == [("companyId", None), ("useYn", "'true'")]

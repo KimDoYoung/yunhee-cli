@@ -348,3 +348,294 @@ def check_sql(
             "affected_screens_count": len(affected),
         },
     )
+
+
+def check_proc_exists(proc_name: str, db: str, extra_env: dict[str, str] | None = None) -> bool:
+    """pg_proc에서 프로시저가 존재하는지 확인한다."""
+    script = f"SELECT 1 FROM pg_proc WHERE proname = '{proc_name}';\n"
+    env = {**os.environ, **(extra_env or {})}
+    try:
+        res = subprocess.run(
+            ["psql", "-X", "-q", "-At", "-d", db, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        return "1" in res.stdout
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def java_source_roots(mapper_dir: Path) -> list[Path]:
+    """매퍼 폴더(…/src/main/resources/mapper)에서 Java 소스 루트(…/src/main/java)를 찾는다."""
+    roots: list[Path] = []
+    for d in [mapper_dir, *mapper_dir.parents]:
+        if d.name == "resources" and (d.parent / "java").is_dir():
+            roots.append(d.parent / "java")
+            break
+    for d in (Path.cwd() / "src" / "main" / "java", Path.cwd()):
+        if d.is_dir() and d not in roots:
+            roots.append(d)
+    return roots
+
+
+def _record_fields(path: Path, cls_name: str) -> set[str] | None:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = re.search(rf"\brecord\s+{re.escape(cls_name)}\s*(?:<[^>]*>)?\s*\(", text)
+    if not m:
+        return None
+    end = _close_paren(text, m.end() - 1)
+    fields = set()
+    for p in split_top_level(text[m.end():end], "()<>"):
+        p = re.sub(r"@\w+(?:\([^)]*\))?", " ", p)  # 애노테이션 제거
+        parts = p.strip().split()
+        if len(parts) >= 2:
+            fields.add(parts[-1])
+    return fields
+
+
+def find_record_fields(result_type: str, search_roots: list[Path]) -> tuple[set[str] | None, str | None]:
+    """record DTO를 찾아 (필드 목록, 경고)를 반환한다.
+
+    FQN(kr.co...dto.CompanyRes)이면 소스 루트 아래 정확한 경로에서만 찾는다 (같은 이름의 다른 패키지 record와 섞이지 않게).
+    짧은 이름(typeAlias)이면 glob하고, 여러 개면 경고하고 대조를 건너뛴다.
+    """
+    name = result_type.replace("$", ".")
+    parts = name.split(".")
+    cls_name = parts[-1]
+    if len(parts) > 1:
+        # 중첩 클래스(pkg.Outer.Inner)도 있으므로 뒤에서부터 파일 경로를 줄여 본다.
+        for cut in range(len(parts), 1, -1):
+            rel = Path(*parts[:cut]).with_suffix(".java")
+            for r in search_roots:
+                f = r / rel
+                if f.is_file():
+                    return _record_fields(f, cls_name), None
+        return None, None
+    found: list[Path] = []
+    for r in search_roots:
+        if r.is_dir():
+            found += [f for f in r.glob(f"**/{cls_name}.java") if "target" not in f.parts and f not in found]
+    if len(found) > 1:
+        return None, f"{cls_name} 후보 {len(found)}개 — FQN으로 써야 대조"
+    return (_record_fields(found[0], cls_name), None) if found else (None, None)
+
+
+def _close_paren(text: str, open_pos: int) -> int:
+    depth = 0
+    for i in range(open_pos, len(text)):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return len(text)
+
+
+def split_top_level(text: str, brackets: str = "()") -> list[str]:
+    """괄호 깊이 0의 콤마로만 나눈다. brackets는 여는·닫는 문자 쌍의 나열 (예: "()<>")."""
+    opens, closes = brackets[0::2], brackets[1::2]
+    out, cur, depth = [], [], 0
+    for ch in text:
+        if ch in opens:
+            depth += 1
+        elif ch in closes:
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            out.append("".join(cur))
+            cur = []
+            continue
+        cur.append(ch)
+    if "".join(cur).strip():
+        out.append("".join(cur))
+    return out
+
+
+# AS 없는 별칭으로 오인하면 안 되는 끝 단어 (CASE … END, x IS NULL 등)
+SQL_KEYWORDS = {
+    "END", "NULL", "TRUE", "FALSE", "DESC", "ASC", "AND", "OR", "NOT", "THEN", "ELSE",
+    "DISTINCT", "ALL", "FROM", "AS", "IS", "IN", "LIKE", "BETWEEN",
+}
+
+
+def _mask_sql(sql: str) -> str:
+    """주석을 지우고 문자열 리터럴 내용을 비운다."""
+    sql = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
+    sql = re.sub(r"--[^\n]*", " ", sql)
+    return re.sub(r"'(?:[^']|'')*'", "''", sql)
+
+
+def _depth0_matches(sql: str, pattern: str) -> list[re.Match]:
+    """괄호 깊이 0에 있는 매치만 돌려준다."""
+    depth_at = []
+    depth = 0
+    for ch in sql:
+        if ch == "(":
+            depth += 1
+        depth_at.append(depth)
+        if ch == ")":
+            depth = max(0, depth - 1)
+    return [m for m in re.finditer(pattern, sql, re.IGNORECASE) if depth_at[m.start()] == 0]
+
+
+def select_output_names(sql: str) -> list[str | None] | None:
+    """최상위 SELECT 목록의 출력 이름들. 이름을 정할 수 없는 식은 None, `*`가 있으면 전체가 None.
+
+    WITH … AS (…)의 CTE·서브쿼리 SELECT는 괄호 안이라 건너뛰고, 깊이 0의 첫 SELECT(본 SELECT)만 본다.
+    """
+    sql = _mask_sql(sql)
+    sel = _depth0_matches(sql, r"\bSELECT\b")
+    if not sel:
+        return []
+    start = sel[0].end()
+    stop = next(
+        (
+            m.start()
+            for m in _depth0_matches(sql, r"\b(FROM|INTO|WHERE|UNION|EXCEPT|INTERSECT|ORDER|GROUP|LIMIT)\b")
+            if m.start() > start
+        ),
+        len(sql),
+    )
+    body = sql[start:stop].strip()
+    body = re.sub(r"^DISTINCT\s+ON\s*\([^)]*\)|^(DISTINCT|ALL)\b", "", body, flags=re.IGNORECASE).strip()
+    names: list[str | None] = []
+    for item in split_top_level(body):
+        item = item.strip()
+        if not item:
+            continue
+        if re.search(r"(^|\.)\*$", item):
+            return None
+        m = re.search(r"\bAS\s+(\"[^\"]+\"|\w+)$", item, re.IGNORECASE)
+        if m:
+            names.append(m.group(1))
+            continue
+        # AS 없이 붙인 별칭: count(*) cnt, t.col c
+        m = re.search(r"[\w)\"]\s+(\"[^\"]+\"|[A-Za-z_]\w*)$", item)
+        if m and m.group(1).upper() not in SQL_KEYWORDS:
+            names.append(m.group(1))
+            continue
+        item = re.sub(r"::\s*[\w ]+(\([^)]*\))?(\[\])?$", "", item).strip()  # 캐스트는 원래 이름
+        m = re.fullmatch(r"(?:\w+\.)?(\"[^\"]+\"|[A-Za-z_]\w*)", item)
+        if m:
+            names.append(m.group(1))  # t.col, col
+            continue
+        m = re.fullmatch(r"(?:\w+\.)?([A-Za-z_]\w*)\s*\(.*\)", item, re.DOTALL)
+        names.append(m.group(1) if m else None)  # 함수 호출은 함수명, 그 밖의 식은 이름 없음
+    return names
+
+
+def to_camel(name: str) -> str:
+    """MyBatis mapUnderscoreToCamelCase와 같은 규칙. 따옴표 별칭은 그대로."""
+    if name.startswith('"'):
+        return name.strip('"')
+    parts = name.lower().split("_")
+    return parts[0] + "".join(p.capitalize() for p in parts[1:])
+
+
+def extract_select_aliases_from_sql(sql: str) -> set[str] | None:
+    """최상위 SELECT 목록의 출력 이름을 camelCase 집합으로 반환한다. `*`가 있어 알 수 없으면 None."""
+    names = select_output_names(sql)
+    if names is None:
+        return None
+    return {to_camel(n) for n in names if n}
+
+
+def check_tobe_sql(mapper_dir: Path, db: str = "asseterpdb") -> ToolResult:
+    """TOBE 매퍼 XML을 대상 DB에서 EXPLAIN 및 검증한다."""
+    if not mapper_dir.is_dir():
+        return ToolResult(ok=False, error=f"TOBE 매퍼 디렉터리를 찾을 수 없습니다: {mapper_dir}")
+
+    target_db, db_env = get_db_env(db)
+    test_err = explain("SELECT 1", target_db, extra_env=db_env)
+    if test_err is not None:
+        return ToolResult(
+            ok=False,
+            error=f"대상 DB({target_db}) 접속 실패: {test_err}",
+        )
+
+    statements: dict[str, Statement] = {}
+    for path in sorted(mapper_dir.rglob("*.xml")):
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        ns_m = re.search(r'<mapper\s+namespace="([^"]+)"', raw)
+        if not ns_m:
+            continue
+        ns = ns_m.group(1)
+        root = parse_xml(raw)
+        mapper = next((c for c in root.children if isinstance(c, Node) and c.tag == "mapper"), None)
+        if not mapper:
+            continue
+        for child in mapper.children:
+            if isinstance(child, Node) and child.tag in STATEMENT_TAGS and "id" in child.attrs:
+                pos = re.search(rf'<{child.tag}\b[^>]*\bid\s*=\s*"{re.escape(child.attrs["id"])}"', raw)
+                line = raw.count("\n", 0, pos.start()) + 1 if pos else 0
+                st = Statement(ns, child.attrs["id"], child.tag, child, path.relative_to(mapper_dir), line)
+                statements[st.key] = st
+
+    targets = [s for s in statements.values() if s.kind != "sql"]
+    if not targets:
+        return ToolResult(ok=False, error=f"{mapper_dir} 아래에서 검증할 매퍼 SQL을 찾지 못했습니다.")
+
+    search_roots = java_source_roots(mapper_dir.resolve())
+
+    results_by_cls: dict[str, list[str]] = defaultdict(list)
+    has_failure = False
+
+    for st in sorted(targets, key=lambda s: (s.ns, s.line)):
+        cls_name = st.ns.split(".")[-1]
+        raw_sql = to_sql(st, statements)
+
+        call_m = re.match(r"^\s*call\s+([a-zA-Z0-9_]+)", raw_sql, re.IGNORECASE)
+        err = None
+        if call_m:
+            proc_name = call_m.group(1)
+            if not check_proc_exists(proc_name, target_db, extra_env=db_env):
+                err = f'procedure "{proc_name}" does not exist'
+        else:
+            err = explain(raw_sql, target_db, extra_env=db_env)
+
+        warn = ""
+        result_type = st.node.attrs.get("resultType", "")
+        if not err and result_type and st.kind == "select":
+            fields, find_warn = find_record_fields(result_type, search_roots)
+            aliases = extract_select_aliases_from_sql(raw_sql) if fields else None
+            if find_warn:
+                warn = f" ⚠ ({find_warn})"
+            elif fields and aliases is not None:
+                # MyBatis 자동 매핑은 대소문자를 가리지 않는다.
+                alias_lc = {a.lower() for a in aliases}
+                field_lc = {f.lower() for f in fields}
+                missing_in_select = {f for f in fields if f.lower() not in alias_lc}
+                extra_in_select = {a for a in aliases if a.lower() not in field_lc}
+                warn_parts = []
+                if missing_in_select:
+                    warn_parts.append(f"필드 누락: {', '.join(sorted(missing_in_select))}")
+                if extra_in_select:
+                    warn_parts.append(f"미사용 별칭: {', '.join(sorted(extra_in_select))}")
+                if warn_parts:
+                    warn = f" ⚠ ({'; '.join(warn_parts)})"
+
+        if err is None:
+            results_by_cls[cls_name].append(f"{st.sid} ✅{warn}")
+        else:
+            has_failure = True
+            results_by_cls[cls_name].append(f"{st.sid} ❌ {err} (L{st.line})")
+
+    lines = []
+    for cls_name, items in results_by_cls.items():
+        lines.append(f"{cls_name}: " + " / ".join(items))
+
+    summary_text = "\n".join(lines)
+    return ToolResult(
+        ok=not has_failure,
+        data={
+            "summary": summary_text,
+            "total": len(targets),
+            "results": results_by_cls,
+        },
+        error=None if not has_failure else "일부 SQL 검증 실패",
+    )

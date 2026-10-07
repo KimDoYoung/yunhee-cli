@@ -24,13 +24,16 @@ def _safe_name(text: str) -> str:
     return re.sub(r"[^\w\-.]", "_", text)
 
 
-def _get_session_path(user: str, base_url: str, tenant: str | None = None) -> Path:
+def _get_session_path(user: str, base_url: str, tenant: str | None = None, company: str | None = None) -> Path:
     parsed = urlparse(base_url)
     host_part = _safe_name(parsed.netloc or parsed.path or "default")
+    parts = [host_part]
     if tenant:
-        filename = f"{host_part}_{_safe_name(tenant)}_{_safe_name(user)}.json"
-    else:
-        filename = f"{host_part}_{_safe_name(user)}.json"
+        parts.append(_safe_name(tenant))
+    if company:
+        parts.append(_safe_name(company))
+    parts.append(_safe_name(user))
+    filename = "_".join(parts) + ".json"
     return get_sessions_dir() / filename
 
 
@@ -54,8 +57,8 @@ def _get_account_credentials(role: str) -> tuple[str, str]:
     return user, pw
 
 
-def _load_session(user: str, base_url: str, tenant: str | None = None) -> dict[str, Any] | None:
-    session_file = _get_session_path(user, base_url, tenant)
+def _load_session(user: str, base_url: str, tenant: str | None = None, company: str | None = None) -> dict[str, Any] | None:
+    session_file = _get_session_path(user, base_url, tenant, company)
     if not session_file.exists():
         return None
     try:
@@ -64,14 +67,14 @@ def _load_session(user: str, base_url: str, tenant: str | None = None) -> dict[s
         return None
 
 
-def _save_session(user: str, base_url: str, cookies: dict, headers: dict, tenant: str | None = None) -> None:
-    session_file = _get_session_path(user, base_url, tenant)
+def _save_session(user: str, base_url: str, cookies: dict, headers: dict, tenant: str | None = None, company: str | None = None) -> None:
+    session_file = _get_session_path(user, base_url, tenant, company)
     data = {"cookies": cookies, "headers": headers}
     session_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _clear_session(user: str, base_url: str, tenant: str | None = None) -> None:
-    session_file = _get_session_path(user, base_url, tenant)
+def _clear_session(user: str, base_url: str, tenant: str | None = None, company: str | None = None) -> None:
+    session_file = _get_session_path(user, base_url, tenant, company)
     if session_file.exists():
         try:
             session_file.unlink()
@@ -127,15 +130,40 @@ def login(
     except Exception:  # noqa: BLE001, S110
         pass
 
-    _save_session(user, base_url, cookies, headers, tenant=tenant)
+    _save_session(user, base_url, cookies, headers, tenant=tenant, company=comp)
     return ToolResult(ok=True, data={"cookies": cookies, "headers": headers})
 
 
-def summarize_response(status_code: int, text: str, duration_ms: int, tenant: str | None = None) -> str:
+def header_tag(base_url: str = "", tenant: str | None = None, company_code: str | None = None) -> str:
+    """결과 머리 태그 — 예: [AssetERP_1 · tenant=admin · company=kfstest]"""
+    parts = []
+    if base_url:
+        parsed = urlparse(base_url)
+        path_part = parsed.path.strip("/")
+        parts.append(path_part.split("/")[-1] if path_part else (parsed.netloc or "default"))
+    if tenant:
+        parts.append(f"tenant={tenant}")
+    if company_code:
+        parts.append(f"company={company_code}")
+    return f"[{' · '.join(parts)}]" if parts else ""
+
+
+def summarize_response(
+    status_code: int,
+    text: str,
+    duration_ms: int,
+    tenant: str | None = None,
+    base_url: str = "",
+    company_code: str | None = None,
+) -> str:
     """응답을 토큰 절약형 1~4줄 요약으로 가공한다."""
     duration_sec = f"{duration_ms / 1000:.2f}s"
-    tenant_suffix = f" [tenant={tenant}]" if tenant else ""
-    lines = [f"HTTP {status_code} ({duration_sec}){tenant_suffix}"]
+    lines = []
+    tag = header_tag(base_url, tenant, company_code)
+    if tag:
+        lines.append(tag)
+
+    lines.append(f"HTTP {status_code} ({duration_sec})")
 
     try:
         data = json.loads(text)
@@ -219,7 +247,8 @@ def request_api(
     - 재로그인이 실패하면 즉시 실패로 중단하여 계정 잠금(5회 실패 락) 위험 원천 차단.
     """
     user, pw = _get_account_credentials(as_role)
-    session = _load_session(user, base_url, tenant)
+    comp = company_code or config.TEST_COMPANY
+    session = _load_session(user, base_url, tenant, comp)
     had_existing_session = session is not None
 
     url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
@@ -231,7 +260,7 @@ def request_api(
             user=user,
             password=pw,
             login_path=login_path,
-            company_code=company_code,
+            company_code=comp,
             tenant=tenant,
         )
         if not login_res.ok:
@@ -267,13 +296,13 @@ def request_api(
 
     # 기존에 저장되어 있던 세션이 만료되어 401이 뜬 경우에만 1회 재로그인 시도
     if resp.status_code == 401 and auto_login and had_existing_session:
-        _clear_session(user, base_url, tenant)
+        _clear_session(user, base_url, tenant, comp)
         login_res = login(
             base_url=base_url,
             user=user,
             password=pw,
             login_path=login_path,
-            company_code=company_code,
+            company_code=comp,
             tenant=tenant,
         )
         if not login_res.ok:
@@ -300,7 +329,14 @@ def request_api(
         except Exception as exc:  # noqa: BLE001
             return ToolResult(ok=False, error=f"재시도 요청 실패: {exc}")
 
-    summary = summarize_response(resp.status_code, resp.text, duration_ms, tenant=tenant)
+    summary = summarize_response(
+        resp.status_code,
+        resp.text,
+        duration_ms,
+        tenant=tenant,
+        base_url=base_url,
+        company_code=company_code,
+    )
     return ToolResult(
         ok=resp.is_success,
         data={

@@ -2,6 +2,30 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.2.1] - 2026-10-07
+수정사항 016 (0.1.9 시험 결과) 반영.
+- sql: **기본 모드가 실제로 읽기 전용이 됨** — 첫 문장 전에 `conn.read_only`로 `BEGIN READ ONLY`를 건다 (이전엔 `SET default_transaction_read_only`가 열린 트랜잭션에 적용되지 않아 UPDATE+COMMIT이 저장됐음)
+- sql: 안전 가드를 두 모드 모두에 적용 — COMMIT/END/PREPARE/DDL 거부. 기본 모드는 INSERT/UPDATE/DELETE/MERGE/CALL/DO, `WITH … DELETE` 등 쓰기와 BEGIN/START, 읽기 전용을 끄는 SET을 실행 전에 거부("읽기 전용 모드입니다. 쓰기 시험은 --rollback"). 가드는 문장 첫 키워드 기준이라 `CASE … END`·문자열 안 `commit`은 통과
+- sql: `--rollback`에서 `CALL` 대상 프로시저 본문(`pg_proc.prosrc`)에 COMMIT/ROLLBACK이 있으면 실행 전 거부
+- port-save: 부수 효과 SQL id를 `{매퍼}{원본 id}` camelCase로 유일하게(`ics30ComplianceInsertFormIcs30`), 중복 시 숫자+경고. 태그는 본문 첫 키워드로(`<select>` 안 INSERT → `<insert>`, CALL → `<update>`)
+- port-save: `UpdateDataModel`의 `map.put` 리터럴(`useYn="true"`, `itemTypeCodeName="PayFormulaCode"` 등)과 map에 없는 키(NULL)를 SQL에 넣고 주석으로 표시, 남은 `${값}`은 `#{값}`으로. 끝에 Mapper 인터페이스 메서드 목록 출력
+- sql-check `--tobe`: record DTO를 resultType FQN 경로로 정확히 찾음(짧은 이름이 여러 개면 경고 후 대조 생략). 별칭 대조는 최상위 SELECT 목록만(AS 없는 컬럼 포함, 서브쿼리·CTE 별칭 제외)
+- api·compare: 기본 테넌트 선택 순서 통일 (`-t` → `.yunhee.toml [api] tenant` → `YUNHEE_API_DEFAULT_TENANT`(신설) → `YUNHEE_TEST_COMPANY`), `-c`인데 테넌트가 없으면 둘 다 Exit 1. compare도 머리 태그 출력
+- index-src: 서버 안 `sqlSession.selectOne("getSeq")`도 `dbConfig.getSeq`(→ `f_create_seq()`)로 해석, "저장 시 부수 효과"의 테이블을 DB 색인 링크로, `--db-index`가 출력 폴더에서 멀면(../ 6단계 초과) 절대 경로 링크
+- port-sql: `--cols` 순서 유지, select id 영어 복수형(`searchCompanies`), `--package` 옵션(없으면 `{dto.package}.XxxRes` 자리표시+주석)
+- events: Grid Spec 계산 컬럼 주석이 그 화면이 실제로 부르는 조회 서비스의 SQL(`selectById` 등) 별칭을 먼저 봄
+
+## [0.1.9] - 2026-10-07
+- index-src: `UpdateDataModel` 호출 및 동적 INSERT/UPDATE/DELETE 추적, `UpdateDataModel.java` 파싱 기반 `## 저장 시 부수 효과 (UpdateDataModel)` 절 자동 생성
+- events & index-src: Grid Spec에서 MyBatis 매퍼 SELECT 별칭(alias_cols)을 조회하여 SQL 계산 컬럼을 `// L### SQL 계산 컬럼(...)`으로 식별하도록 개선 (`⚠DB없음` 오탐 제거)
+- index-src: `getSeq` 서비스 호출을 `(공통) 채번` / `dbConfig.getSeq`(→ `f_create_seq()`)로 명시
+- api: 작업 디렉터리 상위 탐색 기반 `.yunhee.toml` (`[api] base, tenant`) 우선 설정 지원, `-c/--company` 지정 시 테넌트 자동 주입 및 회사/테넌트별 세션 파일 완전 격리, 헤더 태그(`[AssetERP_1 · tenant=admin · company=kfstest]`) 출력
+- sql: PostgreSQL 대상 읽기 전용 쿼리 실행 및 `--rollback` 모드 지원 (COMMIT/END/DDL 차단 안전 가드, `\gset` 및 `:var` 변수 치환 지원)
+- sql-check: `--tobe <mapper dir>` 옵션 추가 — TOBE MyBatis XML 매퍼를 asseterpdb에서 컴파일/배포 전 `EXPLAIN` 사전 정합성 검증 (`CALL` 프로시저 `pg_proc` 검사, Record DTO 필드 매핑 검증)
+- port-sql: AS-IS MyBatis SQL을 TOBE 매퍼 조각(`<sql id="...Columns">` 및 `<select>`)과 Java Record DTO로 자동 변환 (`--cols` 필터, `--getter-defaults` 기반 `COALESCE` 생성)
+- port-save: AS-IS `UpdateDataModel` 대체용 명시적 `insert...`, `update...`, `delete...`, `selectNextId` 및 부수 효과 SQL 일괄 생성
+- compare: HTTP 조회 API와 AS-IS SQL의 결과 행 수 및 그리드 컬럼 커버리지 일치 여부를 즉시 비교 검증 (`API rows=X, SQL rows=Y ✅ fields ⊇ grid cols ✅`)
+
 ## [0.1.8] - 2026-10-06
 - index-src: 화면·컴포넌트 파일의 `## UI` 절에 클래스별 `yunhee events` 결과(`#### 이벤트`·`#### 메서드`·`#### Grid Spec`·`#### 사용된 버튼들`)를 함께 생성 — 화면마다 `events`를 따로 돌리지 않아도 됨
 - index-src: `--events/--no-events`(기본 켜짐), `--button-types/-b` 옵션 추가. events를 켜면 기존 UI 요약의 `- 이벤트:`·`- 메서드:` 줄은 중복이라 생략

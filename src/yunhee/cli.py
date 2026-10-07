@@ -5,7 +5,7 @@ from typing import Annotated
 
 import typer
 
-from yunhee import project
+from yunhee import config, project
 from yunhee.config import (
     ASIS_SRC_DIR,
     OLLAMA_MODEL,
@@ -371,6 +371,12 @@ def outline(
     print(res.data)
 
 
+TENANT_REQUIRED_MSG = (
+    "오류: 회사 선택 로그인(-c)은 admin 테넌트에서만 됩니다: -t admin "
+    "(또는 .yunhee.toml [api] tenant / .env.local YUNHEE_API_DEFAULT_TENANT)"
+)
+
+
 @app.command()
 def api(
     method: Annotated[str, typer.Argument(help="HTTP 메서드 (GET, POST, PUT, DELETE)")],
@@ -392,6 +398,7 @@ def api(
 """
     import json
 
+    from yunhee import config
     from yunhee.tools import api_client
 
     params_dict = {}
@@ -409,15 +416,20 @@ def api(
             typer.echo(f"오류: JSON 본문 파싱 실패: {e}", err=True)
             raise typer.Exit(code=1)
 
-    kw = {}
-    if base:
-        kw["base_url"] = base
+    target_base = base or config.API_BASE_URL
+    target_tenant = config.resolve_api_tenant(tenant)
+
+    if company and not target_tenant:
+        typer.echo(TENANT_REQUIRED_MSG, err=True)
+        raise typer.Exit(code=1)
+
+    kw = {"base_url": target_base}
     if login_path:
         kw["login_path"] = login_path
     if company:
         kw["company_code"] = company
-    if tenant:
-        kw["tenant"] = tenant
+    if target_tenant:
+        kw["tenant"] = target_tenant
 
     res = api_client.request_api(
         method=method,
@@ -440,6 +452,163 @@ def api(
 
     if not res.ok:
         raise typer.Exit(code=1)
+
+
+@app.command(name="sql")
+def sql_cmd(
+    query: Annotated[str | None, typer.Argument(help="실행할 SQL 쿼리")] = None,
+    file: Annotated[Path | None, typer.Option("--file", "-f", help="실행할 SQL 파일 경로")] = None,
+    rollback: Annotated[bool, typer.Option("--rollback", help="쓰기를 허용하되 반드시 트랜잭션 종료 시 ROLLBACK")] = False,
+    limit: Annotated[int, typer.Option("--limit", "-n", help="출력할 최대 행 수 (기본: 5)")] = 5,
+    timeout: Annotated[float, typer.Option("--timeout", help="statement_timeout 타임아웃(초) (기본: 10)")] = 10.0,
+    var: Annotated[list[str] | None, typer.Option("--var", help="변수 설정 key=val 또는 key=\"select ...\" (반복 가능)")] = None,
+    db: Annotated[str | None, typer.Option("--db", help="대상 데이터베이스 환경변수 이름 또는 연결 URL (기본: LOCAL_DB)")] = None,
+):
+    """PostgreSQL 읽기 전용 쿼리 실행 또는 롤백 시험 (LLM 호출 없음)
+
+[bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
+  psql 대신 이 명령으로 중복 검사나 행 수를 확인하고, 저장 SQL 시험 시 --rollback 옵션을 사용하세요.
+"""
+    from yunhee.tools import sql_runner
+
+    vars_dict = {}
+    if var:
+        for v in var:
+            if "=" in v:
+                k, val = v.split("=", 1)
+                vars_dict[k.strip()] = val.strip()
+
+    res = sql_runner.run_sql(
+        query=query,
+        file_path=file,
+        rollback=rollback,
+        limit=limit,
+        timeout=timeout,
+        vars_dict=vars_dict or None,
+        db_name=db,
+    )
+    if not res.ok:
+        typer.echo(f"오류: {res.error}", err=True)
+        raise typer.Exit(code=1)
+
+    print(res.data.get("summary", ""))
+
+
+@app.command(name="port-sql")
+def port_sql_cmd(
+    sql_id: Annotated[str, typer.Argument(help="AS-IS SQL ID (예: sys04_role.selectByName)")],
+    cols: Annotated[str | None, typer.Option("--cols", help="추출할 컬럼 목록 (쉼표 구분)")] = None,
+    getter_defaults: Annotated[bool, typer.Option("--getter-defaults", help="AS-IS 모델 getter null 기본값을 COALESCE로 적용")] = False,
+    src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
+    db: Annotated[str, typer.Option("--db", help="스키마 환경 (기본 LOCAL_DB)")] = SCHEMA_ENV,
+    package: Annotated[str | None, typer.Option("--package", help="DTO 패키지 (예: kr.co.kfs.asseterp.biz.sys.dto) — resultType FQN에 사용")] = None,
+) -> None:
+    """AS-IS SQL을 TOBE 매퍼 조각과 레코드 DTO로 변환 (--cols 순서 = 출력 순서)"""
+    from yunhee.tools.as_is.sql_porter import port_sql
+
+    col_list = [c.strip() for c in cols.split(",") if c.strip()] if cols else None
+    res = port_sql(
+        sql_id=sql_id,
+        cols=col_list,
+        getter_defaults=getter_defaults,
+        src_root=src,
+        db_env=db,
+        dto_package=package,
+    )
+    if not res.ok:
+        typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(res.data["output"])
+
+
+@app.command(name="port-save")
+def port_save_cmd(
+    table: Annotated[str, typer.Argument(help="대상 테이블명 (예: sys04_role)")],
+    cols: Annotated[str, typer.Option("--cols", help="INSERT/UPDATE 대상 컬럼 목록 (쉼표 구분)")],
+    company_col: Annotated[str | None, typer.Option("--company-col", help="회사 ID 컬럼명")] = None,
+    id_col: Annotated[str | None, typer.Option("--id-col", help="PK ID 컬럼명")] = None,
+    src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
+) -> None:
+    """UpdateDataModel 대신 사용할 명시 INSERT, UPDATE, DELETE 및 부수 효과 SQL 생성"""
+    from yunhee.tools.as_is.sql_porter import port_save
+
+    col_list = [c.strip() for c in cols.split(",") if c.strip()]
+    res = port_save(
+        table=table,
+        cols=col_list,
+        company_col=company_col,
+        id_col=id_col,
+        src_root=src,
+    )
+    if not res.ok:
+        typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    for w in res.data.get("warnings", []):
+        typer.secho(f"⚠ {w}", fg=typer.colors.YELLOW, err=True)
+    typer.echo(res.data["output"])
+
+
+@app.command(name="compare")
+def compare_cmd(
+    method: Annotated[str, typer.Argument(help="HTTP 메서드 (GET, POST 등)")],
+    path: Annotated[str, typer.Argument(help="API 경로 (예: /api/v1/sys/companies)")],
+    sql: Annotated[str, typer.Option("--sql", help="비교 대상 AS-IS SQL ID (예: sys01_company.selectByName)")],
+    api_param: Annotated[list[str] | None, typer.Option("-p", "--param-api", help="API 요청 파라미터 (key=value, 반복 가능)")] = None,
+    param: Annotated[list[str] | None, typer.Option("--param", help="SQL 파라미터 (key=value, 반복 가능)")] = None,
+    base: Annotated[str | None, typer.Option("--base", "-b", help="API 기본 URL")] = None,
+    tenant: Annotated[str | None, typer.Option("--tenant", "-t", help="테넌트 식별자")] = None,
+    company: Annotated[str | None, typer.Option("--company", "-c", help="회사 코드")] = None,
+    db: Annotated[str, typer.Option("--db", help="대상 DB명 (기본: asseterpdb)")] = "asseterpdb",
+    src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
+) -> None:
+    """조회 API와 AS-IS SQL 행 수 및 그리드 컬럼 커버리지 비교"""
+    from yunhee.tools.comparator import compare_api_sql
+
+    api_params_dict = {}
+    if api_param:
+        for p in api_param:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                api_params_dict[k.strip()] = v.strip()
+
+    sql_params_dict = {}
+    if param:
+        for p in param:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                sql_params_dict[k.strip()] = v.strip()
+
+    effective_base = base or config.API_BASE_URL
+    effective_tenant = config.resolve_api_tenant(tenant)
+
+    if company and not effective_tenant:
+        typer.echo(TENANT_REQUIRED_MSG, err=True)
+        raise typer.Exit(code=1)
+
+    res = compare_api_sql(
+        method=method,
+        path=path,
+        sql_ref=sql,
+        api_params=api_params_dict,
+        sql_params=sql_params_dict,
+        base_url=effective_base,
+        tenant=effective_tenant,
+        company=company,
+        db_name=db,
+        src_root=src,
+    )
+    if not res.ok:
+        typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    from yunhee.tools.api_client import header_tag
+
+    tag = header_tag(effective_base, effective_tenant, company)
+    if tag:
+        typer.echo(tag)
+    typer.echo(res.data["summary"])
 
 
 @app.command(name="changelog")
@@ -641,6 +810,10 @@ def sql_check_cmd(
         Path | None,
         typer.Argument(help="AS-IS 소스 루트 (미지정 시 YUNHEE_ASIS_SRC_DIR)"),
     ] = None,
+    tobe: Annotated[
+        Path | None,
+        typer.Option("--tobe", help="TOBE 매퍼 디렉터리 경로 (예: backend/src/main/resources/mapper)"),
+    ] = None,
     db: Annotated[
         str,
         typer.Option("--db", help="검증 대상 PostgreSQL DB 이름"),
@@ -654,7 +827,22 @@ def sql_check_cmd(
         typer.Option("--src-index", help="src-index 출력 폴더 (기본: docs/as-is/src 탐색)"),
     ] = None,
 ):
-    """AS-IS 매퍼 SQL을 대상 DB에서 EXPLAIN으로 정합성(스키마/환경 차이) 검증"""
+    """MyBatis 매퍼 SQL을 대상 DB에서 EXPLAIN으로 정합성(스키마/환경 차이) 검증"""
+    from yunhee.tools.as_is.sql_checker import check_tobe_sql
+
+    if tobe:
+        if not tobe.is_dir():
+            typer.secho(f"[ERROR] TOBE 매퍼 디렉터리를 찾을 수 없습니다: {tobe}", fg=typer.colors.RED)
+            raise typer.Exit(1)
+        res = check_tobe_sql(tobe, db=db)
+        if not res.ok and not res.data:
+            typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED)
+            raise typer.Exit(1)
+        print(res.data.get("summary", ""))
+        if not res.ok:
+            raise typer.Exit(1)
+        return
+
     root = src_root if src_root is not None else ASIS_SRC_DIR
     if not root or not root.is_dir():
         typer.secho(

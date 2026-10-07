@@ -9,9 +9,13 @@ from yunhee.config import ASIS_SRC_DIR, WORK_DIR
 from yunhee.tools.as_is import find_as_is_dir
 from yunhee.tools.as_is.button_type_map import BUTTON_TYPE_MAP, load_button_types
 from yunhee.tools.as_is.src_indexer import (
+    SERVICE_KEY_LITERAL_RE,
+    SQL_CALL_RE,
     UI_NEW_RE,
     UI_STR_RE,
     UI_WIDGET_CLS_RE,
+    call_argument,
+    eval_string,
     find_methods,
     line_of,
     paren_end,
@@ -701,13 +705,123 @@ def col_to_tobe_prop(col: str, table_prefix: str = "") -> str:
     return to_camel_case(col)
 
 
-_MAPPER_CACHE: dict[str, tuple[dict[str, str], str, str]] = {}
+_MAPPER_CACHE: dict[str, tuple[dict[str, str], str, str, dict[str, tuple[str, str]]]] = {}
 
 
-def find_mapper_for_model(model_name: str, roots: list[Path]) -> tuple[dict[str, str], str, str]:
-    """AS-IS MyBatis 매퍼 XML을 찾아 model의 resultMap 속성→컬럼 매핑을 반환한다."""
+def extract_select_aliases(xml_text: str) -> dict[str, tuple[str, str]]:
+    """매퍼 XML의 <select>들에서 AS 별칭과 계산식 앞부분을 추출한다 (같은 별칭이 여럿이면 selectByName 우선).
+
+    반환: {alias_col_lower: (select_id, expr_short)}
+    """
+    alias_map: dict[str, tuple[str, str]] = {}
+    for alias, by_sid in extract_select_aliases_all(xml_text).items():
+        sid = "selectByName" if "selectByName" in by_sid else next(iter(by_sid))
+        alias_map[alias] = (sid, by_sid[sid])
+    return alias_map
+
+
+def extract_select_aliases_all(xml_text: str) -> dict[str, dict[str, str]]:
+    """매퍼 XML의 <select>별 AS 별칭과 계산식 앞부분. 반환: {alias_col_lower: {select_id: expr_short}}"""
+    sql_fragments = dict(re.findall(r'<sql\s+id="([^"]+)"[^>]*>(.*?)</sql>', xml_text, re.DOTALL))
+    for _ in range(3):
+        xml_expanded = re.sub(
+            r'<include\s+refid="([^"]+)"\s*/?>',
+            lambda m: sql_fragments.get(m.group(1), sql_fragments.get(m.group(1).split(".")[-1], "")),
+            xml_text,
+        )
+        if xml_expanded == xml_text:
+            break
+        xml_text = xml_expanded
+
+    alias_map: dict[str, dict[str, str]] = {}
+    for sm in re.finditer(r'<select\s+[^>]*id="([^"]+)"[^>]*>(.*?)</select>', xml_text, re.DOTALL):
+        sid = sm.group(1)
+        sbody = sm.group(2)
+        sbody = re.sub(r"<!--.*?-->", " ", sbody, flags=re.DOTALL)
+        sbody = re.sub(r"/\*.*?\*/", " ", sbody, flags=re.DOTALL)
+        sbody = re.sub(r"--[^\n]*", " ", sbody)
+
+        for am in re.finditer(r'\bAS\s+([a-zA-Z0-9_]+)', sbody, re.IGNORECASE):
+            alias = am.group(1).lower()
+            as_pos = am.start()
+            depth = 0
+            j = as_pos - 1
+            while j >= 0:
+                c = sbody[j]
+                if c == ")":
+                    depth += 1
+                elif c == "(":
+                    if depth > 0:
+                        depth -= 1
+                elif c == "," and depth == 0:
+                    j += 1
+                    break
+                elif depth == 0:
+                    word = sbody[max(0, j - 6):j + 1].upper()
+                    if word.endswith("SELECT") and (j - 6 < 0 or not sbody[j - 6].isalnum()):
+                        j += 1
+                        break
+                    if word.endswith("FROM") and (j - 4 < 0 or not sbody[j - 4].isalnum()):
+                        break
+                j -= 1
+            else:
+                j = 0
+            expr = sbody[j:as_pos].strip()
+            before_expr = sbody[max(0, j - 10):j].strip().upper()
+            if before_expr.endswith(("FROM", "JOIN")):
+                continue
+
+            expr = re.sub(r"<[^>]+>", " ", expr)
+            expr = re.sub(r"\s+", " ", expr).strip().lstrip(",").strip()
+            if not expr:
+                continue
+            if len(expr) > 40:
+                expr = expr[:39] + "…"
+            alias_map.setdefault(alias, {}).setdefault(sid, expr)
+    return alias_map
+
+
+_ALIAS_ALL_CACHE: dict[str, dict[str, dict[str, str]]] = {}
+
+
+def class_sql_ids(text: str, roots: list[Path]) -> list[str]:
+    """화면 클래스가 부르는 조회 서비스("sys.Sys01_Company.selectById")의 서버 메서드가 쓰는 SQL ID(namespace 뺀 것).
+
+    서버 소스를 못 찾으면 서비스 메서드 이름을 SQL ID로 본다 (AS-IS 관례: 이름이 같다).
+    """
+    no_comm, _ = strip_java(text)
+    sids: list[str] = []
+    for m in SERVICE_KEY_LITERAL_RE.finditer(no_comm):
+        pkg, cls, meth = m.groups()
+        found = False
+        for r in roots:
+            for f in r.glob(f"**/server/{pkg}/{cls}.java"):
+                try:
+                    srv_comm, srv_bare = strip_java(f.read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    continue
+                for name, _pos, b_start, b_end, _pub, _params in find_methods(srv_bare):
+                    if name != meth:
+                        continue
+                    body = srv_comm[b_start:b_end + 1]
+                    for cm in SQL_CALL_RE.finditer(body):
+                        for v in sorted(eval_string(call_argument(body, cm.end() - 1), [body, srv_comm]) or ()):
+                            sids.append(v.split(".")[-1])
+                    found = True
+                    break
+                if found:
+                    break
+            if found:
+                break
+        if not found:
+            sids.append(meth)
+    return list(dict.fromkeys(sids))
+
+
+def find_mapper_for_model(model_name: str, roots: list[Path]) -> tuple[dict[str, str], str, str, dict[str, tuple[str, str]]]:
+    """AS-IS MyBatis 매퍼 XML을 찾아 model의 resultMap 속성→컬럼 매핑 및 select 별칭 목록을 반환한다."""
     if not model_name:
-        return {}, "", ""
+        return {}, "", "", {}
     if model_name in _MAPPER_CACHE:
         return _MAPPER_CACHE[model_name]
 
@@ -739,12 +853,14 @@ def find_mapper_for_model(model_name: str, roots: list[Path]) -> tuple[dict[str,
             ns = ns_m.group(1) if ns_m else ""
             tbl_m = re.search(r"\bfrom\s+([a-z0-9_]+)", xml_text, re.IGNORECASE)
             tbl = tbl_m.group(1).lower() if tbl_m else ns
-            res = (prop_to_col, ns, tbl)
+            _ALIAS_ALL_CACHE[model_name] = extract_select_aliases_all(xml_text)
+            alias_map = extract_select_aliases(xml_text)
+            res = (prop_to_col, ns, tbl, alias_map)
             _MAPPER_CACHE[model_name] = res
             return res
 
-    _MAPPER_CACHE[model_name] = ({}, "", "")
-    return {}, "", ""
+    _MAPPER_CACHE[model_name] = ({}, "", "", {})
+    return {}, "", "", {}
 
 
 _TABLE_COLS_CACHE: dict[str, set[str] | None] = {}
@@ -843,6 +959,7 @@ def extract_grid_spec(text: str, file_path: Path | None = None) -> str | None:
         cls_model = cand_cls if cand_cls.endswith("Model") else f"{cand_cls}Model"
 
     grid_specs: list[str] = []
+    used_sids: list[str] | None = None
 
     for name, decl, start, end, is_pub, params in methods:
         body_bare = bare[start:end]
@@ -868,8 +985,24 @@ def extract_grid_spec(text: str, file_path: Path | None = None) -> str | None:
         else:
             model_name = cls_model
 
-        prop_to_col, _ns, table_name = find_mapper_for_model(model_name, dedup_roots)
+        prop_to_col, _ns, table_name, alias_map = find_mapper_for_model(model_name, dedup_roots)
         table_cols = find_table_columns(table_name) if table_name else None
+        alias_all = _ALIAS_ALL_CACHE.get(model_name, {})
+        if used_sids is None:
+            used_sids = class_sql_ids(text, dedup_roots)
+
+        def pick_alias(
+            key: str,
+            alias_all: dict[str, dict[str, str]] = alias_all,
+            alias_map: dict[str, tuple[str, str]] = alias_map,
+            used_sids: list[str] = used_sids,
+        ) -> tuple[str, str] | None:
+            """그 화면이 실제로 조회하는 SQL의 별칭을 먼저 본다. 모르면 selectByName 우선 (기존 동작)."""
+            by_sid = alias_all.get(key, {})
+            for sid in used_sids:
+                if sid in by_sid:
+                    return sid, by_sid[sid]
+            return alias_map.get(key)
 
         tbl_pfx_m = re.match(r"^([a-z]+\d*)", table_name)
         tbl_prefix = (tbl_pfx_m.group(1) + "_") if tbl_pfx_m else ""
@@ -926,11 +1059,22 @@ def extract_grid_spec(text: str, file_path: Path | None = None) -> str | None:
             tobe_prop = col_to_tobe_prop(col, tbl_prefix) if col else prop_name
 
             if table_cols is not None:
-                chk_col = col
+                chk_col = col.lower() if col else ""
                 if not chk_col:
                     snake_prop = re.sub(r"(?<!^)(?=[A-Z])", "_", prop_name).lower()
                     chk_col = f"{tbl_prefix}{snake_prop}"
                 if chk_col and chk_col not in table_cols:
+                    alias_info = pick_alias(chk_col)
+                    if not alias_info and chk_col.startswith(tbl_prefix):
+                        alias_info = pick_alias(chk_col[len(tbl_prefix):])
+                    if not alias_info and col:
+                        alias_info = pick_alias(col.lower())
+
+                    if alias_info:
+                        sql_id, expr_short = alias_info
+                        gb_func = KNOWN_GB_OPS[op]
+                        grid_lines.append(f"  {gb_func}('{tobe_prop}', {width}, '{clean_label}'{editor_opt}),  // L{line_num} SQL 계산 컬럼({sql_id}: {expr_short})")
+                        continue
                     grid_lines.append(f'  // ⚠DB없음 L{line_num} {prop_name} {width} "{label}" ({chk_col} 컬럼 없음)')
                     continue
 

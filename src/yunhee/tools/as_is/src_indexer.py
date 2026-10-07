@@ -14,8 +14,13 @@ COMMON_DOMAIN = "_common"  # client/vi 밖 (service, utils, grid ...)
 VIEW_DOMAIN = "_view"  # DB 색인 views.md의 뷰 (테이블처럼 취급)
 VI_ROOT_DOMAIN = "_frame"  # 프레임: client/vi 바로 아래, OMS는 client/app (MainFrame, LoginPage ...)
 
+SEQ_SQL_ID = "dbConfig.getSeq"  # 채번 SQL (→ f_create_seq())
+MAP_PUT_RE = re.compile(r'\bmap\s*\.\s*put\s*\(\s*"(\w+)"\s*,\s*(.+?)\s*\)\s*;')
 SQL_CALL_RE = re.compile(
     r"\bsqlSession\s*\.\s*(selectList|selectOne|selectMap|selectCursor|insert|update|delete)\s*\("
+)
+UDM_CALL_RE = re.compile(
+    r"(?:new\s+UpdateDataModel(?:\s*<[^>]*>)?\s*\(\s*\)\s*\.|\b\w+\s*\.)\s*(updateModel|deleteModel)\s*\([^,]+,[^,]+,\s*([^,]+),"
 )
 SERVICE_REQ_RE = re.compile(r"\bnew\s+ServiceRequest\s*\(")
 SERVICE_KEY_LITERAL_RE = re.compile(r'"([a-z]\w*)\.([A-Z]\w*)\.(\w+)"')
@@ -461,6 +466,7 @@ class ServerMethod:
         self.unresolved: list[tuple[str, int]] = []
         self.calls: set[str] = set()
         self.cross: set[str] = set()
+        self.udm_calls: list[tuple[str, str]] = []
         self._body_bare: str = ""
         self._tokens: set[str] = set()
 
@@ -597,9 +603,17 @@ def parse_server(app: Path) -> dict[str, ServerClass]:
                 arg = call_argument(body, m.end() - 1)
                 vals = eval_string(arg, [body, no_comment])
                 if vals:
-                    meth.sql_ids |= vals
+                    # namespace 없는 "getSeq"는 MyBatis가 dbConfig.getSeq로 찾는다.
+                    meth.sql_ids |= {SEQ_SQL_ID if v == "getSeq" else v for v in vals}
                 else:
                     meth.unresolved.append((arg, line_of(no_comment, body_start + m.start())))
+            for m in UDM_CALL_RE.finditer(body):
+                op = m.group(1)
+                arg = m.group(2).strip()
+                vals = eval_string(arg, [body, no_comment])
+                if vals:
+                    for v in sorted(vals):
+                        meth.udm_calls.append((op, v))
             meth._body_bare = body_bare
             cls.methods.setdefault(name, meth)
         names = set(cls.methods)
@@ -629,6 +643,94 @@ def all_sql_ids(meth: ServerMethod, seen: set[str] | None = None) -> set[str]:
     return ids
 
 
+def all_udm_calls(meth: ServerMethod, seen: set[str] | None = None) -> list[tuple[str, str]]:
+    seen = seen or set()
+    if meth.name in seen:
+        return []
+    seen.add(meth.name)
+    calls = list(meth.udm_calls)
+    for name in meth.calls:
+        if name in meth.cls.methods:
+            calls += all_udm_calls(meth.cls.methods[name], seen)
+    return calls
+
+
+def java_literal(expr: str) -> str | None:
+    """map.put 값이 리터럴이면 SQL 리터럴('true', 0, NULL)로, 변수·식이면 None."""
+    expr = expr.strip()
+    if re.fullmatch(r'"(?:[^"\\]|\\.)*"', expr):
+        return "'" + expr[1:-1].replace("'", "''") + "'"
+    if re.fullmatch(r"-?\d+(?:\.\d+)?[lLdDfF]?", expr):
+        return expr.rstrip("lLdDfF")
+    if expr == "null":
+        return "NULL"
+    if expr in ("true", "false"):
+        return expr
+    return None
+
+
+def parse_update_data_model(app: Path) -> dict[str, dict[str, Any]]:
+    """UpdateDataModel.java를 파싱하여 테이블별 저장 부수 효과(INSERT/UPDATE/PROC)를 수집한다."""
+    udm_file = next(app.rglob("UpdateDataModel.java"), None)
+    if not udm_file or not udm_file.is_file():
+        return {}
+    raw = udm_file.read_text(encoding="utf-8", errors="replace")
+    no_comm, bare = strip_java(raw)
+
+    side_effects: dict[str, dict[str, Any]] = {}
+    for m in re.finditer(r'if\s*\(\s*"([^"]+)"\s*\.\s*equals\s*\(\s*tableName\s*\)\s*\)\s*\{', no_comm):
+        tbl = m.group(1)
+        start_pos = m.start()
+        start_line = line_of(no_comm, start_pos)
+        depth = 1
+        i = m.end()
+        while i < len(bare) and depth > 0:
+            if bare[i] == "{":
+                depth += 1
+            elif bare[i] == "}":
+                depth -= 1
+            i += 1
+        end_line = line_of(no_comm, i - 1)
+        block = no_comm[m.end():i - 1]
+        offset = m.end()
+
+        found: list[tuple[int, tuple[str, str, str, int]]] = []
+        for sm in re.finditer(r'sqlSession\s*\.\s*(insert|update|selectOne)\s*\(\s*"([^"]+)"', block):
+            line = line_of(no_comm, offset + sm.start())
+            # namespace 없는 "getSeq"도 dbConfig.getSeq(→ f_create_seq())로 푼다.
+            sid = SEQ_SQL_ID if sm.group(2) == "getSeq" else sm.group(2)
+            found.append((sm.start(), ("sql", sm.group(1), sid, line)))
+        for pm in re.finditer(r'prepareStatement\s*\(\s*"(call\s+([a-zA-Z0-9_]+)\s*\([^)]*\))"', block):
+            line = line_of(no_comm, offset + pm.start())
+            found.append((pm.start(), ("proc", pm.group(1), pm.group(2), line)))
+        found.sort(key=lambda x: x[0])
+
+        items = []
+        pending_seq = None
+        seg_start = 0
+        for pos, c in found:
+            if c[0] == "sql" and c[2] == SEQ_SQL_ID:
+                pending_seq = c
+                continue
+            # 이 호출에 넘기는 map.put 값: 직전 호출 이후, 마지막 map.clear() 이후 구간
+            seg = block[seg_start:pos]
+            clear = list(re.finditer(r"\bmap\s*\.\s*clear\s*\(\s*\)", seg))
+            seg_off = seg_start + (clear[-1].end() if clear else 0)
+            puts = []
+            for mp in MAP_PUT_RE.finditer(block, seg_off, pos):
+                puts.append((mp.group(1), java_literal(mp.group(2)), line_of(no_comm, offset + mp.start())))
+            items.append({"seq": pending_seq, "call": c, "puts": puts})
+            pending_seq = None
+            seg_start = pos
+
+        side_effects[tbl] = {
+            "start_line": start_line,
+            "end_line": end_line,
+            "items": items,
+        }
+    return side_effects
+
+
 def strip_sql(text: str) -> str:
     text = re.sub(r"<!--.*?-->", lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.DOTALL)
     text = re.sub(r"/\*.*?\*/", lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.DOTALL)
@@ -640,21 +742,24 @@ def parse_mappers(
     known_tables: dict[str, str],
     known_functions: set[str],
     known_columns: set[str] = frozenset(),
-) -> dict[str, Statement]:
+) -> tuple[dict[str, Statement], dict[str, list[Path]]]:
     statements: dict[str, Statement] = {}
+    ns_files: dict[str, list[Path]] = defaultdict(list)
     for path in sorted(app.rglob("*.xml")):
         raw = path.read_text(encoding="utf-8", errors="replace")
         ns = re.search(r"<mapper\s+namespace\s*=\s*\"([^\"]+)\"", raw)
         if not ns:
             continue
         rel = path.relative_to(app)
+        ns_str = ns.group(1)
+        ns_files[ns_str].append(rel)
         domain = rel.parts[1] if len(rel.parts) > 2 and rel.parts[0] == "server" else COMMON_DOMAIN
         text = strip_sql(raw)
         for m in STATEMENT_RE.finditer(text):
             kind = m.group(1).lower()
             end = text.find(f"</{m.group(1)}>", m.end())
             body = text[m.end(): end if end > 0 else len(text)]
-            st = Statement(ns.group(1), m.group(2), kind, rel, line_of(text, m.start()), domain)
+            st = Statement(ns_str, m.group(2), kind, rel, line_of(text, m.start()), domain)
             sql = re.sub(r"<[^>]+>", " ", body)
             st.ctes = {c.lower() for c in CTE_RE.findall(sql)}
             st.tables = {
@@ -682,7 +787,7 @@ def parse_mappers(
         resolve(st, {st.key})
     for st in statements.values():
         st.tables -= st.ctes
-    return statements
+    return statements, ns_files
 
 
 def parse_menu_opener(app: Path) -> dict[str, str]:
@@ -745,9 +850,12 @@ class Index:
         menus: list[dict[str, str]],
         tables: dict[str, str],
         db_rel: str | None,
+        ns_files: dict[str, list[Path]] | None = None,
     ) -> None:
         self.app, self.client, self.server, self.statements = app, client, server, statements
         self.opener, self.menus, self.tables, self.db_rel = opener, menus, tables, db_rel
+        self.ns_files: dict[str, list[Path]] = ns_files or {}
+        self.udm_side_effects: dict[str, dict[str, Any]] = parse_update_data_model(app)
         self.screen_names = set(opener.values())
         self.service_methods: dict[str, ServerMethod] = {}
         for cls in server.values():
@@ -844,13 +952,20 @@ class Index:
         if not dom or not self.db_rel:
             return f"`{table}`"
         doc = "views.md" if dom == VIEW_DOMAIN else f"tables/{dom}.md"
-        return f"[`{table}`]({up}{self.db_rel}/{doc})"
+        return f"[`{table}`]({self.db_doc(doc, up)})"
+
+    def db_doc(self, doc: str, up: str) -> str:
+        """DB 색인 문서 링크 경로. db_rel이 절대 경로면(출력 폴더에서 멀리 떨어진 경우) up을 붙이지 않는다."""
+        if self.db_rel and Path(self.db_rel).is_absolute():
+            return f"{self.db_rel}/{doc}"
+        return f"{up}{self.db_rel}/{doc}"
 
     def sql_link(self, sid: str, up: str) -> str:
         st = self.statements.get(sid)
         if not st:
             return f"`{sid}`(없음)"
-        return f"[`{sid}`]({up}{self.sql_path(st.ns)})"
+        link = f"[`{sid}`]({up}{self.sql_path(st.ns)})"
+        return link + " (→ `f_create_seq()`)" if sid == SEQ_SQL_ID else link
 
 
 def md_cell(v: Any) -> str:
@@ -948,13 +1063,47 @@ def write_unit(
             meth = idx.service_methods.get(skey)
             if meth:
                 ids = sorted(all_sql_ids(meth))
+                udm_calls = all_udm_calls(meth)
                 for sid in ids:
                     st = idx.statements.get(sid)
                     if st:
                         tables |= st.tables
                         functions |= st.functions
+                sql_parts = [idx.sql_link(i, up) for i in ids]
+                for op, tbl in udm_calls:
+                    tables.add(tbl)
+                    has_side_effect = tbl in idx.udm_side_effects
+                    if op == "updateModel":
+                        part = f"`UpdateDataModel({tbl})` 동적 INSERT/UPDATE → {idx.sql_link(f'{tbl}.selectById', up)}"
+                        if has_side_effect:
+                            part += ' ; 부수 효과: 아래 "저장 시 부수 효과"'
+                            for it in idx.udm_side_effects[tbl]["items"]:
+                                if it.get("seq"):
+                                    st_seq = idx.statements.get(it["seq"][2])
+                                    if st_seq:
+                                        tables |= st_seq.tables
+                                        functions |= st_seq.functions
+                                call_item = it["call"]
+                                if call_item[0] == "sql":
+                                    st_call = idx.statements.get(call_item[2])
+                                    if st_call:
+                                        tables |= st_call.tables
+                                        functions |= st_call.functions
+                                elif call_item[0] == "proc":
+                                    functions.add(call_item[2])
+                        sql_parts.append(part)
+                    elif op == "deleteModel":
+                        sql_parts.append(f"`UpdateDataModel({tbl})` 동적 DELETE")
                 server = f"[`{meth.cls.rel.name}:{meth.line}`]({up}{idx.service_path(meth.cls)})"
-                sql = ", ".join(idx.sql_link(i, up) for i in ids) or "-"
+                sql = ", ".join(sql_parts) or "-"
+            elif skey == "getSeq":
+                server = "(공통) 채번"
+                sql = idx.sql_link(SEQ_SQL_ID, up)
+                st = idx.statements.get(SEQ_SQL_ID)
+                if st:
+                    tables |= st.tables
+                    functions |= st.functions
+                functions.add("f_create_seq")
             else:
                 server, sql = "**(없음)**", "-"
             lines.append(f"| `{skey}` | {', '.join(sorted(calls[skey]))} | {server} | {md_cell(sql)} |")
@@ -962,6 +1111,40 @@ def write_unit(
         lines += ["", "## 테이블", "", ", ".join(idx.table_link(t, up) for t in sorted(tables))]
     if functions:
         lines += ["", "## DB 함수", "", ", ".join(f"`{f}`" for f in sorted(functions))]
+    side_effect_tables = {
+        tbl for c in classes for skey, _ in c.services
+        if (meth := idx.service_methods.get(skey))
+        for op, tbl in all_udm_calls(meth)
+        if op == "updateModel" and tbl in idx.udm_side_effects
+    }
+    if side_effect_tables:
+        for tbl in sorted(side_effect_tables):
+            se = idx.udm_side_effects[tbl]
+            lines += [
+                "",
+                "## 저장 시 부수 효과 (UpdateDataModel)",
+                "",
+                f"`{tbl}`를 새로 INSERT하면 (UpdateDataModel.java L{se['start_line']}-{se['end_line']}) 이어서:",
+                "",
+            ]
+            for idx_num, it in enumerate(se["items"], 1):
+                seq = it.get("seq")
+                call = it["call"]
+                parts = []
+                if seq:
+                    parts.append(idx.sql_link(seq[2], up))
+                    parts.append("→")
+                if call[0] == "sql":
+                    sql_id = call[2]
+                    st = idx.statements.get(sql_id)
+                    tbl_info = f", {', '.join(idx.table_link(t, up) for t in sorted(st.tables))}" if st and st.tables else ""
+                    parts.append(f"{idx.sql_link(sql_id, up)} (L{call[3]}{tbl_info})")
+                elif call[0] == "proc":
+                    proc_name = call[2]
+                    proc_call = call[1]
+                    proc_link = f" → [{proc_name}]({idx.db_doc(f'functions/{proc_name}.md', up)})" if idx.db_rel else ""
+                    parts.append(f"`{proc_call}` (L{call[3]}, DB 프로시저{proc_link})")
+                lines.append(f"{idx_num}. {' '.join(parts)}")
     unresolved = [(c.name, e, l) for c in classes for e, l in c.unresolved]
     if unresolved:
         lines += ["", "## 해석 못 한 서비스 호출", ""] + [f"- `{n}:{l}` `{md_cell(e)}`" for n, e, l in unresolved]
@@ -986,7 +1169,14 @@ def write_services(idx: Index, out: Path, cls: ServerClass) -> int:
         "|:---|---:|:---|:---|:---|",
     ]
     for m in services:
-        ids = ", ".join(idx.sql_link(i, up) for i in sorted(all_sql_ids(m))) or "-"
+        udm_parts = []
+        for op, tbl in all_udm_calls(m):
+            if op == "updateModel":
+                udm_parts.append(f"`UpdateDataModel({tbl})` 동적 INSERT/UPDATE")
+            elif op == "deleteModel":
+                udm_parts.append(f"`UpdateDataModel({tbl})` 동적 DELETE")
+        all_parts = [idx.sql_link(i, up) for i in sorted(all_sql_ids(m))] + udm_parts
+        ids = ", ".join(all_parts) or "-"
         callers = ", ".join(f"`{c}`" for c in sorted(idx.service_callers.get(m.key, []))) or "-"
         cross = ", ".join(f"`{c}`" for c in sorted(m.cross))
         lines.append(f"| `{m.name}` | {m.line} | {ids} | {callers} | {cross} |")
@@ -998,6 +1188,14 @@ def write_sql(idx: Index, out: Path, ns: str, items: list[Statement]) -> None:
     up = "../../"
     lines = [
         f"# {ns}", "", f"`{items[0].rel}`", "",
+    ]
+    ns_files = idx.ns_files.get(ns, [])
+    if len(ns_files) > 1:
+        lines += [
+            f"> ⚠ 같은 namespace 매퍼 {len(ns_files)}개: " + ", ".join(f"`{p.name}`" for p in ns_files),
+            "",
+        ]
+    lines += [
         "테이블·DB 함수는 `<include>`한 SQL 조각의 것까지 포함한다.", "",
         "| SQL ID | 종류 | 줄 | 테이블 | DB 함수 | 사용 서버 메서드 |",
         "|:---|:---|---:|:---|:---|:---|",
@@ -1273,11 +1471,15 @@ def index_src(
         try:
             db_rel = Path(os.path.relpath(db_index_dir.resolve(), target_dir.resolve())).as_posix()
         except ValueError:
-            db_rel = str(db_index_dir)
+            db_rel = None
+        # 출력 폴더가 색인 폴더 밖(예: /tmp)이면 ../가 끝없이 붙으므로 절대 경로로 쓴다.
+        # (화면 파일은 출력 폴더 아래 2단계라 링크에 ../../가 더 붙는다)
+        if db_rel is None or db_rel.split("/").count("..") > 4:
+            db_rel = db_index_dir.resolve().as_posix()
 
     client = parse_client(app)
     server = parse_server(app)
-    statements = parse_mappers(app, tables, functions, columns)
+    statements, ns_files = parse_mappers(app, tables, functions, columns)
     idx = Index(
         app,
         client,
@@ -1287,6 +1489,7 @@ def index_src(
         load_menus(menus_path),
         tables,
         db_rel,
+        ns_files=ns_files,
     )
     idx.with_events = with_events
     idx.button_types_path = button_types_path

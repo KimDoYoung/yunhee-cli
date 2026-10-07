@@ -266,7 +266,7 @@ def test_tenant_host_header_behavior(monkeypatch, tmp_path: Path):
         auto_login=True,
     )
     assert res.ok is True
-    assert "[tenant=kfstest]" in res.data["summary"]
+    assert "tenant=kfstest" in res.data["summary"]
     # Host 헤더 확인: kfstest.localhost:8082
     assert captured_req_headers.get("Host") == "kfstest.localhost:8082"
     assert captured_login_headers.get("Host") == "kfstest.localhost:8082"
@@ -319,3 +319,34 @@ def test_request_api_timeout_message(monkeypatch, tmp_path: Path):
     assert cli_res.exit_code == 1
     assert seen["timeout"] == 0.001
     assert "응답 시간 초과 (0.001s)" in cli_res.output
+
+
+def test_resolve_api_tenant_order(monkeypatch):
+    from yunhee import config
+
+    monkeypatch.setattr(config, "API_DEFAULT_TENANT", None)
+    monkeypatch.setattr(config, "TEST_COMPANY", "admin")
+    assert config.resolve_api_tenant("kfs") == "kfs"
+    assert config.resolve_api_tenant(None) == "admin"
+    monkeypatch.setattr(config, "API_DEFAULT_TENANT", "tomltenant")
+    assert config.resolve_api_tenant(None) == "tomltenant"
+    monkeypatch.setattr(config, "API_DEFAULT_TENANT", None)
+    monkeypatch.setattr(config, "TEST_COMPANY", None)
+    assert config.resolve_api_tenant(None) is None
+
+
+def test_api_and_compare_stop_without_tenant(monkeypatch):
+    from yunhee import config
+
+    monkeypatch.setattr(config, "API_DEFAULT_TENANT", None)
+    monkeypatch.setattr(config, "TEST_COMPANY", None)
+    runner = CliRunner()
+    r1 = runner.invoke(cli.app, ["api", "GET", "/api/v1/sys/roles", "-c", "kfstest"])
+    r2 = runner.invoke(cli.app, ["compare", "GET", "/api/v1/sys/roles", "-c", "kfstest", "--sql", "sys04_role.selectByName"])
+    assert r1.exit_code == 1 and "admin 테넌트" in r1.output
+    assert r2.exit_code == 1 and "admin 테넌트" in r2.output
+
+
+def test_header_tag():
+    assert api_client.header_tag("http://localhost:8082/AssetERP_1", "admin", "kfstest") == "[AssetERP_1 · tenant=admin · company=kfstest]"
+    assert api_client.header_tag() == ""

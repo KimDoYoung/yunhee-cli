@@ -37,8 +37,30 @@ SCHEMA_ENV = os.getenv("YUNHEE_SCHEMA_ENV", "LOCAL_DB")
 # ASIS(AssetERP, GWT/GXT) 소스 루트 - yunhee가 레거시 페이지/매퍼를 찾는 기준
 ASIS_SRC_DIR = Path(os.getenv("YUNHEE_ASIS_SRC_DIR", "/home/kdy987/oms-data/src/Asset-ERP"))
 
-# API 스모크 테스트 기본 설정
-API_BASE_URL = os.getenv("YUNHEE_API_BASE_URL", "http://localhost:8082/OMS")
+import tomllib
+
+
+def _find_yunhee_toml() -> tuple[Path | None, dict]:
+    cur = Path.cwd().resolve()
+    for d in [cur, *cur.parents]:
+        f = d / ".yunhee.toml"
+        if f.is_file():
+            try:
+                return f, tomllib.loads(f.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                return f, {}
+    return None, {}
+
+
+TOML_FILE, TOML_CONFIG = _find_yunhee_toml()
+_api_conf = TOML_CONFIG.get("api", {})
+
+# API 스모크 테스트 기본 설정 (.yunhee.toml 우선, 없으면 .env.local)
+API_BASE_URL = _api_conf.get("base") or os.getenv("YUNHEE_API_BASE_URL", "http://localhost:8082/OMS")
+# YUNHEE_API_TENANT는 0.1.9까지 쓰던 이름 (호환)
+API_DEFAULT_TENANT = (
+    _api_conf.get("tenant") or os.getenv("YUNHEE_API_DEFAULT_TENANT") or os.getenv("YUNHEE_API_TENANT")
+)
 API_LOGIN_PATH = os.getenv("YUNHEE_API_LOGIN_PATH", "/api/auth/login")
 TEST_ADMIN_USER = os.getenv("YUNHEE_TEST_ADMIN_USER", "admin")
 TEST_ADMIN_PASS = os.getenv("YUNHEE_TEST_ADMIN_PASS", "1111")
@@ -52,6 +74,14 @@ def _float_env(name: str, default: float) -> float:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def resolve_api_tenant(tenant: str | None = None) -> str | None:
+    """api·compare가 같이 쓰는 기본 테넌트 선택 순서.
+
+    -t → .yunhee.toml [api] tenant → YUNHEE_API_DEFAULT_TENANT → YUNHEE_TEST_COMPANY
+    """
+    return tenant or API_DEFAULT_TENANT or TEST_COMPANY
 
 
 # yunhee api 요청 타임아웃(초). 로그인 요청은 10초 고정.
@@ -86,7 +116,16 @@ def summary() -> dict[str, str]:
         "local-db": redact(LOCAL_DB),
         "schema-env": SCHEMA_ENV,
         "asis-src": str(ASIS_SRC_DIR),
-        "api-base": API_BASE_URL,
+        "api-base": (
+            f"{API_BASE_URL} (from {TOML_FILE.name})"
+            if TOML_FILE and _api_conf.get("base")
+            else f"{API_BASE_URL} (from .env.local)"
+        ),
+        "api-tenant": (
+            f"{API_DEFAULT_TENANT} (from {TOML_FILE.name})"
+            if TOML_FILE and _api_conf.get("tenant")
+            else (API_DEFAULT_TENANT or (f"{TEST_COMPANY} (from YUNHEE_TEST_COMPANY)" if TEST_COMPANY else "(not set)"))
+        ),
         "api-login-path": API_LOGIN_PATH,
         "api-tenant-host": API_TENANT_HOST,
         "api-timeout": f"{API_TIMEOUT:g}s",
