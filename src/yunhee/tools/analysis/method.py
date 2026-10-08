@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from yunhee.tools.analysis.common import AmbiguousTargetError, resolve_as_is_paths
-from yunhee.tools.as_is.src_indexer import find_app
+from yunhee.tools.as_is.src_indexer import find_app, paren_end, split_args
 
 NAME = "method"
 DESCRIPTION = "AS-IS 메서드 본문 및 호출 흐름 분석 (클라이언트·서버)"
@@ -180,6 +180,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         for sig, s_line, e_line, body in blocks:
             candidates.append({
                 "file": f,
+                "file_text": text,
                 "rel": str(rel),
                 "cls": cls_name,
                 "method": meth_name,
@@ -206,10 +207,14 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     return candidates[0]
 
 
-def _summarize_body(body: str, start_line: int, is_server: bool) -> list[str]:
+def _summarize_body(body: str, start_line: int, is_server: bool, file_text: str = "") -> list[str]:
     """메서드 본문을 파싱하여 중요 작업 흐름을 요약한다."""
     items = []
     lines = body.splitlines()
+
+    class_constants = dict(
+        re.findall(r'(?:private|protected|public)?\s*String\s+(\w+)\s*=\s*"([^"]+)"', file_text)
+    )
 
     for idx, line in enumerate(lines):
         line_num = start_line + idx
@@ -244,10 +249,16 @@ def _summarize_body(body: str, start_line: int, is_server: bool) -> list[str]:
             params = []
             for j in range(idx + 1, min(idx + 12, len(lines))):
                 sub_line = lines[j].strip()
-                m_param = re.search(r'addParam\s*\(\s*"([^"]+)"\s*,\s*([^)]+)\)', sub_line)
+                m_param = re.search(r'addParam\s*\(\s*"([^"]+)"\s*,\s*', sub_line)
                 if m_param:
                     p_k = m_param.group(1)
-                    p_v = m_param.group(2).strip().rstrip(";")
+                    arg_start = m_param.end()
+                    open_paren = sub_line.find("(", m_param.start())
+                    close_paren = paren_end(sub_line, open_paren)
+                    if close_paren > arg_start:
+                        p_v = sub_line[arg_start:close_paren].strip()
+                    else:
+                        p_v = sub_line[arg_start:].rstrip(";").rstrip(")")
                     params.append(f"{p_k}={p_v}")
                 if "execute(" in sub_line or "new ServiceCall" in sub_line:
                     break
@@ -269,10 +280,21 @@ def _summarize_body(body: str, start_line: int, is_server: bool) -> list[str]:
             items.append(f"GridInsertRow.insertRow (L{line_num})")
             continue
 
-        # addChange
-        m_chg = re.search(r'addChange\s*\(\s*([^)]+)\)', s)
+        # addChange: grid.getStore().getRecord(selectModel).addChange(properties.orgCodeId(), orgInfoModel.getOrgCodeId());
+        m_chg = re.search(r'addChange\s*\(', s)
         if m_chg:
-            items.append(f"addChange {m_chg.group(1)} (L{line_num})")
+            p_open = s.find("(", m_chg.start())
+            p_close = paren_end(s, p_open)
+            raw_args = s[m_chg.end():p_close] if p_close > m_chg.end() else s[m_chg.end():].rstrip(";").rstrip(")")
+            args = split_args(raw_args)
+            if len(args) >= 2:
+                prop_arg = args[0].strip()
+                val_arg = args[1].strip()
+                prop_m = re.search(r"\.(\w+)\s*(?:\(\s*\))?", prop_arg)
+                prop_name = prop_m.group(1) if prop_m else prop_arg
+                items.append(f"addChange {prop_name} ← {val_arg} (L{line_num})")
+            elif len(args) == 1:
+                items.append(f"addChange {args[0]} (L{line_num})")
             continue
 
         # 서버 전용: getSeq, UpdateDataModel, setXxx("리터럴"), sqlSession, commit
@@ -312,7 +334,11 @@ def _summarize_body(body: str, start_line: int, is_server: bool) -> list[str]:
                 prefix_var = m_sql_expr.group(1)
                 sql_id = m_sql_expr.group(2)
                 if prefix_var:
-                    items.append(f"sqlSession: {prefix_var} + '{sql_id}' (L{line_num})")
+                    if prefix_var in class_constants:
+                        full_sql = f"{class_constants[prefix_var]}.{sql_id.lstrip('.')}"
+                        items.append(f"sqlSession: {full_sql} (L{line_num})")
+                    else:
+                        items.append(f"sqlSession: {prefix_var} + '{sql_id}' (L{line_num})")
                 else:
                     items.append(f"sqlSession: {sql_id} (L{line_num})")
                 continue
@@ -352,7 +378,7 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     meth_name = obj["method"]
     is_server = obj["is_server"]
 
-    summary_items = _summarize_body(body, start_line, is_server)
+    summary_items = _summarize_body(body, start_line, is_server, file_text=obj.get("file_text", ""))
 
     out = [f"{cls_name}.{meth_name}()  {rel_file}:{start_line}-{end_line}{header_event}"]
     if summary_items:

@@ -43,6 +43,76 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     return {"files": file_summaries}
 
 
+def _parse_jsx_tags(jsx: str) -> list[tuple[str, bool, bool, str]]:
+    """JSX 태그(여는 태그, 닫는 태그, 자체 닫힘 태그, Fragment)를 파싱한다.
+
+    반환: [(tag_name, is_closing, is_self_closing, attrs)]
+    """
+    i = 0
+    n = len(jsx)
+    tags = []
+    while i < n:
+        if jsx[i : i + 3] == "</>":
+            tags.append(("Fragment", True, False, ""))
+            i += 3
+            continue
+        if jsx[i : i + 2] == "<>":
+            tags.append(("Fragment", False, False, ""))
+            i += 2
+            continue
+        if jsx[i] == "<":
+            is_closing = False
+            if i + 1 < n and jsx[i + 1] == "/":
+                is_closing = True
+                i += 2
+            else:
+                i += 1
+            m = re.match(r"([A-Za-z0-9_.]+)", jsx[i:])
+            if not m:
+                i += 1
+                continue
+            tag_name = m.group(1)
+            i += len(tag_name)
+            # Generic support like <SingleGrid<Company>
+            if not is_closing and i < n and jsx[i] == "<":
+                gen_end = jsx.find(">", i)
+                if gen_end != -1:
+                    i = gen_end + 1
+            attr_start = i
+            brace_depth = 0
+            in_str = None
+            while i < n:
+                ch = jsx[i]
+                if in_str:
+                    if ch == "\\":
+                        i += 2
+                        continue
+                    if ch == in_str:
+                        in_str = None
+                else:
+                    if ch in ('"', "'", "`"):
+                        in_str = ch
+                    elif ch == "{":
+                        brace_depth += 1
+                    elif ch == "}":
+                        brace_depth = max(0, brace_depth - 1)
+                    elif brace_depth == 0:
+                        if ch == "/" and i + 1 < n and jsx[i + 1] == ">":
+                            attrs = jsx[attr_start:i].strip()
+                            tags.append((tag_name, is_closing, True, attrs))
+                            i += 2
+                            break
+                        if ch == ">":
+                            attrs = jsx[attr_start:i].strip()
+                            tags.append((tag_name, is_closing, False, attrs))
+                            i += 1
+                            break
+                i += 1
+            continue
+        i += 1
+    return tags
+
+
 def _summarize_tsx(path: Path, text: str) -> dict[str, Any]:
     # 1. 첫 주석
     first_comment = ""
@@ -75,14 +145,9 @@ def _summarize_tsx(path: Path, text: str) -> dict[str, Any]:
     m_ret = re.search(r"return\s*\(\s*(<[\s\S]+?)\n\s*\);", text)
     if m_ret:
         jsx_block = m_ret.group(1)
-        tag_pat = re.compile(r"<(/)?([A-Za-z0-9_.]+)([^>]*)>")
+        tags = _parse_jsx_tags(jsx_block)
         depth = 0
-        for m in tag_pat.finditer(jsx_block):
-            closing = bool(m.group(1))
-            tag = m.group(2)
-            attrs = m.group(3).strip()
-            self_closing = attrs.endswith("/")
-
+        for tag, closing, self_closing, attrs in tags:
             # 소문자 HTML 태그 중 레이아웃 컨테이너(div 등)는 생략
             if tag in ("div", "span", "p", "b", "strong", "i"):
                 continue

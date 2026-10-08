@@ -818,56 +818,114 @@ def class_sql_ids(text: str, roots: list[Path]) -> list[str]:
     return list(dict.fromkeys(sids))
 
 
+_PROPERTIES_PATH_CACHE: dict[str, dict[str, str]] = {}
+_PROPERTIES_FILE_MAP: dict[str, list[Path]] | None = None
+_RESULT_MAP_COLS_CACHE: dict[tuple[str, str], dict[str, str]] = {}
+_MAPPER_XMLS_LIST: list[tuple[Path, str]] | None = None
+_MAPPER_BY_NS: dict[str, list[tuple[Path, str]]] | None = None
+_ALL_DBML_PARSED_TABLES: dict[str, set[str]] | None = None
+
+
+def _get_properties_files(roots: list[Path]) -> dict[str, list[Path]]:
+    global _PROPERTIES_FILE_MAP
+    if _PROPERTIES_FILE_MAP is not None:
+        return _PROPERTIES_FILE_MAP
+    p_map: dict[str, list[Path]] = {}
+    for root in roots:
+        if not root or not root.is_dir():
+            continue
+        for p_file in root.glob("**/*Properties.java"):
+            if "target" in p_file.parts:
+                continue
+            p_map.setdefault(p_file.name.lower(), []).append(p_file)
+    _PROPERTIES_FILE_MAP = p_map
+    return p_map
+
+
 def _parse_properties_paths(roots: list[Path], model_name: str) -> dict[str, str]:
     """{model_name}Properties.java 파일에서 @Path("...") 매핑을 파싱한다."""
-    cand_names = [f"{model_name}Properties.java"]
+    if not model_name:
+        return {}
+    if model_name in _PROPERTIES_PATH_CACHE:
+        return _PROPERTIES_PATH_CACHE[model_name]
+
+    cand_names = [f"{model_name.lower()}properties.java"]
     if model_name.endswith("Model"):
-        cand_names.append(f"{model_name[:-5]}Properties.java")
+        cand_names.append(f"{model_name[:-5].lower()}properties.java")
+
+    p_map = _get_properties_files(roots)
+    cand_files: list[Path] = []
+    for c_name in cand_names:
+        cand_files.extend(p_map.get(c_name, []))
+
+    for p_file in cand_files:
+        try:
+            text = p_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        path_map = {}
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            m_path = re.search(r'@Path\(\s*"([^"]+)"\s*\)', line)
+            if m_path:
+                path_val = m_path.group(1)
+                for j in range(i, min(len(lines), i + 4)):
+                    m_meth = re.search(r"ValueProvider<[^>]+>\s+(\w+)\s*\(", lines[j])
+                    if m_meth:
+                        path_map[m_meth.group(1)] = path_val
+                        break
+        if path_map:
+            _PROPERTIES_PATH_CACHE[model_name] = path_map
+            return path_map
+
+    _PROPERTIES_PATH_CACHE[model_name] = {}
+    return {}
+
+
+def _get_mapper_xmls(roots: list[Path]) -> tuple[list[tuple[Path, str]], dict[str, list[tuple[Path, str]]]]:
+    global _MAPPER_XMLS_LIST, _MAPPER_BY_NS
+    if _MAPPER_XMLS_LIST is not None and _MAPPER_BY_NS is not None:
+        return _MAPPER_XMLS_LIST, _MAPPER_BY_NS
+
+    xml_list: list[tuple[Path, str]] = []
+    by_ns: dict[str, list[tuple[Path, str]]] = {}
+    seen_paths: set[Path] = set()
 
     for root in roots:
         if not root or not root.is_dir():
             continue
-        for name in cand_names:
-            for p_file in root.rglob(name):
-                if "target" in p_file.parts:
-                    continue
-                try:
-                    text = p_file.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    continue
-                path_map = {}
-                lines = text.splitlines()
-                for i, line in enumerate(lines):
-                    m_path = re.search(r'@Path\(\s*"([^"]+)"\s*\)', line)
-                    if m_path:
-                        path_val = m_path.group(1)
-                        for j in range(i, min(len(lines), i + 4)):
-                            m_meth = re.search(r"ValueProvider<[^>]+>\s+(\w+)\s*\(", lines[j])
-                            if m_meth:
-                                path_map[m_meth.group(1)] = path_val
-                                break
-                if path_map:
-                    return path_map
-    return {}
+        for xml_file in root.glob("**/mapper/*.xml"):
+            if "target" in xml_file.parts or xml_file in seen_paths:
+                continue
+            seen_paths.add(xml_file)
+            try:
+                txt = xml_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            entry = (xml_file, txt)
+            xml_list.append(entry)
+            ns_m = re.search(r'<mapper\s+namespace="([^"]+)"', txt)
+            if ns_m:
+                by_ns.setdefault(ns_m.group(1).lower(), []).append(entry)
+            by_ns.setdefault(xml_file.stem.lower(), []).append(entry)
+
+    _MAPPER_XMLS_LIST = xml_list
+    _MAPPER_BY_NS = by_ns
+    return xml_list, by_ns
 
 
 def _find_result_map_cols(roots: list[Path], ns: str, rm_id: str, current_xml: str) -> dict[str, str]:
     """특정 namespace 및 resultMap id에서 property -> column 매핑을 찾는다."""
+    cache_key = (ns.lower(), rm_id.lower())
+    if cache_key in _RESULT_MAP_COLS_CACHE:
+        return _RESULT_MAP_COLS_CACHE[cache_key]
+
     m = None
     if ns:
-        for root in roots:
-            if not root or not root.is_dir():
-                continue
-            for xml_file in root.glob(f"**/{ns}.xml"):
-                if "target" in xml_file.parts:
-                    continue
-                try:
-                    txt = xml_file.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    continue
-                m = re.search(rf'<resultMap\s+[^>]*id="{re.escape(rm_id)}"[^>]*>(.*?)</resultMap>', txt, re.DOTALL)
-                if m:
-                    break
+        _, by_ns = _get_mapper_xmls(roots)
+        entries = by_ns.get(ns.lower(), [])
+        for _xml_file, txt in entries:
+            m = re.search(rf'<resultMap\s+[^>]*id="{re.escape(rm_id)}"[^>]*>(.*?)</resultMap>', txt, re.DOTALL)
             if m:
                 break
 
@@ -875,6 +933,7 @@ def _find_result_map_cols(roots: list[Path], ns: str, rm_id: str, current_xml: s
         m = re.search(rf'<resultMap\s+[^>]*id="{re.escape(rm_id)}"[^>]*>(.*?)</resultMap>', current_xml, re.DOTALL)
 
     if not m:
+        _RESULT_MAP_COLS_CACHE[cache_key] = {}
         return {}
 
     body = m.group(1)
@@ -885,6 +944,8 @@ def _find_result_map_cols(roots: list[Path], ns: str, rm_id: str, current_xml: s
         prop_m = re.search(r'property="([^"]+)"', attrs)
         if col_m and prop_m:
             cols[prop_m.group(1)] = col_m.group(1)
+
+    _RESULT_MAP_COLS_CACHE[cache_key] = cols
     return cols
 
 
@@ -895,80 +956,69 @@ def find_mapper_for_model(model_name: str, roots: list[Path]) -> tuple[dict[str,
     if model_name in _MAPPER_CACHE:
         return _MAPPER_CACHE[model_name]
 
-    for root in roots:
-        if not root or not root.is_dir():
+    mapper_list, _ = _get_mapper_xmls(roots)
+    for _xml_file, xml_text in mapper_list:
+        if model_name not in xml_text:
             continue
-        for xml_file in root.glob("**/mapper/*.xml"):
-            if "target" in xml_file.parts:
-                continue
-            try:
-                xml_text = xml_file.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            if model_name not in xml_text:
-                continue
-            rm = re.search(
-                rf'<resultMap\s+[^>]*type="[^"]*{re.escape(model_name)}"[^>]*>(.*?)</resultMap>',
-                xml_text,
-                re.DOTALL,
-            )
-            if not rm:
-                continue
-            body = rm.group(1)
-            prop_to_col: dict[str, str] = {}
-            for c, p in re.findall(r'<(?:id|result)\s+[^>]*column="([^"]+)"[^>]*property="([^"]+)"', body):
-                prop_to_col[p] = c
-            for p, c in re.findall(r'<(?:id|result)\s+[^>]*property="([^"]+)"[^>]*column="([^"]+)"', body):
-                prop_to_col[p] = c
+        rm = re.search(
+            rf'<resultMap\s+[^>]*type="[^"]*{re.escape(model_name)}"[^>]*>(.*?)</resultMap>',
+            xml_text,
+            re.DOTALL,
+        )
+        if not rm:
+            continue
+        body = rm.group(1)
+        prop_to_col: dict[str, str] = {}
+        for c, p in re.findall(r'<(?:id|result)\s+[^>]*column="([^"]+)"[^>]*property="([^"]+)"', body):
+            prop_to_col[p] = c
+        for p, c in re.findall(r'<(?:id|result)\s+[^>]*property="([^"]+)"[^>]*column="([^"]+)"', body):
+            prop_to_col[p] = c
 
-            # association 매핑 탐색
-            associations: dict[str, dict[str, str]] = {}
-            for assoc_m in re.finditer(r'<association\s+[^>]*property="([^"]+)"[^>]*resultMap="([^"]+)"', body):
-                assoc_prop = assoc_m.group(1)
-                assoc_rm = assoc_m.group(2)
-                assoc_sub_ns, assoc_sub_id = assoc_rm.split(".", 1) if "." in assoc_rm else ("", assoc_rm)
-                sub_cols = _find_result_map_cols(roots, assoc_sub_ns, assoc_sub_id, xml_text)
-                if sub_cols:
-                    associations[assoc_prop] = sub_cols
+        # association 매핑 탐색
+        associations: dict[str, dict[str, str]] = {}
+        for assoc_m in re.finditer(r'<association\s+[^>]*property="([^"]+)"[^>]*resultMap="([^"]+)"', body):
+            assoc_prop = assoc_m.group(1)
+            assoc_rm = assoc_m.group(2)
+            assoc_sub_ns, assoc_sub_id = assoc_rm.split(".", 1) if "." in assoc_rm else ("", assoc_rm)
+            sub_cols = _find_result_map_cols(roots, assoc_sub_ns, assoc_sub_id, xml_text)
+            if sub_cols:
+                associations[assoc_prop] = sub_cols
 
-            # ModelProperties.java @Path 해석
-            path_mappings = _parse_properties_paths(roots, model_name)
-            for prop, path_expr in path_mappings.items():
-                if "." in path_expr:
-                    sub_model_key, sub_field = path_expr.split(".", 1)
-                    if sub_model_key in associations and sub_field in associations[sub_model_key]:
-                        prop_to_col[prop] = associations[sub_model_key][sub_field]
-                    elif sub_model_key in associations:
-                        for sf_key, sf_col in associations[sub_model_key].items():
-                            if sf_key.lower() == sub_field.lower():
-                                prop_to_col[prop] = sf_col
-                                break
+        # ModelProperties.java @Path 해석
+        path_mappings = _parse_properties_paths(roots, model_name)
+        for prop, path_expr in path_mappings.items():
+            if "." in path_expr:
+                sub_model_key, sub_field = path_expr.split(".", 1)
+                if sub_model_key in associations and sub_field in associations[sub_model_key]:
+                    prop_to_col[prop] = associations[sub_model_key][sub_field]
+                elif sub_model_key in associations:
+                    for sf_key, sf_col in associations[sub_model_key].items():
+                        if sf_key.lower() == sub_field.lower():
+                            prop_to_col[prop] = sf_col
+                            break
 
-            ns_m = re.search(r'<mapper\s+namespace="([^"]+)"', xml_text)
-            ns = ns_m.group(1) if ns_m else ""
-            tbl_m = re.search(r"\bfrom\s+([a-z0-9_]+)", xml_text, re.IGNORECASE)
-            tbl = tbl_m.group(1).lower() if tbl_m else ns
-            _ALIAS_ALL_CACHE[model_name] = extract_select_aliases_all(xml_text)
-            alias_map = extract_select_aliases(xml_text)
-            res = (prop_to_col, ns, tbl, alias_map)
-            _MAPPER_CACHE[model_name] = res
-            return res
+        ns_m = re.search(r'<mapper\s+namespace="([^"]+)"', xml_text)
+        ns = ns_m.group(1) if ns_m else ""
+        tbl_m = re.search(r"\bfrom\s+([a-z0-9_]+)", xml_text, re.IGNORECASE)
+        tbl = tbl_m.group(1).lower() if tbl_m else ns
+        _ALIAS_ALL_CACHE[model_name] = extract_select_aliases_all(xml_text)
+        alias_map = extract_select_aliases(xml_text)
+        res = (prop_to_col, ns, tbl, alias_map)
+        _MAPPER_CACHE[model_name] = res
+        return res
 
     _MAPPER_CACHE[model_name] = ({}, "", "", {})
     return {}, "", "", {}
 
 
-_TABLE_COLS_CACHE: dict[str, set[str] | None] = {}
+def _load_all_dbml_tables() -> dict[str, set[str]]:
+    global _ALL_DBML_PARSED_TABLES
+    if _ALL_DBML_PARSED_TABLES is not None:
+        return _ALL_DBML_PARSED_TABLES
 
+    tables: dict[str, set[str]] = {}
 
-def find_table_columns(table_name: str) -> set[str] | None:
-    """DBML 색인에서 대상 테이블의 컬럼 집합을 조회한다."""
-    if not table_name:
-        return None
-    if table_name in _TABLE_COLS_CACHE:
-        return _TABLE_COLS_CACHE[table_name]
-
-    # 1. docs/as-is/db/tables/*.md 탐색
+    # 1. tables/*.md
     cand_dirs = [
         find_as_is_dir("db") / "tables",
         WORK_DIR / "docs" / "as-is" / "db" / "tables",
@@ -977,26 +1027,18 @@ def find_table_columns(table_name: str) -> set[str] | None:
     for c_dir in cand_dirs:
         if not c_dir.is_dir():
             continue
-        dom = table_name[:3] if len(table_name) >= 3 else ""
-        dom_file = c_dir / f"{dom}.md"
-        files_to_check = [dom_file] if dom_file.is_file() else list(c_dir.glob("*.md"))
-        for f in files_to_check:
-            if not f.is_file():
-                continue
+        for f in c_dir.glob("*.md"):
             try:
-                text = f.read_text(encoding="utf-8", errors="replace")
+                txt = f.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            m = re.search(rf'Table\s+(?:"[^"]+"\.)?"{re.escape(table_name)}"\s*\{{([^}}]+)\}}', text, re.IGNORECASE)
-            if not m:
-                m = re.search(rf"Table\s+(?:[^\s.]+\.)?{re.escape(table_name)}\s*\{{([^}}]+)\}}", text, re.IGNORECASE)
-            if m:
-                cols = set(re.findall(r'^\s*"([a-z0-9_]+)"', m.group(1), re.MULTILINE))
+            for m in re.finditer(r'Table\s+(?:"[^"]+"\.)?"?([a-z0-9_]+)"?\s*\{([^}]+)\}', txt, re.IGNORECASE):
+                t_name = m.group(1).lower()
+                cols = set(re.findall(r'^\s*"([a-z0-9_]+)"', m.group(2), re.MULTILINE))
                 if cols:
-                    _TABLE_COLS_CACHE[table_name] = cols
-                    return cols
+                    tables[t_name] = cols
 
-    # 2. dbml 마크다운 파일 탐색
+    # 2. *-dbml.md
     cand_dbmls = [
         *list(find_as_is_dir().glob("*-dbml.md")),
         *list(WORK_DIR.glob(".yunhee/*-dbml.md")),
@@ -1006,20 +1048,26 @@ def find_table_columns(table_name: str) -> set[str] | None:
         if not dbml.is_file():
             continue
         try:
-            text = dbml.read_text(encoding="utf-8", errors="replace")
+            txt = dbml.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        m = re.search(rf'Table\s+(?:"[^"]+"\.)?"{re.escape(table_name)}"\s*\{{([^}}]+)\}}', text, re.IGNORECASE)
-        if not m:
-            m = re.search(rf"Table\s+(?:[^\s.]+\.)?{re.escape(table_name)}\s*\{{([^}}]+)\}}", text, re.IGNORECASE)
-        if m:
-            cols = set(re.findall(r'^\s*"([a-z0-9_]+)"', m.group(1), re.MULTILINE))
-            if cols:
-                _TABLE_COLS_CACHE[table_name] = cols
-                return cols
+        for m in re.finditer(r'Table\s+(?:"[^"]+"\.)?"?([a-z0-9_]+)"?\s*\{([^}]+)\}', txt, re.IGNORECASE):
+            t_name = m.group(1).lower()
+            if t_name not in tables:
+                cols = set(re.findall(r'^\s*"([a-z0-9_]+)"', m.group(2), re.MULTILINE))
+                if cols:
+                    tables[t_name] = cols
 
-    _TABLE_COLS_CACHE[table_name] = None
-    return None
+    _ALL_DBML_PARSED_TABLES = tables
+    return tables
+
+
+def find_table_columns(table_name: str) -> set[str] | None:
+    """DBML 색인에서 대상 테이블의 컬럼 집합을 조회한다."""
+    if not table_name:
+        return None
+    dbml_tables = _load_all_dbml_tables()
+    return dbml_tables.get(table_name.lower())
 
 
 def extract_grid_spec(text: str, file_path: Path | None = None) -> str | None:

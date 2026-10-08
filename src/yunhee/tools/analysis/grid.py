@@ -25,6 +25,8 @@ EXAMPLES = [
 SPECIAL_RENDERERS: dict[str, str] = {
     "addOfficer": 'true→"임원", 아니면 " "',
     "addOfficerYn": 'true→"등기", false→"비등기"',
+    "addBoolean": "체크박스",
+    "addBooleanHtml": "체크박스",
     "addBooleanYn2": "✓/빈칸",
     "addBooleanYn": "true→Y, false→N",
     "addDate": "날짜 (YYYY-MM-DD)",
@@ -155,7 +157,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
 
     # 4. setHidden 호출 분석
     hidden_calls = []
-    hidden_indices: set[int] = set()
+    static_hidden_indices: set[int] = set()
     for i, line in enumerate(lines):
         line_num = i + 1
         if line.strip().startswith("//"):
@@ -167,7 +169,6 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         if m_hid:
             col_idx = int(m_hid.group(1))
             cond_val = m_hid.group(2).strip()
-            hidden_indices.add(col_idx)
 
             # 해당 호출이 속한 메서드 이름 역추적
             caller_meth = "unknown"
@@ -179,12 +180,18 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
 
             # 상위 if 조건문 역추적
             cond = cond_val
+            has_if = False
             for j in range(i, max(-1, i - 15), -1):
                 up_line = lines[j].strip()
                 m_if = re.search(r"(?:else\s+)?if\s*\((.*)\)", up_line)
                 if m_if:
                     cond = m_if.group(1).strip()
+                    has_if = True
                     break
+
+            # 정적 숨김: 조건문 없이 빌더/생성자/초기화 시점에 true로 숨기는 경우만
+            if cond_val == "true" and not has_if and (caller_meth in ("buildGrid", "unknown") or "grid" in caller_meth.lower()):
+                static_hidden_indices.add(col_idx)
 
             hidden_calls.append({
                 "line": line_num,
@@ -223,7 +230,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         cur_idx += 1
 
     for c in raw_cols:
-        is_hidden = cur_idx in hidden_indices
+        is_hidden = cur_idx in static_hidden_indices
         c_copy = dict(c)
         c_copy["index"] = cur_idx
         c_copy["hidden"] = is_hidden

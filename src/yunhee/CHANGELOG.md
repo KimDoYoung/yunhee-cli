@@ -2,6 +2,13 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.2.4] - 2026-10-08
+수정사항 020 (019 시험 결과 보강 및 색인 성능 최적화) 반영.
+- analysis tobe: JSX 렌더 트리 전용 토크나이저 도입 (자체 닫힘 태그, 중첩 화살표 함수/제네릭, Fragment 완전 지원 및 형제 요소 들여쓰기 밀림 해결)
+- analysis grid: 정적 숨김(빌더 `setHidden(true)`, `setRowNumHidden`)만 `숨김` 열에 표시하고 조건부 숨김은 동적 호출 목록으로 분리, `addBoolean`·`addBooleanHtml` 체크박스 렌더러 지원
+- analysis method: `addParam` 값식 괄호 밸런싱으로 닫는 괄호 잘림 해결, `addChange` 속성 및 값(`prop ← value`) 완전 추출, 클래스 필드 `mapperName` 상수 연결 SQL ID 자동 해석
+- index-src & events: 매퍼 XML 목록, Properties 파일 맵, DBML 테이블 인메모리 사전 캐싱으로 반복 파일 I/O 제거 및 색인 속도 대폭 개선
+
 ## [0.2.3] - 2026-10-08
 수정사항 019 (018 시험 결과 및 검증 스크립트 정합성 해결) 반영.
 - analysis method: 메서드 시작 줄 계산 정밀화(실제 선언/어노테이션 기준), E-id caller 기본 표시, UpdateDataModel·연결 SQL ID·addParam 키-값식 요약 보강
