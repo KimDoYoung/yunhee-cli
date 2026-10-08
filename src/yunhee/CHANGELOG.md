@@ -2,6 +2,29 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.2.2] - 2026-10-08
+수정사항 018 (분석 명령 하나로 묶기 및 MyBatis 펼치기 통합) 반영.
+- analysis: 단일 분석 명령 `yunhee analysis <type> <대상>` 및 8개 분석 서브모듈(method, sql, model, grid, screen, ui, tobe, run) 신설
+  - method: AS-IS 메서드 본문/호출 흐름 요약 (`-o md|code`, 오버로드 모호성 시 번호 후보 제시 및 Exit 2)
+  - sql: MyBatis 매퍼 statement 분석 및 실행 가능 SQL 펼치기 (`-o md|sql|code`, `--count` 즉시 행수 조회)
+  - model: 모델 속성 → @Path → resultMap column → SQL 컬럼 매핑 분석 (`-o md|json`, `--sql` 정합성 검증)
+  - grid: 그리드 한 개의 정확한 모양, ColumnModel 실제 순서, 특수 렌더러, GridType(SingleGrid/MultiGrid/CellEditGrid) 판정
+  - screen: 색인 화면 파일에서 필요한 클래스 및 절(`--section`, `--class`) 필터링
+  - ui: UI 대조표 및 단계별(`--done`, `--later`) 버튼/이벤트/그리드 현황 집계
+  - tobe: TOBE 소스 파일(TSX 화면/부품, Java 서비스) 패턴 골격 요약
+  - run: 실행 결과에서 필요한 값(`--stdout`, `--json [--keys]`, `--tests`) 추출 및 분석
+  - `--list`: 지원하는 모든 분석 유형과 설명, 입출력 포맷 표 출력
+- mybatis-render: MyBatis SQL 펼치기 통합 렌더러(`mybatis_render.py`) 구축
+  - 다른 namespace의 `<include>` 및 cross-namespace include 완전 전개 (port-sql, compare 버그 수정)
+  - `<bind>` 변수 매핑 및 OGNL 문자열 연결(`'%' + x + '%'`) 지원
+  - boolean 리터럴(`== true/false`), `size()`, `and/or` 복합 test 식 지원
+- port-save: 회사 컬럼 없는 테이블 자동 검증 및 누락 처리, `--company-via` 서브쿼리 옵션 지원 (C-1)
+- compare: SQL 호출 서비스 역추적 기반 그리드 자동 선택, `--grid` 옵션 및 별칭 정규화 매칭 지원 (C-2)
+- run: gradle/mvn 테스트 결과(`tests N (fail X, skip Y)`) 자동 요약 및 실패 케이스 최상단 우선 표시 (C-3)
+- runs: 상위 디렉터리 프로젝트 루트 자동 탐색(`find_project_root`), 실행 폴더(cwd) 기록 및 표 컬럼 추가 (C-4)
+- outline: 여러 파일/디렉터리 경로 동시 인자 지원 (C-5)
+- index-src: 기계용 색인 파일(`_index.json`) 자동 생성 및 `clean_generated` 정리 지원 (A-9)
+
 ## [0.2.1] - 2026-10-07
 수정사항 016 (0.1.9 시험 결과) 반영.
 - sql: **기본 모드가 실제로 읽기 전용이 됨** — 첫 문장 전에 `conn.read_only`로 `BEGIN READ ONLY`를 건다 (이전엔 `SET default_transaction_read_only`가 열린 트랜잭션에 적용되지 않아 UPDATE+COMMIT이 저장됐음)

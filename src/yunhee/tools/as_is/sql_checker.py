@@ -12,7 +12,6 @@ from yunhee.config import LOCAL_DB, SCHEMA_ENV
 from yunhee.tools.as_is.src_indexer import find_app
 from yunhee.tools.base import ToolResult
 
-STATEMENT_TAGS = ("select", "insert", "update", "delete", "sql")
 ENV_ERROR_RE = re.compile(r'collation "[^"]+" for encoding "[^"]+" does not exist', re.IGNORECASE)
 SCHEMA_ERROR_RE = re.compile(
     r'(column|relation|function|type|schema) (?:"?[\w.]+"?\s*\(.*?\)|"[^"]+"|\S+) does not exist|missing FROM-clause entry for table "[^"]+"',
@@ -23,140 +22,26 @@ TOKEN_RE = re.compile(r"<!\[CDATA\[(.*?)\]\]>|<!--.*?-->|<(/?)(\w+)([^>]*?)(/?)>
 ATTR_RE = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
 
 
-class Node:
-    """아주 작은 XML 트리 (MyBatis 매퍼는 SQL 텍스트와 태그가 섞여 있어 ElementTree보다 이쪽이 단순하다)"""
+from yunhee.tools.as_is.mybatis_render import (
+    STATEMENT_TAGS,
+    Node,
+    Statement,
+    load_statements,
+    parse_xml,
+    render_node,
+)
 
-    def __init__(self, tag: str, attrs: dict[str, str], children: list[Any]) -> None:
-        self.tag, self.attrs, self.children = tag, attrs, children
-
-
-def parse_xml(text: str) -> Node:
-    root = Node("root", {}, [])
-    stack = [root]
-    for m in TOKEN_RE.finditer(text):
-        cdata, closing, tag, attrs, selfclose, chars = m.groups()
-        if cdata is not None:
-            stack[-1].children.append(cdata)
-        elif chars is not None:
-            stack[-1].children.append(chars)
-        elif tag:
-            if closing:
-                while len(stack) > 1 and stack[-1].tag != tag:
-                    stack.pop()
-                if len(stack) > 1:
-                    stack.pop()
-            else:
-                node = Node(tag, dict(ATTR_RE.findall(attrs)), [])
-                stack[-1].children.append(node)
-                if not selfclose:
-                    stack.append(node)
-    return root
-
-
-def unescape(s: str) -> str:
-    return (
-        s.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .replace("&quot;", '"')
-        .replace("&#160;", " ")
-    )
-
-
-class Statement:
-
-    def __init__(self, ns: str, sid: str, kind: str, node: Node, rel: Path, line: int) -> None:
-        self.ns, self.sid, self.kind, self.node, self.rel, self.line = ns, sid, kind, node, rel, line
-
-    @property
-    def key(self) -> str:
-        return f"{self.ns}.{self.sid}"
-
-
-def load_statements(app: Path) -> dict[str, Statement]:
-    statements: dict[str, Statement] = {}
-    for path in sorted(app.rglob("*.xml")):
-        raw = path.read_text(encoding="utf-8", errors="replace")
-        ns = re.search(r"<mapper\s+namespace\s*=\s*\"([^\"]+)\"", raw)
-        if not ns:
-            continue
-        root = parse_xml(raw)
-        mapper = next((c for c in root.children if isinstance(c, Node) and c.tag == "mapper"), None)
-        if not mapper:
-            continue
-        for child in mapper.children:
-            if isinstance(child, Node) and child.tag in STATEMENT_TAGS and "id" in child.attrs:
-                pos = re.search(rf'<{child.tag}\b[^>]*\bid\s*=\s*"{re.escape(child.attrs["id"])}"', raw)
-                line = raw.count("\n", 0, pos.start()) + 1 if pos else 0
-                st = Statement(ns.group(1), child.attrs["id"], child.tag, child, path.relative_to(app), line)
-                statements[st.key] = st
-    return statements
-
-
-# ---------------------------------------------------------------- 펼치기
 
 def render(node: Node, ns: str, statements: dict[str, Statement], seen: tuple[str, ...] = ()) -> str:
-    out = []
-    for c in node.children:
-        if isinstance(c, str):
-            out.append(unescape(c))
-            continue
-        tag, test = c.tag, c.attrs.get("test", "")
-        if tag in ("bind", "selectKey"):
-            continue
-        if tag == "include":
-            ref = c.attrs.get("refid", "")
-            target = (
-                statements.get(ref)
-                or statements.get(f"{ns}.{ref}")
-                or next((t for t in statements.values() if t.sid == ref), None)
-            )
-            if target and target.key not in seen:
-                out.append(render(target.node, target.ns, statements, seen + (target.key,)))
-            else:
-                out.append(f" /* include {ref} 없음 */ ")
-        elif tag == "choose":
-            whens = [w for w in c.children if isinstance(w, Node) and w.tag == "when"]
-            other = next((w for w in c.children if isinstance(w, Node) and w.tag == "otherwise"), None)
-            pick = (
-                next((w for w in whens if "isPostgreSql" in w.attrs.get("test", "")), None)
-                or next((w for w in whens if "isTibero" not in w.attrs.get("test", "")), None)
-                or other
-            )
-            if pick:
-                out.append(render(pick, ns, statements, seen))
-        elif tag == "if":
-            if "isTibero" not in test:
-                out.append(render(c, ns, statements, seen))
-        elif tag == "foreach":
-            out.append(" NULL ")
-        elif tag in ("where", "set", "trim"):
-            body = render(c, ns, statements, seen)
-            if tag == "where":
-                body = " WHERE 1=1 " + re.sub(r"^\s*(AND|OR)\b", " AND ", body, flags=re.IGNORECASE) if body.strip() else ""
-            elif tag == "set":
-                body = " SET " + body.strip().rstrip(",")
-            else:
-                prefix = c.attrs.get("prefix", "")
-                overrides = [o.strip() for o in c.attrs.get("suffixOverrides", "").split("|") if o.strip()]
-                body = body.strip()
-                for o in overrides:
-                    if body.upper().endswith(o.upper()):
-                        body = body[:-len(o)]
-                body = f" {prefix} {body} {c.attrs.get('suffix', '')} "
-            out.append(body)
-        else:
-            out.append(render(c, ns, statements, seen))
-    return "".join(out)
+    return render_node(node, ns, statements, {}, mode="explain", seen=seen)
 
 
 def to_sql(st: Statement, statements: dict[str, Statement]) -> str:
-    sql = render(st.node, st.ns, statements, (st.key,))
-    sql = re.sub(r"#\{[^}]*\}", "NULL", sql)
-    sql = re.sub(r"(?i)\bin\s*\$\{[^}]*\}", "IN (1)", sql)
-    sql = re.sub(r"(?i)\bin\s+NULL\b", "IN (NULL)", sql)
-    sql = re.sub(r"\$\{[^}]*\}", "1", sql)
-    return sql.strip().rstrip(";")
+    from yunhee.tools.as_is.mybatis_render import render as mr_render
+
+    sql, _ = mr_render(st.key, mode="explain", statements=statements)
+    return sql
+
 
 
 def parse_pg_url(url: str | None) -> dict[str, str]:

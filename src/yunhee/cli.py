@@ -228,11 +228,12 @@ def table(
         raise typer.Exit(code=1)
 
 
-def _get_project_name() -> str:
-    proj_data = project.load()
+def _get_project_name(root: Path | None = None) -> str:
+    eff_root = root or project.find_project_root()
+    proj_data = project.load(eff_root)
     if proj_data and proj_data.get("name"):
         return proj_data["name"]
-    return WORK_DIR.name
+    return eff_root.name
 
 
 def _run_exec(
@@ -250,9 +251,11 @@ def _run_exec(
     from yunhee.store import run_tracker
     from yunhee.tools.runner import execute_command
 
-    result = execute_command(command, timeout=timeout)
+    cur_cwd = Path.cwd()
+    project_root = project.find_project_root(cur_cwd)
+    result = execute_command(command, cwd=cur_cwd, timeout=timeout)
     data = result.data
-    project_name = _get_project_name()
+    project_name = _get_project_name(project_root)
 
     if raw:
         if data["stdout"]:
@@ -269,6 +272,7 @@ def _run_exec(
             stdout=data["stdout"],
             stderr=data["stderr"],
             use_llm=not no_llm,
+            cwd=cur_cwd,
         )
         print(summary)
 
@@ -280,6 +284,7 @@ def _run_exec(
         duration_ms=data["duration_ms"],
         log_path=data["log_path"],
         summary=summary,
+        cwd=data.get("cwd"),
     )
 
     if data["exit_code"] != 0:
@@ -295,7 +300,8 @@ def last_run():
     """가장 최근에 실행한 외부 명령어 결과와 요약을 확인"""
     from yunhee.store import run_tracker
 
-    project_name = _get_project_name()
+    project_root = project.find_project_root()
+    project_name = _get_project_name(project_root)
     last = run_tracker.get_last_run(project_name)
     if not last:
         print(f"프로젝트 '{project_name}'의 실행 이력이 없습니다.")
@@ -306,7 +312,8 @@ def last_run():
     else:
         status_icon = "✅" if last["exit_code"] == 0 else "❌"
         duration_sec = f"{last['duration_ms'] / 1000:.2f}s"
-        print(f"{status_icon} Exit Code: {last['exit_code']} ({duration_sec})")
+        cwd_info = f" (cwd: {last['cwd']})" if last.get("cwd") else ""
+        print(f"{status_icon} Exit Code: {last['exit_code']} ({duration_sec}){cwd_info}")
         print(f"Command: {last['command']}")
         print(f"Log: {last['log_path']}")
         print(f"Created: {last['created_at']}")
@@ -322,7 +329,8 @@ def list_runs_cmd(
 
     from yunhee.store import run_tracker
 
-    project_name = _get_project_name()
+    project_root = project.find_project_root()
+    project_name = _get_project_name(project_root)
     records = run_tracker.list_runs(project_name, limit=limit)
     if not records:
         print(f"프로젝트 '{project_name}'의 실행 이력이 없습니다.")
@@ -333,6 +341,7 @@ def list_runs_cmd(
     table.add_column("Command", style="cyan")
     table.add_column("Exit", justify="right")
     table.add_column("Duration", justify="right")
+    table.add_column("CWD", style="yellow")
     table.add_column("Created At", style="dim")
     table.add_column("Log Path", style="magenta")
 
@@ -344,6 +353,7 @@ def list_runs_cmd(
             r["command"],
             f"[{exit_style}]{r['exit_code']}[/{exit_style}]",
             duration_str,
+            r.get("cwd") or ".",
             r["created_at"][:19].replace("T", " "),
             r["log_path"],
         )
@@ -354,7 +364,7 @@ def list_runs_cmd(
 
 @app.command()
 def outline(
-    path: Annotated[str, typer.Argument(help="분석할 파일 또는 디렉터리 경로")],
+    paths: Annotated[list[str], typer.Argument(help="분석할 파일 또는 디렉터리 경로 (하나 이상)")],
     limit: Annotated[int, typer.Option("--limit", help="최대 글자 수 제한")] = 30000,
 ):
     """소스 파일(Java, XML, TS/TSX, Python) 또는 디렉터리의 클래스·메서드·시그니처와 줄 번호를 추출 (LLM 호출 없음)
@@ -364,11 +374,22 @@ def outline(
 """
     from yunhee.tools.outliner import outline_path
 
-    res = outline_path(path, char_limit=limit)
-    if not res.ok:
-        typer.echo(f"오류: {res.error}", err=True)
-        raise typer.Exit(code=1)
-    print(res.data)
+    combined_outputs = []
+    remaining_limit = limit
+
+    for p in paths:
+        if remaining_limit <= 0:
+            combined_outputs.append("// ... [글자 수 예산 초과로 이하 생략]")
+            break
+        res = outline_path(p, char_limit=remaining_limit)
+        if not res.ok:
+            typer.echo(f"오류: {res.error}", err=True)
+            raise typer.Exit(code=1)
+        out_text = res.data or ""
+        combined_outputs.append(out_text)
+        remaining_limit -= len(out_text)
+
+    print("\n\n".join(combined_outputs))
 
 
 TENANT_REQUIRED_MSG = (
@@ -528,6 +549,7 @@ def port_save_cmd(
     cols: Annotated[str, typer.Option("--cols", help="INSERT/UPDATE 대상 컬럼 목록 (쉼표 구분)")],
     company_col: Annotated[str | None, typer.Option("--company-col", help="회사 ID 컬럼명")] = None,
     id_col: Annotated[str | None, typer.Option("--id-col", help="PK ID 컬럼명")] = None,
+    company_via: Annotated[str | None, typer.Option("--company-via", help="회사 조건 서브쿼리 경로 (예: emp01_person.emp01_person_id=emp03_person_id)")] = None,
     src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
 ) -> None:
     """UpdateDataModel 대신 사용할 명시 INSERT, UPDATE, DELETE 및 부수 효과 SQL 생성"""
@@ -539,6 +561,7 @@ def port_save_cmd(
         cols=col_list,
         company_col=company_col,
         id_col=id_col,
+        company_via=company_via,
         src_root=src,
     )
     if not res.ok:
@@ -562,6 +585,7 @@ def compare_cmd(
     company: Annotated[str | None, typer.Option("--company", "-c", help="회사 코드")] = None,
     db: Annotated[str, typer.Option("--db", help="대상 DB명 (기본: asseterpdb)")] = "asseterpdb",
     src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
+    grid: Annotated[str | None, typer.Option("--grid", help="대조할 화면/그리드 클래스 (예: Sys05_Page_UserRole)")] = None,
 ) -> None:
     """조회 API와 AS-IS SQL 행 수 및 그리드 컬럼 커버리지 비교"""
     from yunhee.tools.comparator import compare_api_sql
@@ -598,6 +622,7 @@ def compare_cmd(
         company=company,
         db_name=db,
         src_root=src,
+        grid=grid,
     )
     if not res.ok:
         typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
@@ -971,6 +996,211 @@ def events_cmd(
     # 기본 마크다운 출력
     md_text = render_events_markdown(file_label, ev_list, method_list, grid_spec=grid_spec, buttons=buttons)
     typer.echo(md_text)
+
+
+@app.command(name="analysis")
+def analysis_cmd(
+    type_name: Annotated[
+        str | None,
+        typer.Argument(help="분석 유형 (method, sql, model, grid, screen, ui, tobe, run 등)"),
+    ] = None,
+    target: Annotated[
+        str | None,
+        typer.Argument(help="분석 대상 (클래스, 메서드, SQL ID, 화면명, 실행 ID 등)"),
+    ] = None,
+    list_types_flag: Annotated[
+        bool,
+        typer.Option("--list", help="지원하는 모든 분석 유형 목록 출력"),
+    ] = False,
+    output: Annotated[
+        str | None,
+        typer.Option("--output", "-o", help="출력 형식 (md, json, code, sql)"),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="결과 개수 또는 글자 수 제한"),
+    ] = None,
+    src: Annotated[
+        Path | None,
+        typer.Option("--src", "-s", help="AS-IS 소스 루트 경로"),
+    ] = None,
+    src_index: Annotated[
+        Path | None,
+        typer.Option("--src-index", help="AS-IS 색인 폴더 경로"),
+    ] = None,
+    server: Annotated[
+        bool,
+        typer.Option("--server", help="서버 클래스 우선 검색"),
+    ] = False,
+    client: Annotated[
+        bool,
+        typer.Option("--client", help="클라이언트 클래스 우선 검색"),
+    ] = False,
+    with_events: Annotated[
+        bool,
+        typer.Option("--with-events", help="호출 이벤트(E-id, 줄) 포함"),
+    ] = False,
+    param: Annotated[
+        list[str] | None,
+        typer.Option("--param", help="MyBatis/쿼리 파라미터 key=val (반복 가능)"),
+    ] = None,
+    count: Annotated[
+        bool,
+        typer.Option("--count", help="SQL 행 수만 카운트 실행"),
+    ] = False,
+    db: Annotated[
+        str | None,
+        typer.Option("--db", help="DB 환경변수 이름"),
+    ] = None,
+    sql_id: Annotated[
+        str | None,
+        typer.Option("--sql", help="연관 SQL ID (model 분석 등)"),
+    ] = None,
+    cls_name: Annotated[
+        str | None,
+        typer.Option("--class", help="화면 하위 클래스 필터링"),
+    ] = None,
+    section: Annotated[
+        str | None,
+        typer.Option("--section", help="절 필터링 (services, tables, ui, events, methods, grid, buttons)"),
+    ] = None,
+    list_classes: Annotated[
+        bool,
+        typer.Option("--list-classes", help="화면 내 하위 클래스 목록 출력 (screen --list)"),
+    ] = False,
+    done: Annotated[
+        str | None,
+        typer.Option("--done", help="1단계 완료 클래스 목록 (콤마 구분)"),
+    ] = None,
+    later: Annotated[
+        str | None,
+        typer.Option("--later", help="2단계 등 이후 클래스 목록"),
+    ] = None,
+    tobe: Annotated[
+        Path | None,
+        typer.Option("--tobe", help="대조할 TOBE 소스 경로 또는 디렉터리"),
+    ] = None,
+    stdout: Annotated[
+        bool,
+        typer.Option("--stdout", help="실행 로그의 STDOUT 부분만 출력"),
+    ] = False,
+    json_flag: Annotated[
+        bool,
+        typer.Option("--json", help="마지막 JSON 행 추출"),
+    ] = False,
+    keys: Annotated[
+        str | None,
+        typer.Option("--keys", help="JSON 추출 키 목록 (콤마 구분)"),
+    ] = None,
+    tests: Annotated[
+        bool,
+        typer.Option("--tests", help="테스트 실행 결과 통계 요약"),
+    ] = False,
+):
+    """AS-IS 및 TOBE 통합 정적 분석 도구 (method, sql, model, grid, screen, ui, tobe, run)
+
+[bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
+  원본 소스를 직접 sed/grep/cat하지 마세요. 필요한 정보(메서드 본문 요약, 실행 가능 SQL, 그리드 컬럼 스펙 등)를
+  yunhee analysis <type> <target> 으로 추출하여 컨텍스트 토큰을 절약하세요.
+"""
+    import inspect
+
+    from rich.console import Console
+    from rich.table import Table
+
+    from yunhee.tools import analysis
+    from yunhee.tools.analysis.common import AmbiguousTargetError
+
+    # 1. --list 플래그 또는 type_name 미지정 시 유형 목록 출력
+    if list_types_flag or not type_name:
+        types_info = analysis.list_types()
+        table = Table(title="yunhee analysis 지원 유형 목록")
+        table.add_column("Type", style="cyan", no_wrap=True)
+        table.add_column("Target", style="yellow")
+        table.add_column("Formats", style="green")
+        table.add_column("Description")
+        table.add_column("Example", style="dim")
+
+        for t in types_info:
+            ex = t["examples"][0] if t["examples"] else ""
+            table.add_row(
+                t["name"],
+                t["target_help"],
+                "/".join(t["formats"]),
+                t["description"],
+                ex,
+            )
+
+        console = Console()
+        console.print(table)
+        if not type_name and not list_types_flag:
+            typer.echo("\n사용법: yunhee analysis <type> <대상> [옵션...]")
+        return
+
+    mod = analysis.get_type_module(type_name)
+    if not mod:
+        typer.secho(f"[ERROR] 알 수 없는 분석 유형입니다: {type_name}", fg=typer.colors.RED, err=True)
+        typer.echo("지원하는 유형 목록을 확인하려면 'yunhee analysis --list' 를 실행하세요.", err=True)
+        raise typer.Exit(code=1)
+
+    # screen의 --list 옵션 호환
+    screen_list = list_classes
+    if type_name == "screen" and list_types_flag:
+        screen_list = True
+
+    # 대상이 필요하지만 주어지지 않은 경우
+    if not target and type_name not in ("run",) and not (type_name == "screen" and screen_list):
+        typer.secho(
+            f"[ERROR] '{type_name}' 분석 대상을 지정하세요: {getattr(mod, 'TARGET_HELP', '')}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    opts = {
+        "output": output,
+        "limit": limit,
+        "src": src,
+        "src_index": src_index,
+        "server": server,
+        "client": client,
+        "with_events": with_events,
+        "param": param or [],
+        "count": count,
+        "db": db,
+        "sql": sql_id,
+        "class": cls_name,
+        "section": section,
+        "list": screen_list,
+        "done": done,
+        "later": later,
+        "tobe": tobe,
+        "stdout": stdout,
+        "json": json_flag,
+        "keys": keys,
+        "tests": tests,
+    }
+
+    try:
+        resolved_obj = mod.resolve(target or "", opts)
+    except AmbiguousTargetError as exc:
+        typer.secho(str(exc), fg=typer.colors.YELLOW, err=True)
+        raise typer.Exit(code=2)
+    except Exception as exc:  # noqa: BLE001
+        typer.secho(f"[ERROR] {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    fmt = output or (getattr(mod, "FORMATS", ("md",))[0])
+    try:
+        sig = inspect.signature(mod.render)
+        if len(sig.parameters) >= 3:
+            rendered = mod.render(resolved_obj, fmt=fmt, opts=opts)
+        else:
+            rendered = mod.render(resolved_obj, fmt=fmt)
+        typer.echo(rendered)
+    except Exception as exc:  # noqa: BLE001
+        typer.secho(f"[ERROR] 렌더링 실패: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

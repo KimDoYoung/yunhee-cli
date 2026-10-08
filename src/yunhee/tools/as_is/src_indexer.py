@@ -1398,6 +1398,63 @@ def write_readme(
     write(out, "README.md", lines)
 
 
+def write_index_json(idx: "Index", out: Path) -> Path:
+    """A-9: analysis 명령어가 소비할 기계용 색인 파일(_index.json)을 생성한다."""
+    import json
+
+    client_classes: dict[str, Any] = {}
+    for items in idx.client.values():
+        for c in items:
+            client_classes[c.name] = {
+                "file": str(c.rel),
+                "domain": c.domain,
+                "is_model": c.is_model,
+                "services": [s[0] for s in c.services],
+                "refs": sorted(c.refs),
+            }
+
+    server_classes: dict[str, Any] = {}
+    for s_name, s_cls in idx.server.items():
+        server_classes[s_name] = {
+            "file": str(s_cls.rel),
+            "domain": s_cls.domain,
+            "methods": [
+                {
+                    "name": m.name,
+                    "line": m.line,
+                    "sqls": sorted(m.sql_ids),
+                    "is_service": m.is_service,
+                    "calls": sorted(m.calls),
+                    "udm_calls": m.udm_calls,
+                }
+                for m in s_cls.methods.values()
+            ],
+        }
+
+    statements_dict: dict[str, Any] = {}
+    sql_fragments_dict: dict[str, Any] = {}
+    for st in idx.statements.values():
+        target_dict = sql_fragments_dict if st.kind == "sql" else statements_dict
+        target_dict[st.key] = {
+            "file": str(st.rel),
+            "line": st.line,
+            "kind": st.kind,
+        }
+
+    data = {
+        "src_root": str(idx.app),
+        "screens_count": len(idx.screen_names),
+        "client_classes": client_classes,
+        "server_classes": server_classes,
+        "statements": statements_dict,
+        "sql_fragments": sql_fragments_dict,
+    }
+
+    out_file = out / "_index.json"
+    out_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return out_file
+
+
 def clean_generated(out: Path) -> tuple[bool, str]:
     """이전 출력 삭제: 안전 표식(README.md)을 확인한 후 .md와 빈 폴더만 지운다."""
     if not out.is_dir():
@@ -1413,6 +1470,9 @@ def clean_generated(out: Path) -> tuple[bool, str]:
 
     for f in out.rglob("*.md"):
         f.unlink()
+    idx_json = out / "_index.json"
+    if idx_json.is_file():
+        idx_json.unlink()
     for d in sorted((p for p in out.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
         if not any(d.iterdir()):
             d.rmdir()
@@ -1501,6 +1561,7 @@ def index_src(
     write_menus(idx, target_dir)
     missing = write_unresolved(idx, target_dir)
     write_readme(idx, target_dir, src_root, stats, menus_path, missing)
+    write_index_json(idx, target_dir)
 
     n_screens = len(idx.screen_names) - len(idx.frame_names)
     return ToolResult(

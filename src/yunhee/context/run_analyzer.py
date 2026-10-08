@@ -1,6 +1,8 @@
 import sys
+from pathlib import Path
 
 from yunhee import ollama_client
+from yunhee.tools.runner import extract_test_results
 
 MAX_LLM_INPUT_CHARS = 10000
 
@@ -20,20 +22,33 @@ def summarize_run(
     stdout: str,
     stderr: str,
     use_llm: bool = True,
+    cwd: Path | None = None,
 ) -> str:
     """명령어 실행 결과를 상용 AI 에이전트 및 사용자가 소비하기 좋은 압축 마크다운으로 가공한다."""
     duration_sec = f"{duration_ms / 1000:.2f}s"
+    test_info = extract_test_results(command, cwd=cwd, stdout=stdout, stderr=stderr)
 
     # 1. 성공 케이스 (exit_code == 0): 정확히 1줄로 단축하여 토큰 낭비 제거
     if exit_code == 0:
-        return f"✅ Execution Succeeded in {duration_sec}: `{command}` (log: {log_path})"
+        test_suffix = ""
+        if test_info:
+            test_suffix = f" · tests {test_info['total']} (fail {test_info['failures']}, skip {test_info['skipped']})"
+        return f"✅ Execution Succeeded in {duration_sec}: `{command}` (log: {log_path}){test_suffix}"
 
     # 2. 실패 케이스 (exit_code != 0)
-    lines = [
+    lines = []
+    # C-3: 실패면 실패 테스트 이름을 LLM 요약보다 먼저 낸다 (맨 위)
+    if test_info and test_info.get("failed_cases"):
+        for fc in test_info["failed_cases"]:
+            lines.append(f"❌ {fc}")
+
+    lines.extend([
         f"### ❌ Execution Failed (exit code: {exit_code}, {duration_sec})",
         f"- **Command**: `{command}`",
         f"- **Log File**: `{log_path}`",
-    ]
+    ])
+    if test_info:
+        lines.append(f"- **Tests**: 전체 {test_info['total']} · 실패 {test_info['failures']} · 건너뜀 {test_info['skipped']}")
 
     combined_output = ""
     if stderr.strip():

@@ -285,7 +285,20 @@ def port_sql(
         return ToolResult(ok=False, error=f"매퍼 {xml_path.name} 에서 <select id=\"{sid}\">를 찾을 수 없습니다.")
 
     sel_info = selects[sid]
-    sbody = expand_includes(sel_info["body"], sql_fragments)
+    # mybatis_render를 통해 structure 모드로 include 완전 펼치기
+    from yunhee.tools.as_is.mybatis_render import get_all_statements, mask_sql_preserve
+    from yunhee.tools.as_is.mybatis_render import render as mr_render
+    from yunhee.tools.as_is.sql_checker import _depth0_matches
+
+    stmts = get_all_statements(src_root)
+    if sql_id in stmts or any(s.sid == sid for s in stmts.values()):
+        sbody, _ = mr_render(sql_id, mode="structure", statements=stmts)
+        m_tag = re.match(r"^\s*<(?:select|insert|update|delete|sql)\b[^>]*>(.*?)</(?:select|insert|update|delete|sql)>\s*$", sbody, re.DOTALL | re.IGNORECASE)
+        if m_tag:
+            sbody = m_tag.group(1)
+    else:
+        sbody = expand_includes(sel_info["body"], sql_fragments)
+
     rm_id = sel_info["attrs"].get("resultMap", "mapper").split(".")[-1]
     rm_info = result_maps.get(rm_id) or next(iter(result_maps.values()), None)
 
@@ -293,21 +306,40 @@ def port_sql(
     rm_mappings = rm_info["mappings"] if rm_info else []
     getter_map = get_model_getter_defaults(model_cls, src_root) if (getter_defaults and model_cls) else {}
 
+    # 최상위 깊이 SELECT 절 파싱
+    masked = mask_sql_preserve(sbody)
+    sel_matches = _depth0_matches(masked, r"\bSELECT\b")
+    if not sel_matches:
+        return ToolResult(
+            ok=False,
+            error=f"SELECT ... FROM 절을 파싱할 수 없습니다. include·CTE를 펼친 원문은 'yunhee analysis sql {sql_id} -o sql'로 확인하세요.",
+        )
+    main_sel = sel_matches[-1] if len(sel_matches) > 1 else sel_matches[0]
+    start = main_sel.end()
+
+    from_matches = [m for m in _depth0_matches(masked, r"\bFROM\b") if m.start() > start]
+    if not from_matches:
+        return ToolResult(
+            ok=False,
+            error=f"SELECT ... FROM 절을 파싱할 수 없습니다. include·CTE를 펼친 원문은 'yunhee analysis sql {sql_id} -o sql'로 확인하세요.",
+        )
+    stop = from_matches[0].start()
+    raw_select_items = sbody[start:stop].strip()
+    after_from = sbody[from_matches[0].end():].strip()
+
+    # CTE (WITH ...) 확인
+    cte_block = ""
+    prefix_text = sbody[:main_sel.start()].strip()
+    if prefix_text.upper().startswith("WITH") or "WITH " in prefix_text.upper():
+        cte_block = f"    {prefix_text}\n"
+
     # 테이블명 탐색 (예: FROM sys04_role)
-    tbl_m = re.search(r"\bFROM\s+([a-zA-Z0-9_]+)", sbody, re.IGNORECASE)
+    tbl_m = re.match(r"\s*([a-zA-Z0-9_]+)", after_from)
     main_table = tbl_m.group(1).lower() if tbl_m else ns
     tbl_pfx_m = re.match(r"^([a-z]+\d*)_", main_table)
     tbl_prefix = (tbl_pfx_m.group(1) + "_") if tbl_pfx_m else ""
 
     table_cols = find_table_columns(main_table)
-
-    # SELECT 절 파싱
-    sel_match = re.search(r"\bSELECT\b(.*?)\bFROM\b", sbody, re.IGNORECASE | re.DOTALL)
-    if not sel_match:
-        return ToolResult(ok=False, error="SQL에서 SELECT ... FROM 절을 파싱할 수 없습니다.")
-
-    raw_select_items = sel_match.group(1).strip()
-    after_from = sbody[sel_match.end(1):].strip()
 
     # 파라미터 수집
     params = sorted(set(re.findall(r"[#$]\{(\w+)\}", sbody)))
@@ -477,7 +509,7 @@ def port_sql(
 
     <!-- AS-IS {ns}.{sid}{param_comment} -->{type_comment}
     <select id="{select_id}" resultType="{result_type}">
-        SELECT <include refid="{columns_sql_id}"/>
+{cte_block}        SELECT <include refid="{columns_sql_id}"/>
           FROM {main_table}
 {formatted_where}
     </select>"""
@@ -520,6 +552,7 @@ def port_save(
     cols: list[str],
     company_col: str | None = None,
     id_col: str | None = None,
+    company_via: str | None = None,
     src_root: Path | None = None,
 ) -> ToolResult:
     """UpdateDataModel 대신 사용할 명시 INSERT, UPDATE, DELETE SQL 및 부수효과 SQL을 생성한다."""
@@ -530,6 +563,7 @@ def port_save(
     entity_title = entity_name[0].upper() + entity_name[1:]
 
     table_cols = find_table_columns(table)
+    warnings: list[str] = []
 
     # ID 컬럼 결정
     if not id_col:
@@ -543,17 +577,49 @@ def port_save(
 
     id_prop = col_to_tobe_prop(id_col, tbl_prefix)
 
-    # Company 컬럼 결정
-    if not company_col:
+    # Company 컬럼 결정 및 company_via 처리
+    has_company = True
+    subquery_condition = ""
+    company_prop = "companyId"
+
+    if company_via:
+        has_company = False
+        company_col = None
+        if "=" in company_via:
+            target_part, current_fk = company_via.split("=", 1)
+            target_part, current_fk = target_part.strip(), current_fk.strip()
+            if "." in target_part:
+                target_tbl, target_pk = target_part.split(".", 1)
+            else:
+                target_tbl, target_pk = target_part, f"{target_part}_id"
+            target_cols = find_table_columns(target_tbl)
+            t_pfx_m = re.match(r"^([a-z]+\d*)_", target_tbl)
+            t_pfx = (t_pfx_m.group(1) + "_") if t_pfx_m else ""
+            t_comp = f"{t_pfx}company_id"
+            if target_cols and t_comp not in target_cols:
+                t_comp_match = next((c for c in target_cols if "company_id" in c), t_comp)
+                t_comp = t_comp_match
+            subquery_condition = f"AND {current_fk} IN (SELECT {target_pk} FROM {target_tbl} WHERE {t_comp} = #{{{company_prop}}})"
+    elif not company_col:
         cand_comp = f"{tbl_prefix}company_id" if tbl_prefix else "company_id"
-        if table_cols and cand_comp in table_cols:
-            company_col = cand_comp
-        elif table_cols:
-            company_col = next((c for c in table_cols if "company_id" in c), cand_comp)
+        if table_cols is not None:
+            if cand_comp in table_cols:
+                company_col = cand_comp
+                company_prop = col_to_tobe_prop(company_col, tbl_prefix)
+            else:
+                comp_match = next((c for c in table_cols if "company_id" in c), None)
+                if comp_match:
+                    company_col = comp_match
+                    company_prop = col_to_tobe_prop(company_col, tbl_prefix)
+                else:
+                    has_company = False
+                    company_col = None
+                    warnings.append("회사 컬럼 없음")
         else:
             company_col = cand_comp
-
-    company_prop = col_to_tobe_prop(company_col, tbl_prefix)
+            company_prop = col_to_tobe_prop(company_col, tbl_prefix)
+    else:
+        company_prop = col_to_tobe_prop(company_col, tbl_prefix)
 
     # cols 정규화 (DB 컬럼명 및 camelCase 프로퍼티명)
     norm_cols: list[tuple[str, str]] = []
@@ -577,16 +643,28 @@ def port_save(
     </select>"""
 
     # 2. insert{Entity}
-    if id_col == company_col:
+    if has_company and company_col:
+        if id_col == company_col:
+            insert_cols = [id_col] + [c for c, _ in norm_cols]
+            insert_vals = [f"#{{{id_prop}}}"] + [f"#{{{p}}}" for _, p in norm_cols]
+            update_where = f"         WHERE {id_col} = #{{{id_prop}}}"
+            delete_where = f"         WHERE {id_col} IN"
+        else:
+            insert_cols = [id_col, company_col] + [c for c, _ in norm_cols]
+            insert_vals = [f"#{{{id_prop}}}", f"#{{{company_prop}}}"] + [f"#{{{p}}}" for _, p in norm_cols]
+            update_where = f"         WHERE {id_col}    = #{{{id_prop}}}\n           AND {company_col} = #{{{company_prop}}}"
+            delete_where = f"         WHERE {company_col} = #{{{company_prop}}}\n           AND {id_col} IN"
+    else:
         insert_cols = [id_col] + [c for c, _ in norm_cols]
         insert_vals = [f"#{{{id_prop}}}"] + [f"#{{{p}}}" for _, p in norm_cols]
-        update_where = f"         WHERE {id_col} = #{{{id_prop}}}"
-        delete_where = f"         WHERE {id_col} IN"
-    else:
-        insert_cols = [id_col, company_col] + [c for c, _ in norm_cols]
-        insert_vals = [f"#{{{id_prop}}}", f"#{{{company_prop}}}"] + [f"#{{{p}}}" for _, p in norm_cols]
-        update_where = f"         WHERE {id_col}    = #{{{id_prop}}}\n           AND {company_col} = #{{{company_prop}}}"
-        delete_where = f"         WHERE {company_col} = #{{{company_prop}}}\n           AND {id_col} IN"
+        if subquery_condition:
+            update_where = f"         WHERE {id_col} = #{{{id_prop}}}\n           {subquery_condition}"
+            where_first = subquery_condition.strip()
+            where_first = where_first.removeprefix("AND ")
+            delete_where = f"         WHERE {where_first}\n           AND {id_col} IN"
+        else:
+            update_where = f"         WHERE {id_col} = #{{{id_prop}}}"
+            delete_where = f"         WHERE {id_col} IN"
 
     insert_sql = f"""    <insert id="insert{entity_title}">
         INSERT INTO {table} ({', '.join(insert_cols)})
@@ -623,7 +701,6 @@ def port_save(
         (f"delete{plural_title}", "delete", delete_sql),
     ]
     used_ids = {sid for sid, _, _ in stmts}
-    warnings: list[str] = []
 
     def unique_id(base: str) -> str:
         if base not in used_ids:
