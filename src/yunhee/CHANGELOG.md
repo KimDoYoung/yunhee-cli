@@ -2,6 +2,18 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.2.3] - 2026-10-08
+수정사항 019 (018 시험 결과 및 검증 스크립트 정합성 해결) 반영.
+- analysis method: 메서드 시작 줄 계산 정밀화(실제 선언/어노테이션 기준), E-id caller 기본 표시, UpdateDataModel·연결 SQL ID·addParam 키-값식 요약 보강
+- analysis grid: ColumnModel 복합 인자 및 탭/공백 정렬 파싱 완벽 지원, setHidden 상위 조건 및 컬럼 매핑, CellEditGrid/SingleGrid 정확한 판정
+- analysis screen: 대상 지정 시 `--list`의 화면 클래스 목록(`list_classes`) 위임, `--section services` 한글 제목 대응 및 `--class` 결합 필터링, 그리드 중복 카운트 제거
+- analysis ui: TOBE TSX 내 인라인 및 JSX 주석 이벤트 집계 보강, AS-IS 그리드 수 중복 카운트 제거
+- analysis tobe: TSX 렌더 트리 중첩 컴포넌트 전체 계층 반영, useGridCrud 제네릭 인터페이스 필드 및 훅 반환값 추출, Java 메서드 본문 throw 조기종료 방지 및 전체 호출 순서 추적
+- analysis & index-src: MyBatis resultMap association 및 Model @Path 매핑 기반 연관 테이블 컬럼 추적으로 Grid Spec ⚠DB없음 오탐 완전 해결
+- compare: 서비스 호출 역추적 기반 화면 하위 페이지 그리드 컬럼 정밀 대조
+- runs: 최상위 프로젝트 루트(`CLAUDE.md`, `.yunhee/project.json`) 우선 판정으로 하위 디렉터리 실행 집계 누락 방지, CWD 컬럼 줄임표 방지
+- cli: 무거운 모듈(chromadb, prompt_toolkit) 지연 임포트(lazy import)로 CLI 시작 및 실행 속도 단축 (1초 이내)
+
 ## [0.2.2] - 2026-10-08
 수정사항 018 (분석 명령 하나로 묶기 및 MyBatis 펼치기 통합) 반영.
 - analysis: 단일 분석 명령 `yunhee analysis <type> <대상>` 및 8개 분석 서브모듈(method, sql, model, grid, screen, ui, tobe, run) 신설

@@ -818,6 +818,76 @@ def class_sql_ids(text: str, roots: list[Path]) -> list[str]:
     return list(dict.fromkeys(sids))
 
 
+def _parse_properties_paths(roots: list[Path], model_name: str) -> dict[str, str]:
+    """{model_name}Properties.java 파일에서 @Path("...") 매핑을 파싱한다."""
+    cand_names = [f"{model_name}Properties.java"]
+    if model_name.endswith("Model"):
+        cand_names.append(f"{model_name[:-5]}Properties.java")
+
+    for root in roots:
+        if not root or not root.is_dir():
+            continue
+        for name in cand_names:
+            for p_file in root.rglob(name):
+                if "target" in p_file.parts:
+                    continue
+                try:
+                    text = p_file.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                path_map = {}
+                lines = text.splitlines()
+                for i, line in enumerate(lines):
+                    m_path = re.search(r'@Path\(\s*"([^"]+)"\s*\)', line)
+                    if m_path:
+                        path_val = m_path.group(1)
+                        for j in range(i, min(len(lines), i + 4)):
+                            m_meth = re.search(r"ValueProvider<[^>]+>\s+(\w+)\s*\(", lines[j])
+                            if m_meth:
+                                path_map[m_meth.group(1)] = path_val
+                                break
+                if path_map:
+                    return path_map
+    return {}
+
+
+def _find_result_map_cols(roots: list[Path], ns: str, rm_id: str, current_xml: str) -> dict[str, str]:
+    """특정 namespace 및 resultMap id에서 property -> column 매핑을 찾는다."""
+    m = None
+    if ns:
+        for root in roots:
+            if not root or not root.is_dir():
+                continue
+            for xml_file in root.glob(f"**/{ns}.xml"):
+                if "target" in xml_file.parts:
+                    continue
+                try:
+                    txt = xml_file.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                m = re.search(rf'<resultMap\s+[^>]*id="{re.escape(rm_id)}"[^>]*>(.*?)</resultMap>', txt, re.DOTALL)
+                if m:
+                    break
+            if m:
+                break
+
+    if not m:
+        m = re.search(rf'<resultMap\s+[^>]*id="{re.escape(rm_id)}"[^>]*>(.*?)</resultMap>', current_xml, re.DOTALL)
+
+    if not m:
+        return {}
+
+    body = m.group(1)
+    cols: dict[str, str] = {}
+    for m_res in re.finditer(r'<(?:id|result)\s+([^>]+)>', body):
+        attrs = m_res.group(1)
+        col_m = re.search(r'column="([^"]+)"', attrs)
+        prop_m = re.search(r'property="([^"]+)"', attrs)
+        if col_m and prop_m:
+            cols[prop_m.group(1)] = col_m.group(1)
+    return cols
+
+
 def find_mapper_for_model(model_name: str, roots: list[Path]) -> tuple[dict[str, str], str, str, dict[str, tuple[str, str]]]:
     """AS-IS MyBatis 매퍼 XML을 찾아 model의 resultMap 속성→컬럼 매핑 및 select 별칭 목록을 반환한다."""
     if not model_name:
@@ -829,6 +899,8 @@ def find_mapper_for_model(model_name: str, roots: list[Path]) -> tuple[dict[str,
         if not root or not root.is_dir():
             continue
         for xml_file in root.glob("**/mapper/*.xml"):
+            if "target" in xml_file.parts:
+                continue
             try:
                 xml_text = xml_file.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -848,6 +920,29 @@ def find_mapper_for_model(model_name: str, roots: list[Path]) -> tuple[dict[str,
                 prop_to_col[p] = c
             for p, c in re.findall(r'<(?:id|result)\s+[^>]*property="([^"]+)"[^>]*column="([^"]+)"', body):
                 prop_to_col[p] = c
+
+            # association 매핑 탐색
+            associations: dict[str, dict[str, str]] = {}
+            for assoc_m in re.finditer(r'<association\s+[^>]*property="([^"]+)"[^>]*resultMap="([^"]+)"', body):
+                assoc_prop = assoc_m.group(1)
+                assoc_rm = assoc_m.group(2)
+                assoc_sub_ns, assoc_sub_id = assoc_rm.split(".", 1) if "." in assoc_rm else ("", assoc_rm)
+                sub_cols = _find_result_map_cols(roots, assoc_sub_ns, assoc_sub_id, xml_text)
+                if sub_cols:
+                    associations[assoc_prop] = sub_cols
+
+            # ModelProperties.java @Path 해석
+            path_mappings = _parse_properties_paths(roots, model_name)
+            for prop, path_expr in path_mappings.items():
+                if "." in path_expr:
+                    sub_model_key, sub_field = path_expr.split(".", 1)
+                    if sub_model_key in associations and sub_field in associations[sub_model_key]:
+                        prop_to_col[prop] = associations[sub_model_key][sub_field]
+                    elif sub_model_key in associations:
+                        for sf_key, sf_col in associations[sub_model_key].items():
+                            if sf_key.lower() == sub_field.lower():
+                                prop_to_col[prop] = sf_col
+                                break
 
             ns_m = re.search(r'<mapper\s+namespace="([^"]+)"', xml_text)
             ns = ns_m.group(1) if ns_m else ""
@@ -1060,10 +1155,11 @@ def extract_grid_spec(text: str, file_path: Path | None = None) -> str | None:
 
             if table_cols is not None:
                 chk_col = col.lower() if col else ""
+                is_assoc_col = bool(col and tbl_prefix and not col.lower().startswith(tbl_prefix))
                 if not chk_col:
                     snake_prop = re.sub(r"(?<!^)(?=[A-Z])", "_", prop_name).lower()
                     chk_col = f"{tbl_prefix}{snake_prop}"
-                if chk_col and chk_col not in table_cols:
+                if not is_assoc_col and chk_col and chk_col not in table_cols:
                     alias_info = pick_alias(chk_col)
                     if not alias_info and chk_col.startswith(tbl_prefix):
                         alias_info = pick_alias(chk_col[len(tbl_prefix):])

@@ -9,7 +9,7 @@ from yunhee.tools.as_is.events import (
     col_to_tobe_prop,
     find_mapper_for_model,
 )
-from yunhee.tools.as_is.src_indexer import find_app
+from yunhee.tools.as_is.src_indexer import find_app, paren_end, split_args
 
 NAME = "grid"
 DESCRIPTION = "그리드 한 개의 정확한 모양 및 ColumnModel 순서, GridType 판정"
@@ -32,6 +32,7 @@ SPECIAL_RENDERERS: dict[str, str] = {
     "addMoney": "금액 (천단위 콤마)",
     "addCode": "공통코드명",
     "addText": "텍스트",
+    "addTextCenter": "텍스트(가운데)",
     "addLong": "정수",
     "addDouble": "실수",
 }
@@ -61,76 +62,113 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     lines = text.splitlines()
 
     # 1. 그리드 빌더 변수 및 모델 탐색
-    # 예: GridBuilder<Org00_OrgInfoModel> gridBuilder = new GridBuilder<>(...);
     m_builder = re.search(r"GridBuilder<([A-Z]\w+Model)>", text)
     model_name = m_builder.group(1) if m_builder else f"{cls_name}Model"
 
+    builder_vars = set(re.findall(r"GridBuilder(?:<[^>]*>)?\s+(\w+)\s*=", text))
+    if not builder_vars:
+        builder_vars = {"gridBuilder", "builder", "gb"}
+    builder_alt = "|".join(re.escape(v) for v in builder_vars)
+
     # 2. 그리드 옵션 탐색
-    # setChecked, setRowNumHidden, setDoubleClickEdit 등
     checked_type = None
-    m_checked = re.search(r"gridBuilder\.setChecked\(\s*(?:SelectionMode\.)?(\w+)\s*\)", text)
+    m_checked = re.search(
+        rf"(?:{builder_alt})\.setChecked\(\s*(?:SelectionMode\.)?(\w+)\s*\)", text
+    )
     if m_checked:
         checked_type = m_checked.group(1).upper()
 
-    row_num_hidden = bool(re.search(r"gridBuilder\.setRowNumHidden\(\s*true\s*\)", text))
-    has_cell_edit = bool(re.search(r"gridBuilder\.set(?:DoubleClickEdit|Edit)\b", text))
+    row_num_hidden = bool(
+        re.search(rf"(?:{builder_alt})\.setRowNumHidden\(\s*true\s*\)", text)
+    )
+    has_cell_edit = bool(
+        re.search(rf"(?:{builder_alt})\.set(?:DoubleClickEdit|Edit)\b", text)
+    )
     has_editors = False
 
     # 3. 컬럼 빌더 호출 목록 수집
     raw_cols: list[dict[str, Any]] = []
-    # gridBuilder.addXxx(prop, width, label, ...)
-    col_pattern = re.compile(
-        r"gridBuilder\.(add\w+)\s*\(\s*(\w+)\s*,\s*(\d+)\s*,\s*([\"'][^\"']*[\"']|[\w.]+)"
-    )
+    add_re = re.compile(rf"(?<![\w.])(?:{builder_alt})\.(add\w+)\s*\(")
 
     for i, line in enumerate(lines):
         line_num = i + 1
-        m_c = col_pattern.search(line)
-        if m_c:
-            meth = m_c.group(1)
-            prop = m_c.group(2)
-            width = int(m_c.group(3))
-            raw_label = m_c.group(4)
-            label = raw_label.strip("\"'")
+        stripped = line.strip()
+        if stripped.startswith("//"):
+            continue
 
-            # 편집기 옵션 검사
-            editor_kind = None
-            if any(ed in line for ed in ("TextField", "NumberField", "DateField", "ComboBox", "TextArea")):
+        m_c = add_re.search(line)
+        if not m_c:
+            continue
+
+        meth = m_c.group(1)
+        close_idx = paren_end(line, m_c.end() - 1)
+        if close_idx < 0:
+            raw_args_str = line[m_c.end() :].rstrip(";").removesuffix(")")
+        else:
+            raw_args_str = line[m_c.end() : close_idx]
+
+        args = split_args(raw_args_str)
+        if len(args) < 3:
+            continue
+
+        # args[0]: properties.orgCode() 또는 orgCode
+        prop_m = re.search(r"\.(\w+)\s*(?:\(\s*\))?", args[0])
+        prop = prop_m.group(1) if prop_m else re.sub(r"[^\w]", "", args[0])
+
+        # args[1]: width
+        w_m = re.search(r"\d+", args[1])
+        width = int(w_m.group(0)) if w_m else 80
+
+        # args[2]: label
+        label = args[2].strip(" \t\"'")
+
+        # args[3] 이상: 편집기
+        editor_kind = None
+        if len(args) >= 4:
+            ed_arg = args[3].strip()
+            if ed_arg and ed_arg != "null":
                 has_editors = True
-                if "TextField" in line:
+                if "TextField" in ed_arg:
                     editor_kind = "text"
-                elif "NumberField" in line or "LongField" in line:
-                    editor_kind = "number"
-                elif "DateField" in line:
+                elif "DateField" in ed_arg or "MyDateField" in ed_arg:
                     editor_kind = "date"
-                elif "ComboBox" in line:
+                elif "ComboBox" in ed_arg:
                     editor_kind = "select"
-                elif "TextArea" in line:
-                    editor_kind = "largeText"
+                elif "NumberField" in ed_arg or "LongField" in ed_arg:
+                    editor_kind = "number"
+                elif "Lookup" in ed_arg or "Search" in ed_arg:
+                    editor_kind = "lookup"
+                else:
+                    editor_kind = ed_arg
 
-            renderer_desc = SPECIAL_RENDERERS.get(meth, "")
+        renderer_desc = SPECIAL_RENDERERS.get(meth, "")
 
-            raw_cols.append({
-                "line": line_num,
-                "meth": meth,
-                "prop": prop,
-                "width": width,
-                "label": label,
-                "editor": editor_kind,
-                "renderer": renderer_desc,
-            })
+        raw_cols.append({
+            "line": line_num,
+            "meth": meth,
+            "prop": prop,
+            "width": width,
+            "label": label,
+            "editor": editor_kind,
+            "renderer": renderer_desc,
+        })
 
     # 4. setHidden 호출 분석
-    # 예: grid.getColumnModel().setHidden(3, true) 또는 gridBuilder.setColumnHidden(3, true)
     hidden_calls = []
     hidden_indices: set[int] = set()
     for i, line in enumerate(lines):
         line_num = i + 1
-        m_hid = re.search(r"(?:getColumnModel\(\)\.setHidden|setColumnHidden)\s*\(\s*(\d+)\s*,\s*([^)]+)\)", line)
+        if line.strip().startswith("//"):
+            continue
+        m_hid = re.search(
+            r"(?:getColumnModel\(\)\.setHidden|setColumnHidden)\s*\(\s*(\d+)\s*,\s*([^)]+)\)",
+            line,
+        )
         if m_hid:
             col_idx = int(m_hid.group(1))
             cond_val = m_hid.group(2).strip()
             hidden_indices.add(col_idx)
+
             # 해당 호출이 속한 메서드 이름 역추적
             caller_meth = "unknown"
             for j in range(i, -1, -1):
@@ -138,16 +176,24 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
                 if m_m:
                     caller_meth = m_m.group(1)
                     break
+
+            # 상위 if 조건문 역추적
+            cond = cond_val
+            for j in range(i, max(-1, i - 15), -1):
+                up_line = lines[j].strip()
+                m_if = re.search(r"(?:else\s+)?if\s*\((.*)\)", up_line)
+                if m_if:
+                    cond = m_if.group(1).strip()
+                    break
+
             hidden_calls.append({
                 "line": line_num,
                 "index": col_idx,
                 "caller": caller_meth,
-                "cond": cond_val,
+                "cond": cond,
             })
 
     # 5. ColumnModel 인덱스 조립
-    # 0: 행번호 (RowNumberer) - row_num_hidden이 아니면
-    # 1: 체크박스 (setChecked가 있으면)
     final_cols: list[dict[str, Any]] = []
     cur_idx = 0
     if not row_num_hidden:
@@ -184,18 +230,26 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         final_cols.append(c_copy)
         cur_idx += 1
 
+    # 동적 숨김 호출에 열 이름 매핑
+    col_name_by_idx = {fc["index"]: fc["prop"] for fc in final_cols}
+    for h in hidden_calls:
+        h["col_name"] = col_name_by_idx.get(h["index"], "")
+
     # 6. GridType 판정
-    # SingleGrid, MultiGrid, CellEditGrid, ModalEditGrid
     if has_cell_edit or has_editors:
         grid_type = "CellEditGrid"
-    elif checked_type == "MULTI" or checked_type == "SIMPLE":
+    elif checked_type in ("MULTI", "SIMPLE"):
         grid_type = "MultiGrid"
     else:
         grid_type = "SingleGrid"
 
     # 모델 정보 연결
     prop_to_col, _ns, tbl, _ = find_mapper_for_model(model_name, [app, src_root])
-    tbl_pfx = (re.match(r"^([a-z]+\d*)_", tbl).group(1) + "_") if (tbl and re.match(r"^([a-z]+\d*)_", tbl)) else ""
+    tbl_pfx = (
+        (re.match(r"^([a-z]+\d*)_", tbl).group(1) + "_")
+        if (tbl and re.match(r"^([a-z]+\d*)_", tbl))
+        else ""
+    )
 
     for fc in final_cols:
         p = fc["prop"]
@@ -222,7 +276,6 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     hidden_calls = obj["hidden_calls"]
 
     if fmt == "code":
-        # TOBE gb.* 코드 블록
         lines = [f"// GridType: {grid_type}", "const buildGrid = () => ["]
         for c in cols:
             if c["prop"] in ("rowNumberer", "checkBoxSelection"):
@@ -259,6 +312,9 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     if hidden_calls:
         lines.append("\n**동적 숨김 호출**:")
         for h in hidden_calls:
-            lines.append(f"- index {h['index']} ({h['caller']} L{h['line']}): 조건 `{h['cond']}`")
+            col_info = f" ({h['col_name']})" if h.get("col_name") else ""
+            lines.append(
+                f"- index {h['index']}{col_info} ({h['caller']} L{h['line']}): 조건 `{h['cond']}`"
+            )
 
     return "\n".join(lines)

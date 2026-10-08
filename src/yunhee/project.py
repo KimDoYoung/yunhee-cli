@@ -10,17 +10,41 @@ PROJECT_FILE = PROJECT_DIR / "project.json"
 
 
 def find_project_root(start_dir: Path | None = None) -> Path:
-    """프로젝트 루트를 위로 올라가며 찾는다 (.yunhee.toml, .env.local, .git, 기존 .yunhee/runs 중 가장 가까운 것)."""
+    """프로젝트 루트를 위로 올라가며 찾는다.
+
+    우선순위:
+    1. .yunhee.toml, .env.local, CLAUDE.md, .yunhee/project.json 가 있는 디렉터리
+    2. .yunhee/runs 가 있는 디렉터리 중 가장 바깥(최상위) 디렉터리
+    3. .git 이 있는 디렉터리
+    """
     curr = (start_dir or Path.cwd()).resolve()
-    for p in [curr, *curr.parents]:
+    parents = [curr, *curr.parents]
+
+    # 1. 명시적 프로젝트 설정/표지 파일 우선
+    for p in parents:
         if (p / ".yunhee.toml").is_file():
             return p
         if (p / ".env.local").is_file():
             return p
+        if (p / "CLAUDE.md").is_file():
+            return p
+        if (p / ".yunhee" / "project.json").is_file():
+            return p
+
+    # 2. .yunhee/runs 가 있는 디렉터리 중 가장 바깥(최상위) 디렉터리
+    outermost_yunhee = None
+    for p in reversed(parents):
+        if (p / ".yunhee" / "runs").is_dir():
+            outermost_yunhee = p
+            break
+    if outermost_yunhee:
+        return outermost_yunhee
+
+    # 3. .git 확인
+    for p in parents:
         if (p / ".git").is_dir() or (p / ".git").is_file():
             return p
-        if (p / ".yunhee" / "runs").is_dir():
-            return p
+
     return curr
 
 

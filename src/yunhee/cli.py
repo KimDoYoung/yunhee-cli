@@ -15,8 +15,6 @@ from yunhee.config import (
     redact,
 )
 from yunhee.ollama_client import chat, embed
-from yunhee.store.vectorstore import add_texts
-from yunhee.store.vectorstore import search as vector_search
 from yunhee.tools.as_is import find_as_is_dir
 from yunhee.tools.as_is.dbml_indexer import index_dbml
 from yunhee.tools.as_is.events import (
@@ -28,7 +26,6 @@ from yunhee.tools.as_is.events import (
 )
 from yunhee.tools.as_is.sql_checker import check_sql
 from yunhee.tools.as_is.src_indexer import index_src
-from yunhee.ui.repl import run_repl
 
 app = typer.Typer(rich_markup_mode="rich")
 
@@ -61,12 +58,14 @@ def main(
 서브커맨드 없이 실행하면 대화형 REPL로 진입합니다.
 """
     if ctx.invoked_subcommand is None:
+        from yunhee.ui.repl import run_repl
         run_repl(model=model)
 
 
 @app.command()
 def chat_cmd(model: str = OLLAMA_MODEL):
     """대화형 REPL 시작 (명시적으로)"""
+    from yunhee.ui.repl import run_repl
     run_repl(model=model)
 
 @app.command()
@@ -92,6 +91,7 @@ def vec(text: str):
 @app.command()
 def index(text: str):
     """텍스트를 chromadb에 저장"""
+    from yunhee.store.vectorstore import add_texts
     add_texts([text])
     print("indexed.")
 
@@ -99,6 +99,7 @@ def index(text: str):
 @app.command()
 def search(query_text: str, n: int = 3):
     """저장된 텍스트 중 유사한 것 검색"""
+    from yunhee.store.vectorstore import search as vector_search
     results = vector_search(query_text, n_results=n)
     docs = results["documents"][0]
     dists = results["distances"][0]
@@ -341,8 +342,8 @@ def list_runs_cmd(
     table.add_column("Command", style="cyan")
     table.add_column("Exit", justify="right")
     table.add_column("Duration", justify="right")
-    table.add_column("CWD", style="yellow")
-    table.add_column("Created At", style="dim")
+    table.add_column("CWD", style="yellow", no_wrap=True)
+    table.add_column("Created At", style="dim", no_wrap=True)
     table.add_column("Log Path", style="magenta")
 
     for r in records:
@@ -358,7 +359,7 @@ def list_runs_cmd(
             r["log_path"],
         )
 
-    console = Console()
+    console = Console(width=200)
     console.print(table)
 
 
@@ -1110,6 +1111,11 @@ def analysis_cmd(
 
     from yunhee.tools import analysis
     from yunhee.tools.analysis.common import AmbiguousTargetError
+
+    # screen 분석에서 target과 함께 --list가 들어오면 screen의 list_classes로 처리
+    if list_types_flag and type_name == "screen" and target:
+        list_types_flag = False
+        list_classes = True
 
     # 1. --list 플래그 또는 type_name 미지정 시 유형 목록 출력
     if list_types_flag or not type_name:

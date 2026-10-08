@@ -37,7 +37,6 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     classes: list[dict[str, Any]] = []
 
     if cls_matches:
-        # 첫 번째 클래스 이전의 헤더 부분(보통 메인 클래스)도 포함
         main_header = text[: cls_matches[0].start()]
         if "#### 버튼" in main_header or "#### 이벤트" in main_header or "## Grid Spec" in main_header:
             classes.append({"name": screen_file.stem, "text": main_header})
@@ -56,7 +55,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         c_text = c["text"]
         btn_cnt = len(re.findall(r"-\s*<Button\b|\d+\.\s+<Button\b", c_text))
         ev_cnt = len(re.findall(r"\[E\d+\]", c_text))
-        grid_cnt = len(re.findall(r"const buildGrid\b|그리드.*\(buildGrid", c_text))
+        grid_cnt = 1 if re.search(r"const buildGrid\b|그리드[^\n]*\(buildGrid", c_text) else 0
         as_is_stats[c["name"]] = {
             "buttons": btn_cnt,
             "events": ev_cnt,
@@ -74,18 +73,17 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
                     f_text = f.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     continue
-                # 컴포넌트/파일 이름
                 f_name = f.stem
                 t_btn = len(re.findall(r"<Button\b", f_text))
-                t_ev = len(re.findall(r"//\s*\[E\d+", f_text))
-                t_grid = len(re.findall(r"<(?:SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid)\b", f_text))
+                t_ev = len(re.findall(r"\[E\d+\]", f_text))
+                t_grid = 1 if re.search(r"<(?:SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid)\b", f_text) else 0
                 tobe_stats[f_name] = {"buttons": t_btn, "events": t_ev, "grids": t_grid}
         elif tobe_dir.is_file():
             try:
                 f_text = tobe_dir.read_text(encoding="utf-8", errors="replace")
                 t_btn = len(re.findall(r"<Button\b", f_text))
-                t_ev = len(re.findall(r"//\s*\[E\d+", f_text))
-                t_grid = len(re.findall(r"<(?:SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid)\b", f_text))
+                t_ev = len(re.findall(r"\[E\d+\]", f_text))
+                t_grid = 1 if re.search(r"<(?:SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid)\b", f_text) else 0
                 tobe_stats[tobe_dir.stem] = {"buttons": t_btn, "events": t_ev, "grids": t_grid}
             except OSError:
                 pass
@@ -161,7 +159,7 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
 
     if group_remain:
         b, e, g = calc_sum(group_remain)
-        lines.append(f"| 남은 것 | {len(group_remain)} | {b} | {e} | {g} |")
+        lines.append(f"| 미착수 (remain) | {len(group_remain)} | {b} | {e} | {g} |")
 
     tot_b, tot_e, tot_g = calc_sum(all_cls_names)
     lines.append(f"| **전체 합계** | **{len(all_cls_names)}** | **{tot_b}** | **{tot_e}** | **{tot_g}** |")

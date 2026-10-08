@@ -66,29 +66,39 @@ def _summarize_tsx(path: Path, text: str) -> dict[str, Any]:
     # 5. API 호출
     api_calls = sorted(set(re.findall(r"\b(\w+Api\.\w+)\s*\(", text)))
 
-    # 6. // [E...] 주석
-    events = re.findall(r"//\s*(\[E\d+[^\]\n]*\][^\n]*)", text)
+    # 6. // [E...] 또는 {/* [E...] */} 주석
+    events = re.findall(r"(?:/{/\*\s*|//\s*)(\[E\d+[^\]\n]*\][^\n]*?)(?:\s*\*/|\n|$)", text)
 
-    # 7. 렌더 트리 뼈대 (깊이 4)
+    # 7. 렌더 트리 뼈대
     tree_lines = []
-    m_ret = re.search(r"return\s*\(\s*(<[\s\S]+?>)\s*\);", text)
+    # return (...) 구문 찾기
+    m_ret = re.search(r"return\s*\(\s*(<[\s\S]+?)\n\s*\);", text)
     if m_ret:
         jsx_block = m_ret.group(1)
-        # 태그만 추출
-        tags = re.findall(r"<(/?)(\w+)([^>]*)>", jsx_block)
+        tag_pat = re.compile(r"<(/)?([A-Za-z0-9_.]+)([^>]*)>")
         depth = 0
-        for closing, tag, attrs in tags:
-            if tag in ("div", "span", "p"):
+        for m in tag_pat.finditer(jsx_block):
+            closing = bool(m.group(1))
+            tag = m.group(2)
+            attrs = m.group(3).strip()
+            self_closing = attrs.endswith("/")
+
+            # 소문자 HTML 태그 중 레이아웃 컨테이너(div 등)는 생략
+            if tag in ("div", "span", "p", "b", "strong", "i"):
                 continue
+
             if closing:
                 depth = max(0, depth - 1)
             else:
-                if depth < 4:
-                    btn_label = ""
-                    if tag == "Button":
-                        btn_label = f" ({attrs.strip()[:20]})"
-                    tree_lines.append(f"{'  ' * depth}- `<{tag}>{btn_label}`")
-                depth += 1
+                indent = "  " * min(depth, 5)
+                btn_info = ""
+                if tag == "Button":
+                    btn_m = re.search(r'type=["\'](\w+)["\']', attrs)
+                    if btn_m:
+                        btn_info = f" type={btn_m.group(1)}"
+                tree_lines.append(f"{indent}- `<{tag}>{btn_info}`")
+                if not self_closing:
+                    depth += 1
 
     return {
         "file": str(path),
@@ -99,48 +109,115 @@ def _summarize_tsx(path: Path, text: str) -> dict[str, Any]:
         "hooks": hooks,
         "apis": api_calls,
         "events": events,
-        "tree": tree_lines[:15],
+        "tree": tree_lines,
     }
 
 
 def _summarize_ts(path: Path, text: str) -> dict[str, Any]:
-    # export 함수 / 인터페이스 필드
+    # export interface (제네릭 포함)
     interfaces = []
-    for m in re.finditer(r"export\s+interface\s+(\w+)\s*\{([^}]+)\}", text):
-        fields = [f.strip().split(":")[0].strip() for f in m.group(2).split(";") if f.strip()]
-        interfaces.append(f"interface {m.group(1)}: {', '.join(fields[:10])}")
+    for m in re.finditer(r"export\s+interface\s+(\w+)(?:<[^>]+>)?\s*\{([^}]+)\}", text):
+        name = m.group(1)
+        raw_body = m.group(2)
+        clean_body = re.sub(r"/\*[\s\S]*?\*/|//[^\n]*", "", raw_body)
+        fields = [f.strip().split(":")[0].strip().rstrip("?") for f in clean_body.split(";") if f.strip() and ":" in f]
+        interfaces.append(f"interface {name}: {', '.join(fields)}")
 
     functions = []
     for m in re.finditer(r"export\s+(?:const|function)\s+(\w+)", text):
         functions.append(m.group(1))
+
+    # 훅 반환값 추출
+    return_keys = []
+    m_ret = re.search(r"return\s*\{([^}]+)\};", text)
+    if m_ret:
+        raw_keys = m_ret.group(1)
+        return_keys = [k.strip().split(":")[0].strip() for k in raw_keys.split(",") if k.strip()]
 
     return {
         "file": str(path),
         "kind": "ts",
         "interfaces": interfaces,
         "functions": functions,
+        "return_keys": return_keys,
     }
 
 
 def _summarize_java(path: Path, text: str) -> dict[str, Any]:
-    # 클래스명
     cls_m = re.search(r"\b(?:class|interface|record)\s+(\w+)", text)
     cls_name = cls_m.group(1) if cls_m else path.stem
 
-    # 서비스 메서드 본문 호출 순서 및 BusinessException
+    clean_text = re.sub(r"/\*[\s\S]*?\*/|//[^\n]*", "", text)
+
     methods = []
-    # public ... method(...) {
-    for m in re.finditer(r"public\s+[\w<>\[\], ?]+\s+(\w+)\s*\([^)]*\)\s*\{([^}]+)\}", text):
+    method_pat = re.compile(
+        r"(?:(?:public|protected|private|static|final|synchronized)\s+)+[\w<>\[\], ?]+\s+(\w+)\s*\(([^)]*)\)\s*(?:throws\s+[\w.,\s]+)?\s*\{"
+    )
+
+    for m in method_pat.finditer(clean_text):
         m_name = m.group(1)
-        body = m.group(2)
-        # 호출 순서 식별
-        calls = re.findall(r"\b([a-zA-Z0-9_]+)\s*\(", body)
-        call_seq = [c for c in calls if c not in ("if", "for", "return", "new", "get", "set", "builder")][:8]
-        # BusinessException
-        exceptions = re.findall(r"throw\s+new\s+BusinessException\s*\(\s*([^)]+)\)", body)
+        open_brace = m.end() - 1
+        depth = 1
+        k = open_brace + 1
+        n = len(clean_text)
+        end_pos = open_brace
+
+        while k < n:
+            c = clean_text[k]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    end_pos = k
+                    break
+            k += 1
+
+        body = clean_text[open_brace + 1 : end_pos]
+
+        calls = []
+        for cm in re.finditer(r"(?:(\w+)\.)?(\w+)\s*\(", body):
+            recv = cm.group(1) or ""
+            c_name = cm.group(2)
+            if c_name[0].isupper():
+                continue
+            if c_name in ("if", "for", "while", "switch", "catch", "new", "return", "throw", "null", "super", "this"):
+                continue
+            if recv in ("req", "user", "LocalDate", "String", "Math", "System"):
+                continue
+            if c_name.startswith(("get", "set", "is")) and "mapper" not in recv.lower():
+                continue
+            if c_name.startswith("of") or c_name in (
+                "trim", "isBlank", "isEmpty", "toString", "now", "equals",
+                "builder", "build", "format", "empNo", "korNm", "hireDate",
+                "hireCd", "emailAddr", "officeTelNo", "officeDetail", "mobileTelNo",
+                "note", "expiryDate", "orgCodeId", "titleCd", "posCd", "kindCd", "map", "filter",
+            ):
+                continue
+            calls.append(c_name)
+
+        dedup_calls = []
+        for c in calls:
+            if not dedup_calls or dedup_calls[-1] != c:
+                dedup_calls.append(c)
+
+        exceptions = []
+        for em in re.finditer(r"throw\s+new\s+BusinessException\s*\(([^;]+)\);", body):
+            arg_str = em.group(1).strip()
+            msg_m = re.search(r'["\']([^"\']+)["\']', arg_str)
+            err_m = re.search(r"ErrorCode\.(\w+)", arg_str)
+            parts = []
+            if err_m:
+                parts.append(err_m.group(1))
+            if msg_m:
+                parts.append(f'"{msg_m.group(1)}"')
+            elif not err_m:
+                parts.append(arg_str)
+            exceptions.append(" ".join(parts))
+
         methods.append({
             "name": m_name,
-            "calls": " → ".join(call_seq),
+            "calls": " → ".join(dedup_calls),
             "exceptions": exceptions,
         })
 
@@ -177,9 +254,11 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
                 out.append("- **인터페이스**:\n" + "\n".join(f"  - {i}" for i in f["interfaces"]))
             if f["functions"]:
                 out.append(f"- **함수**: {', '.join(f['functions'])}")
+            if f.get("return_keys"):
+                out.append(f"- **반환값**: {', '.join(f['return_keys'])}")
         elif f["kind"] == "java":
             out.append(f"- **클래스**: `{f['class']}`")
-            for m in f["methods"][:6]:
+            for m in f["methods"]:
                 exc_str = f" (예외: {', '.join(m['exceptions'])})" if m["exceptions"] else ""
                 out.append(f"  - `{m['name']}`: {m['calls']}{exc_str}")
         out.append("")

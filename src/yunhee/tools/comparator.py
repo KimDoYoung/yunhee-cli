@@ -91,6 +91,18 @@ def find_screen_grid_cols(
     if src_index_dir and src_index_dir.is_dir():
         all_screens.extend(src_index_dir.glob("**/screens/*.md"))
 
+    # grid_class가 직접 지정된 경우
+    if grid_class:
+        for sf in all_screens:
+            try:
+                text = sf.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if sf.stem.lower() == grid_class.lower() or f"### {grid_class}" in text:
+                props = _extract_grid_props(text, sf.stem, roots, target_section=grid_class)
+                if props:
+                    return props
+
     ns = sql_ref.split(".")[0]
     pfx_m = re.match(r"^([a-z]+\d*)", ns)
     target_prefix = pfx_m.group(1).lower() if pfx_m else ns.lower()
@@ -101,18 +113,6 @@ def find_screen_grid_cols(
             len(p.stem),
         )
     )
-
-    # grid_class가 직접 지정된 경우
-    if grid_class:
-        for sf in all_screens:
-            if sf.stem.lower() == grid_class.lower() or f"{grid_class.lower()}.md" in sf.name.lower():
-                try:
-                    text = sf.read_text(encoding="utf-8", errors="replace")
-                    props = _extract_grid_props(text, sf.stem, roots)
-                    if props:
-                        return props
-                except OSError:
-                    pass
 
     # SQL을 부르는 서비스의 클래스 탐색
     calling_class = None
@@ -128,19 +128,31 @@ def find_screen_grid_cols(
         for line in text.splitlines():
             if sql_ref in line and "|" in line:
                 parts = [p.strip() for p in line.split("|")]
-                # 보통 | 서비스 | 호출 위치 | SQL |
-                for part in parts:
-                    m_call = re.search(r"\b([A-Z]\w+)\.(retrieve\w*|select\w*|search\w*|on\w+)\b", part)
-                    if m_call:
+                # | 서비스 | 호출 위치 | 서버 | SQL ID | 형태
+                if len(parts) >= 3:
+                    m_call = re.search(r"\b([A-Z]\w+)(?::\d+|\.\w+)?\b", parts[2])
+                    if m_call and m_call.group(1) not in ("ServiceRequest", "ServiceResult", "SqlSession"):
                         calling_class = m_call.group(1)
                         break
-            if calling_class:
-                break
+            elif sql_ref in line:
+                m_call = re.search(r"\b([A-Z]\w+)(?::\d+|\.\w+)\b", line)
+                if m_call and m_call.group(1) not in ("ServiceRequest", "ServiceResult", "SqlSession"):
+                    calling_class = m_call.group(1)
+                    break
         if calling_class:
             break
 
+    if calling_class and matched_screen:
+        try:
+            text = matched_screen.read_text(encoding="utf-8", errors="replace")
+            props = _extract_grid_props(text, matched_screen.stem, roots, target_section=calling_class)
+            if props:
+                return props
+        except OSError:
+            pass
+
     if calling_class:
-        # 호출 클래스의 화면 파일 우선 탐색
+        # 호출 클래스의 별도 화면 파일 탐색
         for sf in all_screens:
             if sf.stem.lower() == calling_class.lower():
                 try:
@@ -160,30 +172,47 @@ def find_screen_grid_cols(
     return set()
 
 
-def _extract_grid_props(text: str, stem: str, roots: list[Path]) -> set[str]:
-    m = re.search(r'-\s+그리드[^\n]*\(buildGrid[^\n]*\):\n((?:\s+-\s+[^\n]+\n)+)', text)
-    if not m:
-        # Grid Spec 코드 블록 내의 컬럼 탐색
-        m_spec = re.search(r'## Grid Spec.*?(const buildGrid\b.*?\];)', text, re.DOTALL)
-        if m_spec:
-            code = m_spec.group(1)
-            props = set(re.findall(r'gb\.\w+\(["\'](\w+)["\']', code))
-            if props:
-                return props
-        return set()
+def _extract_grid_props(
+    text: str,
+    stem: str,
+    roots: list[Path],
+    target_section: str | None = None,
+) -> set[str]:
+    section_text = text
+    if target_section:
+        sec_m = re.search(rf"###\s+{re.escape(target_section)}\b.*?(?=\n###\s|\Z)", text, re.DOTALL)
+        if sec_m:
+            section_text = sec_m.group(0)
 
-    grid_props = [
-        re.search(r'^\s*-\s+([a-zA-Z0-9_]+)', line).group(1)
-        for line in m.group(1).strip().splitlines()
-        if re.search(r'^\s*-\s+([a-zA-Z0-9_]+)', line)
-    ]
+    # 1) UI 그리드 목록
+    m = re.search(r'-\s+그리드[^\n]*\(buildGrid[^\n]*\):\n((?:\s+-\s+[^\n]+\n)+)', section_text)
+    grid_props = []
+    if m:
+        grid_props = [
+            re.search(r'^\s*-\s+([a-zA-Z0-9_]+)', line).group(1)
+            for line in m.group(1).strip().splitlines()
+            if re.search(r'^\s*-\s+([a-zA-Z0-9_]+)', line)
+        ]
+
+    # 2) Grid Spec 코드 블록
+    if not grid_props:
+        m_spec = re.search(r'## Grid Spec.*?(const buildGrid\b.*?\];)', section_text, re.DOTALL)
+        if not m_spec:
+            m_spec = re.search(r'const buildGrid\b.*?\];', section_text, re.DOTALL)
+        if m_spec:
+            code = m_spec.group(0)
+            gb_props = re.findall(r'gb\.\w+\(["\'](\w+)["\']', code)
+            db_props = re.findall(r'//\s*(?:⚠DB없음\s+)?L\d+\s+([a-zA-Z0-9_]+)', code)
+            grid_props = gb_props or db_props
+
     if not grid_props:
         return set()
 
-    mod_m = re.search(r"Grid<([A-Z]\w+Model)>|GridBuilder<([A-Z]\w+)>|\b([A-Z]\w*_\w*Model)\b", text)
+    mod_m = re.search(r"Grid<([A-Z]\w+Model)>|GridBuilder<([A-Z]\w+)>|\b([A-Z]\w*_\w*Model)\b", section_text)
     model_name = next((g for g in mod_m.groups() if g), "") if mod_m else ""
     if not model_name:
-        model_name = stem.replace("_Tab_", "_").replace("_TabPage_", "_") + "Model"
+        cls_base = target_section or stem
+        model_name = cls_base.replace("_Tab_", "_").replace("_TabPage_", "_").replace("_Page_", "_") + "Model"
 
     prop_to_col, _ns, _tbl, _aliases = find_mapper_for_model(model_name, roots)
     tbl_pfx = (re.match(r"^([a-z]+\d*)_", _tbl).group(1) + "_") if (_tbl and re.match(r"^([a-z]+\d*)_", _tbl)) else ""

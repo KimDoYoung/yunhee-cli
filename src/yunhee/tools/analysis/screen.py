@@ -35,9 +35,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     text = screen_file.read_text(encoding="utf-8", errors="replace")
 
     # 1. 파일 내 클래스별 섹션 분리
-    # 보통 ### <클래스명> 또는 ## <절제목>
     classes: list[dict[str, Any]] = []
-    # 최상위 클래스
     main_cls = screen_file.stem
     classes.append({"name": main_cls, "text": text})
 
@@ -59,7 +57,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         lines_cnt = c_text.count("\n") + 1
         btn_cnt = len(re.findall(r"-\s*<Button\b", c_text)) or len(re.findall(r"\d+\.\s+<Button\b", c_text))
         ev_cnt = len(re.findall(r"\[E\d+\]", c_text))
-        grid_cnt = len(re.findall(r"const buildGrid\b|그리드.*\(buildGrid", c_text))
+        grid_cnt = 1 if re.search(r"const buildGrid\b|그리드[^\n]*\(buildGrid", c_text) else 0
         class_stats.append({
             "name": c["name"],
             "lines": lines_cnt,
@@ -82,12 +80,12 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     if opts is None:
         opts = {}
 
-    list_opt = opts.get("list", False)
+    list_opt = opts.get("list", False) or opts.get("list_classes", False)
     screen_name = obj["screen"]
     stats = obj["class_stats"]
     full_text = obj["full_text"]
 
-    # 1. --list
+    # 1. --list / --list-classes
     if list_opt:
         lines = [f"### 화면 `{screen_name}` 클래스 목록 ({len(stats)}개)"]
         lines.append("\n| 클래스 | 줄 수 | 버튼 | 이벤트 | 그리드 |")
@@ -120,26 +118,44 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         return combined
 
     sec_filter = sec_filter.lower()
-    # 특정 절 추출
-    if sec_filter == "services":
-        # 서비스 표 또는 서비스 호출 목록
-        m_srv = re.search(r"##\s*호출 서비스.*?(?=##\s*|\Z)", combined, re.DOTALL)
-        return m_srv.group(0).strip() if m_srv else "서비스 섹션을 찾을 수 없습니다."
 
-    if sec_filter == "tables":
-        m_tbl = re.search(r"##\s*관련 테이블.*?(?=##\s*|\Z)", combined, re.DOTALL)
+    if sec_filter in ("services", "service"):
+        m_srv = re.search(r"##\s*(?:호출\s*)?서비스\b.*?(?=\n##\s|\Z)", full_text, re.DOTALL)
+        if not m_srv:
+            return "서비스 섹션을 찾을 수 없습니다."
+        srv_text = m_srv.group(0).strip()
+        if cls_filter:
+            c_names = [c.strip().lower() for c in cls_filter.split(",")]
+            lines = srv_text.splitlines()
+            out_lines = []
+            header_done = False
+            for l in lines:
+                if l.startswith("|") and ":---" in l:
+                    out_lines.append(l)
+                    header_done = True
+                    continue
+                if not header_done:
+                    out_lines.append(l)
+                    continue
+                if l.startswith("|") and any(cn in l.lower() for cn in c_names):
+                    out_lines.append(l)
+            return "\n".join(out_lines)
+        return srv_text
+
+    if sec_filter in ("tables", "table"):
+        m_tbl = re.search(r"##\s*(?:관련\s*)?테이블\b.*?(?=\n##\s|\Z)", full_text, re.DOTALL)
         return m_tbl.group(0).strip() if m_tbl else "테이블 섹션을 찾을 수 없습니다."
 
     if sec_filter in ("events", "event"):
-        m_ev = re.search(r"##\s*이벤트.*?(?=##\s*|\Z)|####\s*이벤트.*?(?=####\s*|###\s*|\Z)", combined, re.DOTALL)
+        m_ev = re.search(r"##\s*이벤트.*?(?=\n##\s*|\Z)|####\s*이벤트.*?(?=####\s*|###\s*|\Z)", combined, re.DOTALL)
         return m_ev.group(0).strip() if m_ev else "이벤트 섹션을 찾을 수 없습니다."
 
     if sec_filter in ("grid", "grids"):
-        m_gd = re.search(r"##\s*Grid Spec.*?(?=##\s*|\Z)|####\s*그리드.*?(?=####\s*|###\s*|\Z)", combined, re.DOTALL)
+        m_gd = re.search(r"##\s*Grid Spec.*?(?=\n##\s*|\Z)|####\s*그리드.*?(?=####\s*|###\s*|\Z)", combined, re.DOTALL)
         return m_gd.group(0).strip() if m_gd else "Grid Spec 섹션을 찾을 수 없습니다."
 
     if sec_filter in ("buttons", "button"):
-        m_btn = re.search(r"##\s*사용된 버튼.*?(?=##\s*|\Z)|####\s*버튼.*?(?=####\s*|###\s*|\Z)", combined, re.DOTALL)
+        m_btn = re.search(r"##\s*사용된 버튼.*?(?=\n##\s*|\Z)|####\s*버튼.*?(?=####\s*|###\s*|\Z)", combined, re.DOTALL)
         return m_btn.group(0).strip() if m_btn else "버튼 섹션을 찾을 수 없습니다."
 
     return combined
