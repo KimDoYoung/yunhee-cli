@@ -371,5 +371,6 @@ def compare_api_sql(
             "expected_fields": sorted(expected_fields),
             "missing_fields": sorted(missing_fields),
             "rendered_sql": sql,
+            "trace_id": (api_res.data or {}).get("trace_id"),
         },
     )

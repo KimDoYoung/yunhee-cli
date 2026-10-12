@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -274,6 +275,7 @@ def _run_exec(
             stderr=data["stderr"],
             use_llm=not no_llm,
             cwd=cur_cwd,
+            start_time=data.get("start_time"),
         )
         print(summary)
 
@@ -412,6 +414,8 @@ def api(
     body: Annotated[str | None, typer.Option("--body", "-b", help="JSON 요청 본문")] = None,
     raw: Annotated[bool, typer.Option("--raw", help="압축 요약 대신 원본 JSON 본문 출력")] = False,
     timeout: Annotated[float | None, typer.Option("--timeout", help="요청 타임아웃(초) (기본: .env.local의 YUNHEE_API_TIMEOUT 또는 15)")] = None,
+    log: Annotated[bool, typer.Option("--log", help="호출 후 서버 로그(trace) 요약 출력")] = False,
+    no_mask: Annotated[bool, typer.Option("--no-mask", help="개인정보 마스킹 해제")] = False,
 ):
     """테스트 계정으로 자동 로그인하여 API를 호출하고 응답 요약(상태코드, 행수, 필드목록)을 확인 (LLM 호출 없음)
 
@@ -460,6 +464,7 @@ def api(
         params=params_dict or None,
         json_body=json_body,
         timeout=timeout,
+        mask=not no_mask,
         **kw,
     )
 
@@ -471,6 +476,28 @@ def api(
         print(res.data.get("text", ""))
     else:
         print(res.data.get("summary", ""))
+
+    if log:
+        trace_id = (res.data or {}).get("trace_id")
+        if trace_id:
+            import time
+
+            from yunhee.tools.log_reader import get_trace_summary
+
+            time.sleep(0.5)
+            trace_summary = None
+            for attempt in range(5):
+                try:
+                    trace_summary = get_trace_summary(trace_id)
+                    if trace_summary:
+                        break
+                except Exception:  # noqa: BLE001, S110
+                    pass
+                if attempt < 4:
+                    time.sleep(1.0)
+            if trace_summary:
+                t_lines = trace_summary.splitlines()
+                print("\n".join(t_lines[1:] if len(t_lines) > 1 else t_lines))
 
     if not res.ok:
         raise typer.Exit(code=1)
@@ -631,7 +658,8 @@ def compare_cmd(
 
     from yunhee.tools.api_client import header_tag
 
-    tag = header_tag(effective_base, effective_tenant, company)
+    trace_id = (res.data or {}).get("trace_id")
+    tag = header_tag(effective_base, effective_tenant, company, trace_id=trace_id)
     if tag:
         typer.echo(tag)
     typer.echo(res.data["summary"])
@@ -704,7 +732,22 @@ def agent_guide():
   - 예: `yunhee api POST /api/v1/sys/roles --body '{"role_cd":"TEST"}'`
 - 📄 산출물: 세션 쿠키/JWT가 자동 관리되며(계정 잠금 방지 안전 가드 내장), 응답은 `HTTP 200 (rows=12, fields: [...])` 압축 헤더로 요약됩니다.
 
-## 5. 현재 설정 및 경로 확인
+## 5. AS-IS 정적 분석 및 폼 레이아웃 파악 (토큰 90% 절약)
+- ❌ 절대 금지: 복잡한 GXT 폼 탭의 컴포넌트 크기, 라벨, 배치, 읽기 전용 속성을 파악하려고 수백 줄의 자바 소스를 직접 열지 마세요.
+- ✅ 권장 명령:
+  - `yunhee analysis screen <화면> --section layout`: 폼 탭은 원본 Java를 열기 전에 이것부터 확인하세요.
+  - `yunhee analysis ui <화면>`: TOBE 이벤트 구현율 및 `(생략 N)` (TOBE에서 생략하기로 결정된 이벤트 수) 확인.
+
+## 6. 서버 로그 및 실제 실행 SQL 확인 시 (grep 금지)
+- ❌ 절대 금지: docker logs나 서버 로그 파일을 직접 grep하지 마세요. (호스트 같은 경로는 로컬 테스트 로그이며, 배포본은 docker 컨테이너 t3600-tomcat 안에 있습니다)
+- ✅ 권장 명령:
+  - `yunhee api <METHOD> <PATH> --log`: API 호출 직후 서버가 실제로 실행한 SQL과 바인딩 파라미터 요약 출력
+  - `yunhee log trace <traceId>`: 특정 요청에서 실행된 모든 SQL 및 파라미터 확인
+  - `yunhee log req <METHOD> <경로 일부>`: 접근 로그에서 최근 요청 검색
+  - `yunhee log errors`: 서버 WARN/ERROR 묶음 요약
+  - `yunhee log tail`: 최근 전체 흐름을 요청(trace) 단위로 접어서 확인
+
+## 7. 현재 설정 및 경로 확인
 - `yunhee config`: Target 디렉터리, Source 디렉터리, DB URL 등 환경 확인.
 """
     print(guide.strip())
@@ -1063,7 +1106,7 @@ def analysis_cmd(
     ] = None,
     section: Annotated[
         str | None,
-        typer.Option("--section", help="절 필터링 (services, tables, ui, events, methods, grid, buttons)"),
+        typer.Option("--section", help="절 필터링 (services, tables, ui, events, methods, grid, buttons, layout)"),
     ] = None,
     list_classes: Annotated[
         bool,
@@ -1207,6 +1250,206 @@ def analysis_cmd(
     except Exception as exc:  # noqa: BLE001
         typer.secho(f"[ERROR] 렌더링 실패: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
+
+
+log_app = typer.Typer(
+    help="서버 로그 분석 및 요청/SQL/에러 요약 도구 (trace, req, errors, tail)",
+    no_args_is_help=True,
+)
+app.add_typer(log_app, name="log")
+
+
+# --since-run 옵션의 인자 없는 호출을 'last'로 보정
+if "--since-run" in sys.argv:
+    for idx, a in enumerate(sys.argv):
+        if a == "--since-run" and (idx + 1 >= len(sys.argv) or sys.argv[idx + 1].startswith("-")):
+            sys.argv.insert(idx + 1, "last")
+
+
+@log_app.command(name="trace")
+def log_trace_cmd(
+    trace_id: Annotated[str, typer.Argument(help="조회할 trace ID (16진수)")],
+    sql: Annotated[bool, typer.Option("--sql", help="실행 가능한 바인딩 SQL 포함")] = False,
+    raw: Annotated[bool, typer.Option("--raw", help="원문 로그 출력")] = False,
+    no_mask: Annotated[bool, typer.Option("--no-mask", help="개인정보 마스킹 해제")] = False,
+    file: Annotated[str | None, typer.Option("--file", "-f", help="직접 읽을 로그 파일 경로")] = None,
+    source: Annotated[str | None, typer.Option("--source", help="로그 소스 (docker 또는 local)")] = None,
+    dir: Annotated[str | None, typer.Option("--dir", help="로그 디렉터리 경로")] = None,
+    app_name: Annotated[str | None, typer.Option("--app", help="로그 앱 접두어")] = None,
+    tz: Annotated[str | None, typer.Option("--tz", help="로그 시간대 (UTC 또는 KST)")] = None,
+) -> None:
+    """단일 요청(trace)의 실행 요약 또는 원문 출력"""
+    from yunhee.tools.log_reader import DockerExecError, get_trace_summary
+
+    try:
+        res = get_trace_summary(
+            trace_id=trace_id,
+            file_path=file,
+            source=source,
+            log_dir=dir,
+            app=app_name,
+            log_tz=tz,
+            raw=raw,
+            show_sql=sql,
+            mask=not no_mask,
+        )
+    except DockerExecError as e:
+        typer.secho(f"{e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    except typer.Exit:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        typer.secho(f"오류: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(res)
+
+
+@log_app.command(name="req")
+def log_req_cmd(
+    method: Annotated[str, typer.Argument(help="HTTP 메서드 (GET, POST 등)")],
+    path: Annotated[str, typer.Argument(help="API 경로 일부")],
+    last: Annotated[int, typer.Option("--last", "-n", help="표시할 최근 요청 수 (기본: 5)")] = 5,
+    trace: Annotated[bool, typer.Option("--trace", help="가장 최근 요청의 상세 trace 요약 이어붙이기")] = False,
+    since: Annotated[str | None, typer.Option("--since", help="지금부터 거슬러 올라간 기간 (예: 30m, 1h)")] = None,
+    from_time: Annotated[str | None, typer.Option("--from", help="시작 시각 (예: 15:10, 2026-10-08 15:10)")] = None,
+    to_time: Annotated[str | None, typer.Option("--to", help="종료 시각 (예: 15:20)")] = None,
+    since_deploy: Annotated[bool, typer.Option("--since-deploy", help="마지막 배포(앱 시작) 이후")] = False,
+    since_run: Annotated[str | None, typer.Option("--since-run", help="명령어 실행 시작 이후 (run id 또는 last)")] = None,
+    file: Annotated[str | None, typer.Option("--file", "-f", help="직접 읽을 로그 파일 경로")] = None,
+    source: Annotated[str | None, typer.Option("--source", help="로그 소스 (docker 또는 local)")] = None,
+    dir: Annotated[str | None, typer.Option("--dir", help="로그 디렉터리 경로")] = None,
+    app_name: Annotated[str | None, typer.Option("--app", help="로그 앱 접두어")] = None,
+    tz: Annotated[str | None, typer.Option("--tz", help="로그 시간대")] = None,
+    no_mask: Annotated[bool, typer.Option("--no-mask", help="개인정보 마스킹 해제")] = False,
+) -> None:
+    """접근 로그에서 지정한 메서드/경로와 일치하는 최근 요청 검색"""
+    from yunhee.tools.log_reader import DockerExecError, get_req_summary
+
+    try:
+        res = get_req_summary(
+            method=method,
+            path_pattern=path,
+            last=last,
+            show_trace=trace,
+            file_path=file,
+            source=source,
+            log_dir=dir,
+            app=app_name,
+            log_tz=tz,
+            since=since,
+            from_time=from_time,
+            to_time=to_time,
+            since_deploy=since_deploy,
+            since_run=since_run,
+            mask=not no_mask,
+        )
+    except DockerExecError as e:
+        typer.secho(f"{e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    except typer.Exit:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        typer.secho(f"오류: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(res)
+
+
+@log_app.command(name="errors")
+def log_errors_cmd(
+    since: Annotated[str | None, typer.Option("--since", help="지금부터 거슬러 올라간 기간 (예: 1h)")] = None,
+    from_time: Annotated[str | None, typer.Option("--from", help="시작 시각 (예: 15:10)")] = None,
+    to_time: Annotated[str | None, typer.Option("--to", help="종료 시각 (예: 15:20)")] = None,
+    since_deploy: Annotated[bool, typer.Option("--since-deploy", help="마지막 배포(앱 시작) 이후")] = False,
+    since_run: Annotated[str | None, typer.Option("--since-run", help="명령어 실행 시작 이후 (run id 또는 last)")] = None,
+    ignore: Annotated[list[str] | None, typer.Option("--ignore", help="제외할 logger 이름 일부 (반복 가능)")] = None,
+    explain: Annotated[bool, typer.Option("--explain", help="Qwen 모델로 원인 요약")] = False,
+    file: Annotated[str | None, typer.Option("--file", "-f", help="직접 읽을 로그 파일 경로")] = None,
+    source: Annotated[str | None, typer.Option("--source", help="로그 소스 (docker 또는 local)")] = None,
+    dir: Annotated[str | None, typer.Option("--dir", help="로그 디렉터리 경로")] = None,
+    app_name: Annotated[str | None, typer.Option("--app", help="로그 앱 접두어")] = None,
+    tz: Annotated[str | None, typer.Option("--tz", help="로그 시간대")] = None,
+    no_mask: Annotated[bool, typer.Option("--no-mask", help="개인정보 마스킹 해제")] = False,
+) -> None:
+    """에러 로그(WARN·ERROR)를 묶어서 발생 빈도 및 스택 요약 출력"""
+    from yunhee.tools.log_reader import DockerExecError, get_errors_summary
+
+    try:
+        res = get_errors_summary(
+            file_path=file,
+            source=source,
+            log_dir=dir,
+            app=app_name,
+            log_tz=tz,
+            since=since,
+            from_time=from_time,
+            to_time=to_time,
+            since_deploy=since_deploy,
+            since_run=since_run,
+            ignore_loggers=ignore,
+            explain=explain,
+            mask=not no_mask,
+        )
+    except DockerExecError as e:
+        typer.secho(f"{e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    except typer.Exit:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        typer.secho(f"오류: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(res)
+
+
+@log_app.command(name="tail")
+def log_tail_cmd(
+    since: Annotated[str | None, typer.Option("--since", help="지금부터 거슬러 올라간 기간 (예: 10m)")] = None,
+    from_time: Annotated[str | None, typer.Option("--from", help="시작 시각")] = None,
+    to_time: Annotated[str | None, typer.Option("--to", help="종료 시각")] = None,
+    since_deploy: Annotated[bool, typer.Option("--since-deploy", help="마지막 배포(앱 시작) 이후")] = False,
+    since_run: Annotated[str | None, typer.Option("--since-run", help="명령어 실행 시작 이후")] = None,
+    level: Annotated[str | None, typer.Option("--level", help="필터링할 최소 로그 레벨 (WARN, ERROR 등)")] = None,
+    grep: Annotated[str | None, typer.Option("--grep", help="검색할 문자열")] = None,
+    trace_only: Annotated[bool, typer.Option("--trace-only", help="요청(trace) 로그만 표시")] = False,
+    file: Annotated[str | None, typer.Option("--file", "-f", help="직접 읽을 로그 파일 경로")] = None,
+    source: Annotated[str | None, typer.Option("--source", help="로그 소스 (docker 또는 local)")] = None,
+    dir: Annotated[str | None, typer.Option("--dir", help="로그 디렉터리 경로")] = None,
+    app_name: Annotated[str | None, typer.Option("--app", help="로그 앱 접두어")] = None,
+    tz: Annotated[str | None, typer.Option("--tz", help="로그 시간대")] = None,
+    no_mask: Annotated[bool, typer.Option("--no-mask", help="개인정보 마스킹 해제")] = False,
+) -> None:
+    """최근 로그를 요청(trace) 단위로 접어서 전체 흐름 요약 출력"""
+    from yunhee.tools.log_reader import DockerExecError, get_tail_summary
+
+    try:
+        res = get_tail_summary(
+            level=level,
+            grep_pattern=grep,
+            trace_only=trace_only,
+            file_path=file,
+            source=source,
+            log_dir=dir,
+            app=app_name,
+            log_tz=tz,
+            since=since,
+            from_time=from_time,
+            to_time=to_time,
+            since_deploy=since_deploy,
+            since_run=since_run,
+            mask=not no_mask,
+        )
+    except DockerExecError as e:
+        typer.secho(f"{e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    except typer.Exit:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        typer.secho(f"오류: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(res)
 
 
 if __name__ == "__main__":

@@ -134,8 +134,13 @@ def login(
     return ToolResult(ok=True, data={"cookies": cookies, "headers": headers})
 
 
-def header_tag(base_url: str = "", tenant: str | None = None, company_code: str | None = None) -> str:
-    """결과 머리 태그 — 예: [AssetERP_1 · tenant=admin · company=kfstest]"""
+def header_tag(
+    base_url: str = "",
+    tenant: str | None = None,
+    company_code: str | None = None,
+    trace_id: str | None = None,
+) -> str:
+    """결과 머리 태그 — 예: [AssetERP_1 · tenant=admin · company=kfstest · trace=95694936e2a3b376]"""
     parts = []
     if base_url:
         parsed = urlparse(base_url)
@@ -145,6 +150,8 @@ def header_tag(base_url: str = "", tenant: str | None = None, company_code: str 
         parts.append(f"tenant={tenant}")
     if company_code:
         parts.append(f"company={company_code}")
+    if trace_id:
+        parts.append(f"trace={trace_id}")
     return f"[{' · '.join(parts)}]" if parts else ""
 
 
@@ -155,11 +162,20 @@ def summarize_response(
     tenant: str | None = None,
     base_url: str = "",
     company_code: str | None = None,
+    trace_id: str | None = None,
+    mask: bool = True,
 ) -> str:
     """응답을 토큰 절약형 1~4줄 요약으로 가공한다."""
+    def _finalize(s: str) -> str:
+        if mask:
+            from yunhee.tools.log_reader import mask_sensitive
+
+            s, _ = mask_sensitive(s, enabled=True)
+        return s
+
     duration_sec = f"{duration_ms / 1000:.2f}s"
     lines = []
-    tag = header_tag(base_url, tenant, company_code)
+    tag = header_tag(base_url, tenant, company_code, trace_id=trace_id)
     if tag:
         lines.append(tag)
 
@@ -172,7 +188,7 @@ def summarize_response(
         preview = text.strip()[:200]
         if preview:
             lines.append(f"Content: {preview}")
-        return "\n".join(lines)
+        return _finalize("\n".join(lines))
 
     target_list = None
 
@@ -180,7 +196,7 @@ def summarize_response(
     if isinstance(data, dict) and {"success", "code", "data"} <= data.keys():
         if data.get("success") is False:
             lines.append(f"Error: {data.get('code')} {data.get('message') or ''}".rstrip())
-            return "\n".join(lines)
+            return _finalize("\n".join(lines))
         lines.append(f"Status: {data.get('code', 'OK')}")
         body = data["data"]
         if isinstance(body, list):
@@ -188,10 +204,10 @@ def summarize_response(
         elif isinstance(body, dict):
             lines.append(f"Fields ({len(body)}): [{', '.join(list(body)[:15])}]")
             lines.append(f"Data: {json.dumps(body, ensure_ascii=False)[:250]}")
-            return "\n".join(lines)
+            return _finalize("\n".join(lines))
         else:  # 0, "abc", true, null
             lines.append(f"Data: {json.dumps(body, ensure_ascii=False)}")
-            return "\n".join(lines)
+            return _finalize("\n".join(lines))
     elif isinstance(data, list):
         target_list = data
     elif isinstance(data, dict):
@@ -206,7 +222,7 @@ def summarize_response(
             lines.append(f"Object keys ({len(keys)}): [{', '.join(keys[:15])}]")
             preview = json.dumps(data, ensure_ascii=False)[:200]
             lines.append(f"Preview: {preview}...")
-            return "\n".join(lines)
+            return _finalize("\n".join(lines))
 
     if target_list is not None:
         lines.append(f"Rows: {len(target_list)}")
@@ -215,7 +231,7 @@ def summarize_response(
             lines.append(f"Fields ({len(first_keys)}): [{', '.join(first_keys[:15])}]")
             first_row_preview = json.dumps(target_list[0], ensure_ascii=False)
             lines.append(f"First row: {first_row_preview[:250]}")
-    return "\n".join(lines)
+    return _finalize("\n".join(lines))
 
 
 def _timeout_message(timeout: float, method: str, path: str) -> str:
@@ -238,6 +254,7 @@ def request_api(
     json_body: Any | None = None,
     auto_login: bool = True,
     timeout: float | None = None,
+    mask: bool = True,
 ) -> ToolResult:
     """인증 세션을 사용하여 API를 호출하고 결과를 요약 반환한다.
     
@@ -329,6 +346,10 @@ def request_api(
         except Exception as exc:  # noqa: BLE001
             return ToolResult(ok=False, error=f"재시도 요청 실패: {exc}")
 
+    resp_headers = getattr(resp, "headers", {}) or {}
+    trace_hdr = config.LOG_TRACE_HEADER or "X-Trace-Id"
+    trace_id = resp_headers.get(trace_hdr) or resp_headers.get(trace_hdr.lower())
+
     summary = summarize_response(
         resp.status_code,
         resp.text,
@@ -336,6 +357,8 @@ def request_api(
         tenant=tenant,
         base_url=base_url,
         company_code=company_code,
+        trace_id=trace_id,
+        mask=mask,
     )
     return ToolResult(
         ok=resp.is_success,
@@ -344,6 +367,7 @@ def request_api(
             "duration_ms": duration_ms,
             "text": resp.text,
             "summary": summary,
+            "trace_id": trace_id,
         },
         error=None if resp.is_success else f"HTTP {resp.status_code}",
     )

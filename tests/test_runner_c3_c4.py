@@ -97,3 +97,53 @@ def test_c5_outline_multiple_files(tmp_path: Path):
     assert res2.ok is True
     assert "foo()" in res1.data
     assert "bar()" in res2.data
+
+
+def test_c3_up_to_date_and_failed_details(tmp_path: Path):
+    results_dir = tmp_path / "build" / "test-results" / "test"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    xml_file = results_dir / "TEST-com.example.SampleTest.xml"
+    xml_file.write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.SampleTest" tests="5" failures="1" errors="0" skipped="0">
+  <testcase name="testFail" classname="com.example.SampleTest">
+    <failure message="expected: 1 but was: 2" type="AssertionError">
+org.opentest4j.AssertionFailedError: expected: 1 but was: 2
+\tat com.example.SampleTest.testFail(SampleTest.java:42)
+    </failure>
+  </testcase>
+  <testcase name="testPass" classname="com.example.SampleTest"/>
+</testsuite>
+""", encoding="utf-8")
+
+    # XML이 start_time보다 과거인 상황 시뮬레이션
+    old_time = xml_file.stat().st_mtime
+    future_start = old_time + 10.0
+
+    # 1. exit_code == 0 (UP-TO-DATE): 기존 XML 유지
+    res_up_to_date = extract_test_results(
+        "gradle test",
+        cwd=tmp_path,
+        start_time=future_start,
+        exit_code=0,
+    )
+    assert res_up_to_date is not None
+    assert res_up_to_date["total"] == 5
+
+    # 2. exit_code == 1 (빌드 에러 등 새 XML 미생성): 과거 XML 폐기
+    res_failed_no_new_xml = extract_test_results(
+        "gradle test",
+        cwd=tmp_path,
+        start_time=future_start,
+        exit_code=1,
+    )
+    assert res_failed_no_new_xml is None
+
+    # 3. failed_details 추출 검증
+    res_fail = extract_test_results("gradle test", cwd=tmp_path)
+    assert res_fail is not None
+    details = res_fail.get("failed_details", [])
+    assert len(details) == 1
+    assert details[0]["name"] == "SampleTest > testFail"
+    assert "expected: 1 but was: 2" in details[0]["message"]
+    assert details[0]["at"] == "SampleTest.java:42"
+

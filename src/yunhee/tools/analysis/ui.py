@@ -16,6 +16,53 @@ EXAMPLES = [
 ]
 
 
+def _tobe_event_ids(text: str) -> tuple[set[int], set[int]]:
+    """TOBE 파일 텍스트에서 구현된 이벤트 집합과 생략된 이벤트 집합을 추출한다.
+
+    - 단일: [E0] -> {0} in impl
+    - 범위: [E5]~[E9] -> {5,6,7,8,9} in impl
+    - 생략 단일: [E1 생략] -> {1} in skipped
+    - 생략 범위: [E1]~[E3 생략] -> {1,2,3} in skipped
+    - 구현과 생략에 동시 포함되면 구현으로 취급 (skipped = skipped - impl)
+    """
+    impl: set[int] = set()
+    skipped: set[int] = set()
+
+    # 1. 생략 범위: [E1]~[E3 생략]
+    def repl_skip_range(m: re.Match) -> str:
+        a, b = int(m.group(1)), int(m.group(2))
+        if a <= b:
+            for n in range(a, b + 1):
+                skipped.add(n)
+        return " " * len(m.group(0))
+
+    t = re.sub(r"\[E(\d+)\]\s*[~∼-]\s*\[E(\d+)\s*생략\]", repl_skip_range, text)
+
+    # 2. 일반 범위: [E5]~[E9]
+    def repl_impl_range(m: re.Match) -> str:
+        a, b = int(m.group(1)), int(m.group(2))
+        if a <= b:
+            for n in range(a, b + 1):
+                impl.add(n)
+        return " " * len(m.group(0))
+
+    t = re.sub(r"\[E(\d+)\]\s*[~∼-]\s*\[E(\d+)\]", repl_impl_range, t)
+
+    # 3. 생략 단일: [E1 생략]
+    def repl_skip_single(m: re.Match) -> str:
+        skipped.add(int(m.group(1)))
+        return " " * len(m.group(0))
+
+    t = re.sub(r"\[E(\d+)\s*생략\]", repl_skip_single, t)
+
+    # 4. 구현 단일: [E0]
+    for m in re.finditer(r"\[E(\d+)\]", t):
+        impl.add(int(m.group(1)))
+
+    skipped = skipped - impl
+    return impl, skipped
+
+
 def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     """화면 파일 및 TOBE 디렉터리에서 UI 통계를 추출한다."""
     _, src_index = resolve_as_is_paths(src=opts.get("src"), src_index=opts.get("src_index"))
@@ -64,7 +111,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
 
     # TOBE 통계 파싱 (지정된 경우)
     tobe_path_raw = opts.get("tobe")
-    tobe_stats: dict[str, dict[str, int]] = {}
+    tobe_stats: dict[str, dict[str, Any]] = {}
     if tobe_path_raw:
         tobe_dir = Path(tobe_path_raw)
         if tobe_dir.is_dir():
@@ -75,16 +122,26 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
                     continue
                 f_name = f.stem
                 t_btn = len(re.findall(r"<Button\b", f_text))
-                t_ev = len(re.findall(r"\[E\d+\]", f_text))
+                impl_ev, skip_ev = _tobe_event_ids(f_text)
                 t_grid = 1 if re.search(r"<(?:SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid)\b", f_text) else 0
-                tobe_stats[f_name] = {"buttons": t_btn, "events": t_ev, "grids": t_grid}
+                tobe_stats[f_name] = {
+                    "buttons": t_btn,
+                    "events": len(impl_ev),
+                    "events_skipped": len(skip_ev),
+                    "grids": t_grid,
+                }
         elif tobe_dir.is_file():
             try:
                 f_text = tobe_dir.read_text(encoding="utf-8", errors="replace")
                 t_btn = len(re.findall(r"<Button\b", f_text))
-                t_ev = len(re.findall(r"\[E\d+\]", f_text))
+                impl_ev, skip_ev = _tobe_event_ids(f_text)
                 t_grid = 1 if re.search(r"<(?:SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid)\b", f_text) else 0
-                tobe_stats[tobe_dir.stem] = {"buttons": t_btn, "events": t_ev, "grids": t_grid}
+                tobe_stats[tobe_dir.stem] = {
+                    "buttons": t_btn,
+                    "events": len(impl_ev),
+                    "events_skipped": len(skip_ev),
+                    "grids": t_grid,
+                }
             except OSError:
                 pass
 
@@ -133,9 +190,13 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         lines.append("|:---|:---:|:---:|:---:|")
         for c in all_cls_names:
             ai = as_is[c]
-            tb = tobe.get(c, {"buttons": 0, "events": 0, "grids": 0})
+            tb = tobe.get(c, {"buttons": 0, "events": 0, "events_skipped": 0, "grids": 0})
+            skip_cnt = tb.get("events_skipped", 0)
+            ev_str = f"{ai['events']}/{tb['events']}"
+            if skip_cnt > 0:
+                ev_str += f" (생략 {skip_cnt})"
             lines.append(
-                f"| {c} | {ai['buttons']}/{tb['buttons']} | {ai['events']}/{tb['events']} | {ai['grids']}/{tb['grids']} |"
+                f"| {c} | {ai['buttons']}/{tb['buttons']} | {ev_str} | {ai['grids']}/{tb['grids']} |"
             )
         return "\n".join(lines)
 

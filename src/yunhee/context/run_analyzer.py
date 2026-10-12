@@ -23,10 +23,18 @@ def summarize_run(
     stderr: str,
     use_llm: bool = True,
     cwd: Path | None = None,
+    start_time: float | None = None,
 ) -> str:
     """명령어 실행 결과를 상용 AI 에이전트 및 사용자가 소비하기 좋은 압축 마크다운으로 가공한다."""
     duration_sec = f"{duration_ms / 1000:.2f}s"
-    test_info = extract_test_results(command, cwd=cwd, stdout=stdout, stderr=stderr)
+    test_info = extract_test_results(
+        command,
+        cwd=cwd,
+        stdout=stdout,
+        stderr=stderr,
+        start_time=start_time,
+        exit_code=exit_code,
+    )
 
     # 1. 성공 케이스 (exit_code == 0): 정확히 1줄로 단축하여 토큰 낭비 제거
     if exit_code == 0:
@@ -37,8 +45,15 @@ def summarize_run(
 
     # 2. 실패 케이스 (exit_code != 0)
     lines = []
-    # C-3: 실패면 실패 테스트 이름을 LLM 요약보다 먼저 낸다 (맨 위)
-    if test_info and test_info.get("failed_cases"):
+    failed_details = test_info.get("failed_details") if test_info else []
+    if failed_details:
+        for fd in failed_details:
+            lines.append(f"❌ {fd['name']} FAILED")
+            if fd.get("message"):
+                lines.append(f"   message: {fd['message']}")
+            if fd.get("at"):
+                lines.append(f"   at: {fd['at']}")
+    elif test_info and test_info.get("failed_cases"):
         for fc in test_info["failed_cases"]:
             lines.append(f"❌ {fc}")
 
@@ -49,6 +64,10 @@ def summarize_run(
     ])
     if test_info:
         lines.append(f"- **Tests**: 전체 {test_info['total']} · 실패 {test_info['failures']} · 건너뜀 {test_info['skipped']}")
+
+    if failed_details:
+        lines.append(f"\n원문: {log_path}")
+        return "\n".join(lines)
 
     combined_output = ""
     if stderr.strip():

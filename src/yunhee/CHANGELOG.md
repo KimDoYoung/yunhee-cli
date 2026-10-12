@@ -2,6 +2,17 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.2.5] - 2026-10-12
+수정사항 021 (정적 분석 고도화, 테스트 실패 메시지 추출, 서버 로그 분석 명령 신설) 반영.
+- analysis ui: TOBE E-id 범위([E5]~[E9]), 중복 E-id 카운트 배제, 생략 표기([E1 생략], [E1]~[E3 생략]) 감지 및 10/7 (생략 3) 형식 집계
+- analysis sql: CTE(WITH ...) 추출 및 중복/테이블 목록 제외, DML 변경 대상(UPDATE/INSERT/DELETE) 명시 및 -o code 안내
+- analysis method: 클라이언트 콜백 블록(callback: 접두어), editDriver.flush/edit, result.getResult, 스토어 갱신, 분기문(if/else if/else) 및 값 대입 추출 보강
+- analysis method --server: 결과 설정(result.setResult/setRetrieveResult) 및 위임 없는 메서드에 '⚠ 결과 없음' 경고 추가
+- events: 연속되지 않은 반복 호출(update(), autodecCtzNo(), update()) 순서 보존
+- analysis screen: 정적 폼 레이아웃 파서 `--section layout` 신설 (라벨 폭, 행 구조, 위젯 크기/마진, readOnly/disabled 속성 추출)
+- run: JUnit XML 파싱 기반 테스트 실패 메시지(message:, at:) 추출 및 Qwen 요약 생략으로 속도 개선
+- log & api: 서버 로그 분석 명령(`yunhee log trace|req|errors|tail`) 신설, Docker(t3600-tomcat) 직접 조회, 시간대(UTC/KST) 변환, 민감정보(주민등록번호/JWT/패스워드) 마스킹, api 호출 시 `trace={id}` 태그 및 `--log` 옵션 지원
+
 ## [0.2.4] - 2026-10-08
 수정사항 020 (019 시험 결과 보강 및 색인 성능 최적화) 반영.
 - analysis tobe: JSX 렌더 트리 전용 토크나이저 도입 (자체 닫힘 태그, 중첩 화살표 함수/제네릭, Fragment 완전 지원 및 형제 요소 들여쓰기 밀림 해결)

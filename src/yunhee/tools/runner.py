@@ -26,6 +26,8 @@ def extract_test_results(
     cwd: Path | None = None,
     stdout: str = "",
     stderr: str = "",
+    start_time: float | None = None,
+    exit_code: int = 0,
 ) -> dict[str, Any] | None:
     """명령어가 gradle/mvn test인 경우 XML 또는 로그에서 테스트 결과를 추출한다 (C-3)."""
     cmd_lower = command.lower()
@@ -47,11 +49,31 @@ def extract_test_results(
     if not xml_files:
         xml_files = list(base_dir.glob("**/target/surefire-reports/*.xml"))
 
+    # --tests 패턴 필터링
+    m_tests = re.search(r"--tests\s+['\"]?(\S+)", command)
+    if m_tests:
+        t_pat = m_tests.group(1).rstrip("'\"").split(".")[-1].replace("*", "")
+        if t_pat:
+            xml_files = [xf for xf in xml_files if t_pat in xf.name]
+
+    # 시작 시각 필터링
+    if start_time is not None:
+        recent_xmls = [xf for xf in xml_files if xf.stat().st_mtime >= start_time - 1.0]
+        if recent_xmls:
+            xml_files = recent_xmls
+        elif exit_code == 0:
+            # Gradle/Maven UP-TO-DATE 실행 등 이번 실행에서 XML이 갱신되지 않았으나 성공한 경우, 기존 결과 유지
+            pass
+        else:
+            # 실패한 실행인데 이번 실행에서 새로 생성된 XML이 없다면 이전의 성공/과거 XML을 쓰지 않음
+            xml_files = []
+
     if xml_files:
         total = 0
         failures = 0
         skipped = 0
         failed_cases: list[str] = []
+        failed_details: list[dict[str, str]] = []
 
         for xf in xml_files:
             try:
@@ -72,6 +94,24 @@ def extract_test_results(
                             fail_node = tc.find("error")
                         if fail_node is not None:
                             case_name = tc.attrib.get("name", "unknown")
+                            msg_raw = fail_node.attrib.get("message", "")
+                            msg_line = msg_raw.splitlines()[0][:300].strip() if msg_raw else ""
+
+                            at_val = ""
+                            stack_text = fail_node.text or ""
+                            m_at = re.search(rf"\bat\s+.*{re.escape(cls_simple)}[^(]*\(([\w.-]+:\d+)\)", stack_text)
+                            if m_at:
+                                at_val = m_at.group(1)
+                            else:
+                                m_any_at = re.search(r"\bat\s+.*\(([\w.-]+:\d+)\)", stack_text)
+                                if m_any_at:
+                                    at_val = m_any_at.group(1)
+
+                            failed_details.append({
+                                "name": f"{cls_simple} > {case_name}",
+                                "message": msg_line,
+                                "at": at_val,
+                            })
                             failed_cases.append(f"{cls_simple} > {case_name} FAILED")
             except Exception:  # noqa: BLE001, S110
                 pass
@@ -82,6 +122,7 @@ def extract_test_results(
             "failures": failures,
             "skipped": skipped,
             "failed_cases": failed_cases,
+            "failed_details": failed_details,
         }
 
     # 2. 로그 정규식 탐색 (XML 없을 때 fallback)
@@ -125,6 +166,7 @@ def execute_command(
     run_id = f"{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     log_file = runs_dir / f"{run_id}.log"
 
+    start_epoch = time.time()
     start_time = time.perf_counter()
     try:
         proc = subprocess.run(
@@ -194,6 +236,7 @@ def execute_command(
         "stderr": stderr,
         "stdout_preview": stdout_preview,
         "stderr_preview": stderr_preview,
+        "start_time": start_epoch,
     }
 
     ok = exit_code == 0

@@ -211,38 +211,128 @@ def _summarize_body(body: str, start_line: int, is_server: bool, file_text: str 
     """메서드 본문을 파싱하여 중요 작업 흐름을 요약한다."""
     items = []
     lines = body.splitlines()
+    method_len = len(lines)
 
     class_constants = dict(
         re.findall(r'(?:private|protected|public)?\s*String\s+(\w+)\s*=\s*"([^"]+)"', file_text)
     )
 
+    in_callback = False
+    callback_depth = 0
+    seen_callback_brace = False
+
+    def add_item(it: str) -> None:
+        if not is_server and in_callback and not it.startswith("callback: "):
+            items.append(f"callback: {it}")
+        else:
+            items.append(it)
+
     for idx, line in enumerate(lines):
         line_num = start_line + idx
         s = line.strip()
 
-        # 메시지 / alert
+        # 콜백 블록 추적
+        if not is_server:
+            if not in_callback:
+                if "getServiceResult(" in s:
+                    in_callback = True
+                    callback_depth = s.count("{") - s.count("}")
+                    seen_callback_brace = (s.count("{") > 0)
+            else:
+                callback_depth += s.count("{") - s.count("}")
+                if s.count("{") > 0:
+                    seen_callback_brace = True
+
+        # 1. editDriver.flush()
+        if not is_server and "editDriver.flush()" in s:
+            add_item(f"editDriver.flush() (L{line_num})")
+            continue
+
+        # 2. 메시지 / alert
         m_msg = re.search(r'new\s+SimpleMessage\s*\(\s*"([^"]+)"', s)
         if m_msg:
-            items.append(f'SimpleMessage "{m_msg.group(1)}" (L{line_num})')
+            add_item(f'SimpleMessage "{m_msg.group(1)}" (L{line_num})')
             continue
         m_alert = re.search(r'alert\s*\(\s*"([^"]+)"', s)
         if m_alert:
-            items.append(f'alert "{m_alert.group(1)}" (L{line_num})')
+            add_item(f'alert "{m_alert.group(1)}" (L{line_num})')
             continue
         if '"사원을 먼저 선택해주세요"' in s:
-            items.append(f'경고: "사원을 먼저 선택해주세요" (L{line_num})')
+            add_item(f'경고: "사원을 먼저 선택해주세요" (L{line_num})')
             continue
         m_html = re.search(r'new\s+HtmlMessageBox\s*\(\s*"([^"]+)"\s*,\s*"([^"]+)"', s)
         if m_html:
-            items.append(f'HtmlMessageBox "{m_html.group(1)}", "{m_html.group(2)}" (L{line_num})')
+            add_item(f'HtmlMessageBox "{m_html.group(1)}", "{m_html.group(2)}" (L{line_num})')
             continue
         if "setEmptyText(" in s:
             m_empty = re.search(r'setEmptyText\s*\(\s*"([^"]+)"', s)
             if m_empty:
-                items.append(f'setEmptyText "{m_empty.group(1)}" (L{line_num})')
+                add_item(f'setEmptyText "{m_empty.group(1)}" (L{line_num})')
                 continue
 
-        # 클라이언트 서비스 호출 (ServiceRequest("...") + addParam)
+        # 3. 분기 처리 (if / else if / else)
+        is_else_only = bool(re.search(r'^(?:\}\s*)?else\s*\{?\s*$', s))
+        m_if = re.search(r'(?:^|\})\s*(?:else\s+)?if\s*\(', s)
+
+        if not is_server and is_else_only and method_len <= 120:
+            add_item(f"분기: else (L{line_num})")
+            continue
+
+        if m_if:
+            p_open = s.find("(", m_if.start())
+            p_close = paren_end(s, p_open)
+            cond = s[p_open + 1 : p_close] if p_close > p_open else s[p_open + 1 :].rstrip("{").strip()
+            show_branch = False
+            if "result.getStatus() < 0" in cond or not is_server and method_len <= 120 or "selected" in cond.lower() or "null" in cond.lower() or "size()" in cond.lower():
+                show_branch = True
+
+            if show_branch:
+                cond_clean = cond.strip()
+                if len(cond_clean) > 80:
+                    cond_clean = cond_clean[:77] + "…"
+                add_item(f"분기: if ({cond_clean}) (L{line_num})")
+                continue
+
+        # 4. 클라이언트 콜백 / 폼 / 스토어 관련
+        if not is_server:
+            # result.getResult(\d+) / result.getResult()
+            m_get_res = re.search(r'result\.getResult\s*\(\s*(\d*)\s*\)', s)
+            if m_get_res:
+                arg_val = m_get_res.group(1)
+                add_item(f"result.getResult({arg_val}) (L{line_num})")
+                continue
+
+            # editDriver.edit(X)
+            m_ed_edit = re.search(r'editDriver\.edit\s*\(', s)
+            if m_ed_edit:
+                p_open = s.find("(", m_ed_edit.start())
+                p_close = paren_end(s, p_open)
+                arg_x = s[p_open + 1 : p_close].strip() if p_close > p_open else s[m_ed_edit.end():].rstrip(";").rstrip(")")
+                add_item(f"editDriver.edit({arg_x}) (L{line_num})")
+                continue
+
+            # \w+\.getStore\(\)\.(update|add|remove|replaceAll|clear)\(
+            m_store = re.search(r'(\w+)\.getStore\(\)\.(update|add|remove|replaceAll|clear)\s*\(', s)
+            if m_store:
+                p_open = s.find("(", m_store.start() + len(m_store.group(1)) + len(".getStore()." + m_store.group(2)))
+                p_close = paren_end(s, p_open)
+                full_call = s[m_store.start(): p_close + 1] if p_close > p_open else s[m_store.start():].rstrip(";")
+                add_item(f"{full_call} (L{line_num})")
+                continue
+
+            # (\w+)\.setValue\(\s*"([^"]*)"\s*\) (this. 제거)
+            m_set_v = re.search(r'(?:this\.)?(\w+)\.setValue\s*\(\s*"([^"]*)"\s*\)', s)
+            if m_set_v:
+                add_item(f'{m_set_v.group(1)}.setValue("{m_set_v.group(2)}") (L{line_num})')
+                continue
+
+            # ^(\w+)\s*=\s*"([^"]*)"\s*; (지역 변수에 문자열 리터럴 대입)
+            m_var_assign = re.search(r'^\s*(\w+)\s*=\s*"([^"]*)"\s*;', s)
+            if m_var_assign:
+                add_item(f'{m_var_assign.group(1)} = "{m_var_assign.group(2)}" (L{line_num})')
+                continue
+
+        # 5. 클라이언트 서비스 호출 (ServiceRequest("...") + addParam)
         m_srv = re.search(r'new\s+ServiceRequest\s*\(\s*"([a-z]\w*\.[A-Z]\w*\.\w+)"\s*\)', s)
         if m_srv:
             srv_name = m_srv.group(1)
@@ -263,24 +353,24 @@ def _summarize_body(body: str, start_line: int, is_server: bool, file_text: str 
                 if "execute(" in sub_line or "new ServiceCall" in sub_line:
                     break
             param_str = f"({', '.join(params)})" if params else ""
-            items.append(f"서비스 {srv_name}{param_str} (L{line_num})")
+            add_item(f"서비스 {srv_name}{param_str} (L{line_num})")
             continue
 
         # 기타 서비스 호출 문자열 (ex: "org.Org00_OrgInfo.selectByOrgCodeId")
         m_srv_raw = re.search(r'"([a-z]\w*\.[A-Z]\w*\.\w+)"', s)
         if m_srv_raw and not is_server:
-            items.append(f"서비스 {m_srv_raw.group(1)} (L{line_num})")
+            add_item(f"서비스 {m_srv_raw.group(1)} (L{line_num})")
             continue
 
         # GridInsertRow / insertRow / deselectAll
         if "deselectAll()" in s:
-            items.append(f"grid.getSelectionModel().deselectAll() (L{line_num})")
+            add_item(f"grid.getSelectionModel().deselectAll() (L{line_num})")
             continue
         if "insertRow" in s and ("GridInsertRow" in s or ".insertRow" in s):
-            items.append(f"GridInsertRow.insertRow (L{line_num})")
+            add_item(f"GridInsertRow.insertRow (L{line_num})")
             continue
 
-        # addChange: grid.getStore().getRecord(selectModel).addChange(properties.orgCodeId(), orgInfoModel.getOrgCodeId());
+        # addChange
         m_chg = re.search(r'addChange\s*\(', s)
         if m_chg:
             p_open = s.find("(", m_chg.start())
@@ -292,9 +382,9 @@ def _summarize_body(body: str, start_line: int, is_server: bool, file_text: str 
                 val_arg = args[1].strip()
                 prop_m = re.search(r"\.(\w+)\s*(?:\(\s*\))?", prop_arg)
                 prop_name = prop_m.group(1) if prop_m else prop_arg
-                items.append(f"addChange {prop_name} ← {val_arg} (L{line_num})")
+                add_item(f"addChange {prop_name} ← {val_arg} (L{line_num})")
             elif len(args) == 1:
-                items.append(f"addChange {args[0]} (L{line_num})")
+                add_item(f"addChange {args[0]} (L{line_num})")
             continue
 
         # 서버 전용: getSeq, UpdateDataModel, setXxx("리터럴"), sqlSession, commit
@@ -302,30 +392,25 @@ def _summarize_body(body: str, start_line: int, is_server: bool, file_text: str 
             if "getSeq" in s:
                 m_seq = re.search(r'(\w+)\s*=\s*(?:.*getSeq|.*dbConfig\.getSeq)', s)
                 var = m_seq.group(1) if m_seq else "seq"
-                items.append(f"getSeq ({var}) (L{line_num})")
+                add_item(f"getSeq ({var}) (L{line_num})")
                 continue
 
-            # UpdateDataModel: new UpdateDataModel 또는 updateModel(sqlSession, ..., "table", ...)
             m_udm = re.search(r'new\s+UpdateDataModel[^\n]*\(\s*["\']?(\w+)["\']?\s*\)', s)
             if m_udm:
-                items.append(f"UpdateDataModel({m_udm.group(1)}) (L{line_num})")
+                add_item(f"UpdateDataModel({m_udm.group(1)}) (L{line_num})")
                 continue
             m_updm = re.search(r'\.updateModel\s*\([^,]+,[^,]+,\s*["\'](\w+)["\']', s)
             if m_updm:
-                items.append(f"UpdateDataModel({m_updm.group(1)}) (L{line_num})")
+                add_item(f"UpdateDataModel({m_updm.group(1)}) (L{line_num})")
                 continue
 
-            # 고정값 대입: transModel.setTransCode("100") -> transCode="100"
             m_set_val = re.search(r'\.set([A-Z]\w*)\s*\(\s*"([^"]+)"\s*\)', s)
             if m_set_val:
                 prop = m_set_val.group(1)
                 prop_name = prop[0].lower() + prop[1:]
-                items.append(f'{prop_name}="{m_set_val.group(2)}" (L{line_num})')
+                add_item(f'{prop_name}="{m_set_val.group(2)}" (L{line_num})')
                 continue
 
-            # sqlSession 호출
-            # sqlSession.update("emp02_others.insert", ...)
-            # sqlSession.selectList(mapperName + ".selectById", ...)
             m_sql_expr = re.search(
                 r'sqlSession\.\w+\s*\(\s*(?:([a-zA-Z0-9_]+)\s*\+\s*)?["\']([^"\']+)["\']',
                 s,
@@ -336,23 +421,35 @@ def _summarize_body(body: str, start_line: int, is_server: bool, file_text: str 
                 if prefix_var:
                     if prefix_var in class_constants:
                         full_sql = f"{class_constants[prefix_var]}.{sql_id.lstrip('.')}"
-                        items.append(f"sqlSession: {full_sql} (L{line_num})")
+                        add_item(f"sqlSession: {full_sql} (L{line_num})")
                     else:
-                        items.append(f"sqlSession: {prefix_var} + '{sql_id}' (L{line_num})")
+                        add_item(f"sqlSession: {prefix_var} + '{sql_id}' (L{line_num})")
                 else:
-                    items.append(f"sqlSession: {sql_id} (L{line_num})")
+                    add_item(f"sqlSession: {sql_id} (L{line_num})")
                 continue
 
             if "commit()" in s:
-                items.append(f"commit() (L{line_num})")
+                add_item(f"commit() (L{line_num})")
                 continue
 
-        # 조건 분기 (목록 선택 없음 등)
-        if s.startswith(("if (", "if(")):
-            cond = s[s.find("(") + 1 : s.rfind(")")]
-            if "selected" in cond.lower() or "null" in cond.lower() or "size()" in cond.lower():
-                items.append(f"분기: if ({cond}) (L{line_num})")
-                continue
+        # 콜백 닫힘 체크
+        if not is_server and in_callback and seen_callback_brace and callback_depth <= 0:
+            in_callback = False
+
+    # 서버 전용 결과 반환 여부 검증 (A-4)
+    if is_server:
+        has_result = any(fn in body for fn in (
+            "result.setResult(",
+            "result.setRetrieveResult(",
+            "result.addResult(",
+            "result.setList(",
+        ))
+        brace_pos = body.find("{")
+        body_content = body[brace_pos:] if brace_pos != -1 else body
+        has_delegate = bool(re.search(r'(?:,\s*result\s*\)|\(\s*result\s*\))', body_content))
+
+        if not has_result and not has_delegate:
+            items.append("⚠ 결과 없음: result.setResult/setRetrieveResult 호출이 없다 — 클라이언트가 result.getResult(…)를 읽으면 실패한다")
 
     return items
 

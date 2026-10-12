@@ -279,7 +279,11 @@ def extract_events_and_methods(
                 calls.append(f"{fn}()")
 
         if calls:
-            action_desc = ", ".join(dict.fromkeys(calls))
+            deduped_calls: list[str] = []
+            for c in calls:
+                if not deduped_calls or deduped_calls[-1] != c:
+                    deduped_calls.append(c)
+            action_desc = ", ".join(deduped_calls)
         else:
             svcs = [s.group(1) for s in re.finditer(r'"([a-z]\w*\.[A-Z]\w*\.\w+)"', body)]
             # 파라미터: companyId=선택행 등

@@ -133,14 +133,67 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     for i in re.finditer(r'<if\s+test="([^"]+)"', body):
         branches.append(f"if: `{i.group(1)}`")
 
+    # CTE 이름 집합 (include 조각 및 본문)
+    cte_names: list[str] = []
+    cte_set: set[str] = set()
+
+    def _extract_ctes(text: str) -> None:
+        for m in re.finditer(r"\bWITH\s+(?:RECURSIVE\s+)?([a-zA-Z0-9_]+)\s+AS\s*\(|,\s*([a-zA-Z0-9_]+)\s+AS\s*\(", text, re.IGNORECASE):
+            c_name = m.group(1) or m.group(2)
+            if c_name and c_name.lower() not in cte_set:
+                cte_names.append(c_name)
+                cte_set.add(c_name.lower())
+
+    for inc in includes:
+        target_st = stmts.get(inc) or stmts.get(f"{st.ns}.{inc}") or next((s for s in stmts.values() if s.sid == inc), None)
+        if target_st:
+            fm = re.search(rf'<{target_st.kind}\b[^>]*\bid="{re.escape(target_st.sid)}"[^>]*>(.*?)</{target_st.kind}>', target_st.raw, re.DOTALL)
+            if fm:
+                _extract_ctes(fm.group(1))
+
+    _extract_ctes(body)
+
     # 테이블 / DB 함수
-    tables = sorted(set(re.findall(r"\bFROM\s+([a-zA-Z0-9_]+)|\bJOIN\s+([a-zA-Z0-9_]+)", body, re.IGNORECASE)))
-    table_names = [t[0] or t[1] for t in tables if (t[0] or t[1]).lower() not in ("where", "select", "set")]
+    table_matches = re.finditer(
+        r"\b(?:FROM|JOIN|UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+([a-zA-Z0-9_]+)",
+        body,
+        re.IGNORECASE,
+    )
+    table_names: list[str] = []
+    seen_tables: set[str] = set()
+    for tm in table_matches:
+        t = tm.group(1)
+        t_lower = t.lower()
+        if t_lower in ("where", "select", "set", "values", "into", "dual"):
+            continue
+        if t_lower in cte_set:
+            continue
+        if t_lower not in seen_tables:
+            seen_tables.add(t_lower)
+            table_names.append(t)
+
     funcs = sorted(set(re.findall(r"\b(f_\w+|to_\w+|coalesce)\s*\(", body, re.IGNORECASE)))
 
-    # 최상위 별칭 목록
-    from yunhee.tools.as_is.sql_checker import select_output_names
-    output_names = select_output_names(body) or []
+    # 변경 대상 (insert/update/delete)
+    change_targets: list[str] = []
+    seen_changes: set[str] = set()
+    for cm in re.finditer(r"\b(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+([a-zA-Z0-9_]+)", body, re.IGNORECASE):
+        act = cm.group(1).upper()
+        if act.startswith("INSERT"):
+            act = "INSERT"
+        elif act.startswith("DELETE"):
+            act = "DELETE"
+        tbl = cm.group(2)
+        item = f"{act} {tbl}"
+        if item not in seen_changes:
+            seen_changes.add(item)
+            change_targets.append(item)
+
+    # 최상위 별칭 목록 (select 전용)
+    output_names = []
+    if st.kind == "select":
+        from yunhee.tools.as_is.sql_checker import select_output_names
+        output_names = select_output_names(body) or []
 
     # ORDER BY
     order_m = re.search(r"\bORDER\s+BY\s+([^;\n<]+)", body, re.IGNORECASE)
@@ -158,13 +211,20 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         lines.append(f"- **조건 분기**: {', '.join(branches)}")
     if table_names:
         lines.append(f"- **테이블**: {', '.join(table_names)}")
+    if cte_names:
+        lines.append(f"- **CTE**: {', '.join(cte_names)}")
     if funcs:
         lines.append(f"- **함수**: {', '.join(funcs)}")
-    if output_names:
+    if st.kind in ("insert", "update", "delete"):
+        if change_targets:
+            lines.append(f"- **변경 대상**: {', '.join(change_targets)}")
+    elif output_names:
         clean_names = [str(n) for n in output_names if n]
         if clean_names:
             lines.append(f"- **출력 별칭**: {', '.join(clean_names[:10])}{' ...' if len(clean_names) > 10 else ''}")
     if order_by:
         lines.append(f"- **ORDER BY**: `{order_by}`")
+    if st.kind != "select":
+        lines.append(f"- 본문: yunhee analysis sql {st.key} -o code")
 
     return "\n".join(lines)

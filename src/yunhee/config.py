@@ -87,6 +87,15 @@ def resolve_api_tenant(tenant: str | None = None) -> str | None:
 # yunhee api 요청 타임아웃(초). 로그인 요청은 10초 고정.
 API_TIMEOUT = _float_env("YUNHEE_API_TIMEOUT", 15.0)
 
+# 로그 리더 (yunhee log) 기본 설정
+_log_conf = TOML_CONFIG.get("log", {})
+LOG_DOCKER = _log_conf.get("docker") if "docker" in _log_conf else os.getenv("YUNHEE_LOG_DOCKER", "t3600-tomcat")
+LOG_DIR = _log_conf.get("dir") if "dir" in _log_conf else os.getenv("YUNHEE_LOG_DIR", "/home/kdy987/tmp/asseterp-data/logs")
+LOG_APP = _log_conf.get("app") if "app" in _log_conf else os.getenv("YUNHEE_LOG_APP", "AssetERP-backend")
+LOG_TZ = _log_conf.get("tz") if "tz" in _log_conf else os.getenv("YUNHEE_LOG_TZ", "")
+LOG_CONTEXT = _log_conf.get("context") if "context" in _log_conf else os.getenv("YUNHEE_LOG_CONTEXT", "/AssetERP_1")
+LOG_TRACE_HEADER = _log_conf.get("trace_header") if "trace_header" in _log_conf else os.getenv("YUNHEE_LOG_TRACE_HEADER", "X-Trace-Id")
+
 
 def redact(url: str | None) -> str:
     """postgresql://user:password@host/db 형태에서 비밀번호를 가린다."""

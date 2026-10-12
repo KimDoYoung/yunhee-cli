@@ -1,0 +1,9 @@
+2026-10-08 06:10:01.100 [aaaa000000000001] [admin] [kfstest:admin] [172.18.0.1] [http-nio-8080-exec-1] WARN  k.c.k.a.c.w.StompAuthChannelInterceptor - WebSocket 목적지 거부 - command: SUBSCRIBE, destination: /topic/presence, user: 101
+2026-10-08 06:11:02.200 [aaaa000000000002] [admin] [kfstest:admin] [172.18.0.1] [http-nio-8080-exec-2] WARN  k.c.k.a.c.w.StompAuthChannelInterceptor - WebSocket 목적지 거부 - command: SUBSCRIBE, destination: /topic/presence, user: 102
+2026-10-08 06:12:03.300 [aaaa000000000003] [admin] [kfstest:admin] [172.18.0.1] [http-nio-8080-exec-3] WARN  k.c.k.a.c.w.StompAuthChannelInterceptor - WebSocket 목적지 거부 - command: SUBSCRIBE, destination: /topic/presence, user: 103
+2026-10-08 06:20:00.000 [bbbb000000000001] [admin] [kfstest:admin] [172.18.0.1] [http-nio-8080-exec-4] ERROR k.c.k.a.c.e.GlobalExceptionHandler - 처리되지 않은 오류 (픽스처)
+java.lang.IllegalStateException: 픽스처 오류
+	at x.Foo.bar(Foo.java:10)
+	at x.Foo.baz(Foo.java:20)
+Caused by: java.lang.NullPointerException: 픽스처 원인
+	at x.Foo.qux(Foo.java:30)

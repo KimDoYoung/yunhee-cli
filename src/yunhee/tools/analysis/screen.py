@@ -18,7 +18,7 @@ EXAMPLES = [
 
 def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     """색인 화면 마크다운 파일을 찾아 구조화한다."""
-    _, src_index = resolve_as_is_paths(src=opts.get("src"), src_index=opts.get("src_index"))
+    src_root, src_index = resolve_as_is_paths(src=opts.get("src"), src_index=opts.get("src_index"))
     if not src_index or not src_index.is_dir():
         raise ValueError("색인 디렉터리를 찾을 수 없습니다. --src-index 옵션을 지정하세요.")
 
@@ -72,6 +72,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         "screen": main_cls,
         "full_text": text,
         "class_stats": class_stats,
+        "src_root": src_root,
     }
 
 
@@ -157,5 +158,48 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     if sec_filter in ("buttons", "button"):
         m_btn = re.search(r"##\s*사용된 버튼.*?(?=\n##\s*|\Z)|####\s*버튼.*?(?=####\s*|###\s*|\Z)", combined, re.DOTALL)
         return m_btn.group(0).strip() if m_btn else "버튼 섹션을 찾을 수 없습니다."
+
+    if sec_filter in ("layout", "layouts"):
+        from pathlib import Path
+
+        from yunhee.tools.analysis.layout import parse_layout
+        from yunhee.tools.as_is.src_indexer import find_app
+
+        target_cls = (cls_filter or screen_name).strip()
+        src_root = obj.get("src_root") or Path.cwd()
+        app = find_app(src_root) or src_root
+
+        # Java 파일 찾기: 색인 md 본문에서 상대 경로 탐색
+        rel_path = ""
+        m_cls_sec = re.search(rf"^###\s+{re.escape(target_cls)}\b[^(]*\(`([^`]+)`", full_text, re.MULTILINE)
+        if m_cls_sec:
+            rel_path = m_cls_sec.group(1)
+        else:
+            m_list = re.search(rf"-\s+`?{re.escape(target_cls)}`?\s+`?([a-zA-Z0-9_/.]+\.java)`?", full_text)
+            if m_list:
+                rel_path = m_list.group(1)
+            elif target_cls == screen_name:
+                m_file = re.search(r"-\s*파일:\s*`([^`]+)`", full_text)
+                if m_file:
+                    rel_path = m_file.group(1)
+
+        java_file = None
+        if rel_path:
+            for cand in [app / rel_path, src_root / rel_path]:
+                if cand.is_file():
+                    java_file = cand
+                    break
+
+        if not java_file or not java_file.is_file():
+            for cand in src_root.rglob(f"{target_cls}.java"):
+                if "target" not in cand.parts:
+                    java_file = cand
+                    break
+
+        if not java_file or not java_file.is_file():
+            return f"클래스 소스 파일을 찾을 수 없습니다: {target_cls}.java"
+
+        java_text = java_file.read_text(encoding="utf-8", errors="replace")
+        return parse_layout(java_text)
 
     return combined
