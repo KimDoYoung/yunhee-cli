@@ -568,26 +568,81 @@ def find_deploy_time_local(file_path: Path) -> datetime:
     return datetime.strptime(ts_str, fmt)  # noqa: DTZ007
 
 
-def find_run_time(since_run: str) -> tuple[str, str, datetime]:
+class RunTimeInfo(tuple):
+    """(run_id, cmd, start_dt, end_dt) tuple representation."""
+
+    def __new__(cls, run_id: str, cmd: str, start_dt: datetime, end_dt: datetime):
+        return super().__new__(cls, (run_id, cmd, start_dt, end_dt))
+
+    @property
+    def run_id(self) -> str:
+        return self[0]
+
+    @property
+    def cmd(self) -> str:
+        return self[1]
+
+    @property
+    def start_dt(self) -> datetime:
+        return self[2]
+
+    @property
+    def end_dt(self) -> datetime:
+        return self[3]
+
+
+def find_run_time(since_run: str) -> RunTimeInfo:
     from yunhee.store import run_tracker
     run_id_req = None if since_run == "last" else since_run
     if run_id_req:
         run = run_tracker.get_run(run_id_req)
     else:
-        run = run_tracker.get_last_run()
+        try:
+            from yunhee import project
+            eff_root = project.find_project_root()
+            proj_data = project.load(eff_root)
+            p_name = proj_data["name"] if proj_data and proj_data.get("name") else eff_root.name
+            run = run_tracker.get_last_run(p_name)
+        except Exception:  # noqa: BLE001
+            run = None
+        if not run:
+            run = run_tracker.get_last_run()
     if not run:
         sys.stderr.write(f"run 기록을 찾을 수 없습니다: {since_run}\n")
         raise typer.Exit(1)
     run_id = run["id"]
     cmd = run["command"]
     created_at_str = run["created_at"]
+    duration_ms = run.get("duration_ms") or 0
     try:
         dt = datetime.fromisoformat(created_at_str)
     except ValueError:
         dt = datetime.now(UTC)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
-    return run_id, cmd, dt
+    else:
+        dt = dt.astimezone(UTC)
+
+    # run ID의 yyyyMMdd_HHmmss 추출 (UTC 기준)
+    dt_from_id = None
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})", run_id)
+    if m:
+        try:
+            dt_from_id = datetime.strptime(m.group(0), "%Y%m%d_%H%M%S").replace(tzinfo=UTC)
+        except ValueError:
+            pass
+
+    if dt_from_id is not None:
+        # created_at과 run ID 시각이 1초 넘게 다르면 run ID 쪽을 시작으로 쓴다 (옛 기록 보정)
+        if abs((dt - dt_from_id).total_seconds()) > 1.0:
+            start_dt = dt_from_id
+        else:
+            start_dt = dt_from_id
+    else:
+        start_dt = dt.replace(microsecond=0)
+
+    end_dt = start_dt + timedelta(milliseconds=duration_ms)
+    return RunTimeInfo(run_id, cmd, start_dt, end_dt)
 
 
 def resolve_time_range(
@@ -631,10 +686,17 @@ def resolve_time_range(
             else:
                 header_tag = f"· 배포 {deploy_dt_log.strftime('%H:%M:%S')}"
     elif since_run:
-        run_id, cmd, dt_utc = find_run_time(since_run)
-        dt_kst = dt_utc.astimezone(KST)
-        header_tag = f"· run {run_id} ({cmd}) 시작 {dt_kst.strftime('%H:%M:%S')} KST 이후"
-        start_log = dt_utc.astimezone(UTC).replace(tzinfo=None) if is_utc else dt_kst.replace(tzinfo=None)
+        run_id, cmd, start_dt_utc, end_dt_utc = find_run_time(since_run)
+        start_kst = start_dt_utc.astimezone(KST)
+        end_kst = end_dt_utc.astimezone(KST)
+        s_kst_str = start_kst.strftime("%H:%M:%S")
+        e_kst_str = end_kst.strftime("%H:%M:%S")
+        if start_kst.date() != host_now.date():
+            s_kst_str = start_kst.strftime("%Y-%m-%d %H:%M:%S")
+            if end_kst.date() != start_kst.date():
+                e_kst_str = end_kst.strftime("%Y-%m-%d %H:%M:%S")
+        header_tag = f"· run {run_id} ({cmd}) {s_kst_str}~{e_kst_str} KST 이후"
+        start_log = start_dt_utc.astimezone(UTC).replace(tzinfo=None) if is_utc else start_kst.replace(tzinfo=None)
     elif default_since:
         dur = parse_duration(default_since)
         start_host = host_now - dur
@@ -646,7 +708,7 @@ def resolve_time_range(
         end_host = parse_user_time(to_time, host_now)
         end_log = end_host.astimezone(UTC).replace(tzinfo=None) if is_utc else end_host.replace(tzinfo=None)
 
-    if from_time or to_time:
+    if (from_time or to_time) and not (since_run or since_deploy):
         if is_utc:
             s_str = start_log.strftime("%Y-%m-%d %H:%M:%S") if start_log else ""
             e_str = end_log.strftime("%Y-%m-%d %H:%M:%S") if end_log else ""

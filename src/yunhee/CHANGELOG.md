@@ -2,6 +2,13 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.2.8] - 2026-10-12
+수정사항 024 (`log --since-run` 시작 시각 보정) 반영.
+- run & save_run: `created_at`에 명령어 시작 시각(UTC ISO)을 저장하여 `yunhee runs`의 Created At 및 기록이 실제 시작 시각으로 일치
+- run_tracker: `get_last_run`, `list_runs` 정렬 기준을 `ORDER BY created_at DESC, id DESC`로 보강
+- log --since-run: `find_run_time`이 `RunTimeInfo(run_id, cmd, start_dt, end_dt)`를 반환하고, 끝 시각(`start_dt + duration_ms`) 및 옛 기록(끝 시각 저장분)의 run ID 타임스탬프(`yyyyMMdd_HHmmss` UTC) 자동 보정 지원
+- log --since-run: 머리 줄 태그를 `· run <id> (<명령>) HH:MM:SS~HH:MM:SS KST 이후` 형식으로 표기하고 `--to` 미지정 시 끝 시각을 열어두어 실행 중 및 실행 후 발생 로그 정상 수집
+
 ## [0.2.7] - 2026-10-12
 수정사항 023 (`yunhee log --archived` 마무리) 반영.
 - log req & errors & tail: `--archived` 지정 시 시간 범위(UTC 변환 기준)에 해당하는 날짜의 압축 로그(archived/yyyy-MM/*.gz) 및 분할 파일(.0, .1) 정밀 조회 및 오늘 날짜 포함 시 오늘 파일 병합

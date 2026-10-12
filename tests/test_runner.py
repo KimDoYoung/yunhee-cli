@@ -16,6 +16,8 @@ def test_execute_command_success(tmp_path: Path):
     data = result.data
     assert data["exit_code"] == 0
     assert "hello runner" in data["stdout"]
+    assert "created_at" in data
+    assert data["created_at"][:10].replace("-", "") == data["run_id"][:8]
     assert Path(data["log_path"]).exists()
 
     log_content = Path(data["log_path"]).read_text()

@@ -279,6 +279,16 @@ def _run_exec(
         )
         print(summary)
 
+    start_iso = data.get("created_at")
+    if not start_iso:
+        from datetime import UTC, datetime, timedelta
+        if data.get("start_time"):
+            start_iso = datetime.fromtimestamp(data["start_time"], tz=UTC).isoformat()
+        else:
+            now_dt = datetime.now(UTC)
+            dur_ms = data.get("duration_ms") or 0
+            start_iso = (now_dt - timedelta(milliseconds=dur_ms)).isoformat()
+
     run_tracker.save_run(
         run_id=data["run_id"],
         project=project_name,
@@ -287,6 +297,7 @@ def _run_exec(
         duration_ms=data["duration_ms"],
         log_path=data["log_path"],
         summary=summary,
+        created_at=start_iso,
         cwd=data.get("cwd"),
     )
 

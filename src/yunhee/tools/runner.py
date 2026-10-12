@@ -163,10 +163,12 @@ def execute_command(
     except ValueError:
         rel_cwd = str(effective_cwd)
 
-    run_id = f"{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    now_utc = datetime.now(UTC)
+    run_id = f"{now_utc.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     log_file = runs_dir / f"{run_id}.log"
 
     start_epoch = time.time()
+    start_iso = now_utc.isoformat()
     start_time = time.perf_counter()
     try:
         proc = subprocess.run(
@@ -237,6 +239,7 @@ def execute_command(
         "stdout_preview": stdout_preview,
         "stderr_preview": stderr_preview,
         "start_time": start_epoch,
+        "created_at": start_iso,
     }
 
     ok = exit_code == 0

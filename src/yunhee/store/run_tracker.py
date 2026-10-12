@@ -35,7 +35,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_runs_project_created
-            ON runs (project, created_at DESC);
+            ON runs (project, created_at DESC, id DESC);
             """
         )
         conn.commit()
@@ -93,7 +93,7 @@ def get_last_run(project: str | None = None, conn: sqlite3.Connection | None = N
                 SELECT id, project, command, exit_code, duration_ms, log_path, summary, created_at, cwd
                 FROM runs
                 WHERE project = ?
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT 1;
                 """,
                 (project,),
@@ -103,7 +103,7 @@ def get_last_run(project: str | None = None, conn: sqlite3.Connection | None = N
                 """
                 SELECT id, project, command, exit_code, duration_ms, log_path, summary, created_at, cwd
                 FROM runs
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT 1;
                 """
             )
@@ -129,7 +129,7 @@ def list_runs(project: str | None = None, limit: int = 10, conn: sqlite3.Connect
                 SELECT id, project, command, exit_code, duration_ms, log_path, summary, created_at, cwd
                 FROM runs
                 WHERE project = ?
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT ?;
                 """,
                 (project, limit),
@@ -139,7 +139,7 @@ def list_runs(project: str | None = None, limit: int = 10, conn: sqlite3.Connect
                 """
                 SELECT id, project, command, exit_code, duration_ms, log_path, summary, created_at, cwd
                 FROM runs
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT ?;
                 """,
                 (limit,),

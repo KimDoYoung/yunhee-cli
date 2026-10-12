@@ -260,3 +260,61 @@ def test_023_archived_without_range_notice():
     assert "(--archived: 범위가 오늘이라 지난 파일을 읽지 않음)" in res
 
 
+def test_024_save_run_and_find_run_time_fallback(monkeypatch, tmp_path):
+    import sqlite3
+    from datetime import UTC, datetime
+
+    from yunhee.store import run_tracker
+
+    db_path = tmp_path / "test_runs.db"
+    monkeypatch.setattr(run_tracker, "get_connection", lambda: sqlite3.connect(str(db_path)))
+    run_tracker.init_db()
+
+    # 1. save_run이 넘긴 created_at을 그대로 저장하는지 검증
+    run_tracker.save_run(
+        run_id="20261012_042207_994e94",
+        project="test_proj",
+        command="bash -c 'sleep 41'",
+        exit_code=0,
+        duration_ms=41000,
+        log_path="/tmp/test.log",
+        created_at="2026-10-12T04:22:48+00:00",  # 옛 기록: 끝 시각이 들어간 경우
+    )
+
+    saved = run_tracker.get_run("20261012_042207_994e94")
+    assert saved is not None
+    assert saved["created_at"] == "2026-10-12T04:22:48+00:00"
+
+    # 2. find_run_time이 created_at이 끝 시각인 옛 기록에서 run ID 시각(04:22:07)을 시작 시각으로 쓰는지
+    info = log_reader.find_run_time("20261012_042207_994e94")
+    assert info.run_id == "20261012_042207_994e94"
+    assert info.cmd == "bash -c 'sleep 41'"
+    assert info.start_dt == datetime(2026, 10, 12, 4, 22, 7, tzinfo=UTC)
+    assert info.end_dt == datetime(2026, 10, 12, 4, 22, 48, tzinfo=UTC)
+
+    # 3. resolve_time_range 머리 줄 및 시간 범위 검증
+    start_log, end_log, header_tag = log_reader.resolve_time_range(
+        since_run="20261012_042207_994e94",
+        log_tz="UTC",
+    )
+    assert "13:22:07~13:22:48 KST 이후" in header_tag
+    assert "· run 20261012_042207_994e94" in header_tag
+    assert start_log == datetime(2026, 10, 12, 4, 22, 7)  # noqa: DTZ001
+    assert end_log is None  # --to가 없으므로 끝은 열려 있음
+
+    # 4. 새로 저장된 기록 (created_at이 시작 시각)
+    run_tracker.save_run(
+        run_id="20261012_050000_aabbcc",
+        project="test_proj",
+        command="echo new",
+        exit_code=0,
+        duration_ms=3000,
+        log_path="/tmp/new.log",
+        created_at="2026-10-12T05:00:00+00:00",
+    )
+    info_new = log_reader.find_run_time("20261012_050000_aabbcc")
+    assert info_new.start_dt == datetime(2026, 10, 12, 5, 0, 0, tzinfo=UTC)
+    assert info_new.end_dt == datetime(2026, 10, 12, 5, 0, 3, tzinfo=UTC)
+
+
+
