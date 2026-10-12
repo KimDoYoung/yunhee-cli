@@ -65,6 +65,12 @@ def summarize_run(
     if test_info:
         lines.append(f"- **Tests**: 전체 {test_info['total']} · 실패 {test_info['failures']} · 건너뜀 {test_info['skipped']}")
 
+    stderr_lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+    if stderr_lines:
+        first_err_line = stderr_lines[0]
+        lines.append(f"- **STDERR**: {first_err_line}")
+        lines.append("  → yunhee analysis run last --stderr")
+
     if failed_details:
         lines.append(f"\n원문: {log_path}")
         return "\n".join(lines)

@@ -733,6 +733,7 @@ def agent_guide():
   - 실패 시: 원시 전체 로그는 `.yunhee/runs/<run_id>.log`에 저장되고, 1) 실패 원인, 2) 관련 파일:라인, 3) 핵심 에러 원문 발췌만 요약 제공됩니다.
 - 직전 실행 결과 재확인: `yunhee last-run`
 - 최근 실행 이력 표: `yunhee runs`
+- 실패/상세 로그 추출: `yunhee analysis run last --stderr` (에러/예외 출력만 확인), `yunhee analysis run last --stdout` (표준 출력만 확인)
 
 ## 4. 로그인 기반 API 스모크 검증 시 (토큰 95% 절약)
 - ❌ 절대 금지: curl 등으로 직접 로그인하고 수천 줄의 JSON 응답을 그대로 터미널에 쏟아내지 마세요.
@@ -1073,7 +1074,7 @@ def analysis_cmd(
     ] = None,
     limit: Annotated[
         int | None,
-        typer.Option("--limit", help="결과 개수 또는 글자 수 제한"),
+        typer.Option("--limit", "-n", help="결과 개수 또는 줄 수 제한"),
     ] = None,
     src: Annotated[
         Path | None,
@@ -1138,6 +1139,10 @@ def analysis_cmd(
     stdout: Annotated[
         bool,
         typer.Option("--stdout", help="실행 로그의 STDOUT 부분만 출력"),
+    ] = False,
+    stderr: Annotated[
+        bool,
+        typer.Option("--stderr", help="실행 로그의 STDERR 부분만 출력"),
     ] = False,
     json_flag: Annotated[
         bool,
@@ -1236,6 +1241,7 @@ def analysis_cmd(
         "later": later,
         "tobe": tobe,
         "stdout": stdout,
+        "stderr": stderr,
         "json": json_flag,
         "keys": keys,
         "tests": tests,

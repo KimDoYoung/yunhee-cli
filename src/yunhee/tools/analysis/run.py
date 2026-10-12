@@ -10,11 +10,12 @@ from yunhee import config
 from yunhee.store import run_tracker
 
 NAME = "run"
-DESCRIPTION = "실행 결과에서 필요한 값(stdout, json, tests) 추출 및 분석"
+DESCRIPTION = "실행 결과에서 필요한 값(stdout, stderr, json, tests) 추출 및 분석"
 TARGET_HELP = "[last|<run_id>]"
 FORMATS = ("md", "json")
 EXAMPLES = [
     "yunhee analysis run last --stdout",
+    "yunhee analysis run last --stderr",
     "yunhee analysis run last --json --keys errs,msgs,roles,roleUsers",
     "yunhee analysis run last --tests",
 ]
@@ -41,13 +42,23 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         except OSError:
             pass
 
-    # STDOUT 파싱
+    # STDOUT / STDERR 파싱
     stdout_text = ""
+    stderr_text = ""
+    has_stderr_section = ("--- STDERR ---" in log_text)
+
     if "--- STDOUT ---" in log_text:
         parts = log_text.split("--- STDOUT ---", 1)
         if len(parts) > 1:
             rest = parts[1]
-            stdout_text = rest.split("--- STDERR ---", 1)[0].strip()
+            if has_stderr_section:
+                split_parts = rest.split("--- STDERR ---", 1)
+                stdout_text = split_parts[0].strip()
+                stderr_text = split_parts[1].strip()
+            else:
+                stdout_text = rest.strip()
+    elif has_stderr_section:
+        stderr_text = log_text.split("--- STDERR ---", 1)[1].strip()
     else:
         stdout_text = log_text
 
@@ -55,6 +66,8 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         "run_record": run_record,
         "log_path": log_path,
         "stdout": stdout_text,
+        "stderr": stderr_text,
+        "has_stderr_section": has_stderr_section,
         "log_text": log_text,
     }
 
@@ -131,17 +144,42 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         opts = {}
 
     stdout_opt = opts.get("stdout", False)
+    stderr_opt = opts.get("stderr", False)
     json_opt = opts.get("json", False)
     tests_opt = opts.get("tests", False)
     keys_filter = opts.get("keys")
+    limit = opts.get("limit")
 
-    stdout_text = obj["stdout"]
-    log_text = obj["log_text"]
-    run_rec = obj["run_record"]
+    stdout_text = obj.get("stdout", "")
+    log_text = obj.get("log_text", "")
+    run_rec = obj.get("run_record", {})
 
-    # 1. --stdout
+    has_stderr_section = obj.get("has_stderr_section", "--- STDERR ---" in log_text)
+    if "stderr" in obj:
+        raw_stderr = obj["stderr"]
+    elif has_stderr_section and "--- STDERR ---" in log_text:
+        raw_stderr = log_text.split("--- STDERR ---", 1)[1].strip()
+    else:
+        raw_stderr = ""
+
+    if has_stderr_section:
+        if raw_stderr:
+            if limit is not None and limit > 0:
+                stderr_text = "\n".join(raw_stderr.splitlines()[:limit])
+            else:
+                stderr_text = raw_stderr
+        else:
+            stderr_text = "(STDERR 없음)"
+    else:
+        stderr_text = ""
+
+    # 1. --stdout 및 --stderr
+    if stdout_opt and stderr_opt:
+        return f"{stdout_text}\n\n{stderr_text}"
     if stdout_opt:
         return stdout_text
+    if stderr_opt:
+        return stderr_text
 
     # 2. --tests
     if tests_opt:

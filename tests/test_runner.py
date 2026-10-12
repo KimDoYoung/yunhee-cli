@@ -154,3 +154,34 @@ def test_cli_config():
     assert "Local DB" in res.output
 
 
+def test_cli_run_stderr_and_analysis_options(tmp_path: Path, monkeypatch):
+    """025-1: run 실패 시 STDERR 요약 안내 및 analysis run --stderr/--stdout 동작 검증."""
+    monkeypatch.chdir(tmp_path)
+    runner_cli = CliRunner()
+
+    cmd = "bash -c 'echo out-line; echo err-line >&2; exit 1'"
+    res_run = runner_cli.invoke(cli.app, ["run", cmd, "--no-llm"])
+    assert res_run.exit_code == 1
+    assert "err-line" in res_run.output
+    assert "--stderr" in res_run.output
+
+    res_err = runner_cli.invoke(cli.app, ["analysis", "run", "last", "--stderr"])
+    assert res_err.exit_code == 0
+    assert "err-line" in res_err.output
+    assert "out-line" not in res_err.output
+
+    res_out = runner_cli.invoke(cli.app, ["analysis", "run", "last", "--stdout"])
+    assert res_out.exit_code == 0
+    assert "out-line" in res_out.output
+    assert "err-line" not in res_out.output
+
+    res_both = runner_cli.invoke(cli.app, ["analysis", "run", "last", "--stdout", "--stderr"])
+    assert res_both.exit_code == 0
+    assert "out-line" in res_both.output
+    assert "err-line" in res_both.output
+    idx_out = res_both.output.find("out-line")
+    idx_err = res_both.output.find("err-line")
+    assert idx_out < idx_err
+
+
+

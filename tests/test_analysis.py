@@ -149,3 +149,90 @@ def test_analysis_run_render_json_and_tests(tmp_path: Path):
     assert data["errs"] == []
     assert data["msgs"] == ["성공"]
     assert data["items"] == 5  # 길이를 요약
+
+
+def test_analysis_run_stderr(tmp_path: Path):
+    """025: analysis run --stderr 동작 및 옵션 검증."""
+    # 1. 일반 케이스 (stdout + stderr 둘 다 있음)
+    log_content = """=== Command: test ===
+=== Exit Code: 1 ===
+--- STDOUT ---
+stdout line 1
+stdout line 2
+--- STDERR ---
+stderr line 1
+stderr line 2
+stderr line 3
+"""
+    log_file = tmp_path / "run_err.log"
+    log_file.write_text(log_content, encoding="utf-8")
+
+    from yunhee.store import run_tracker
+    run_record = {
+        "id": "run_test_err",
+        "command": "test",
+        "exit_code": 1,
+        "duration_ms": 100,
+        "log_path": str(log_file),
+    }
+
+    # resolve 테스트
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    run_tracker.init_db(conn)
+    run_tracker.save_run(
+        run_id="run_test_err",
+        project="default",
+        command="test",
+        exit_code=1,
+        duration_ms=100,
+        log_path=str(log_file),
+        summary="실패",
+        conn=conn,
+    )
+
+    resolved = {
+        "run_record": run_record,
+        "log_path": log_file,
+        "stdout": "stdout line 1\nstdout line 2",
+        "stderr": "stderr line 1\nstderr line 2\nstderr line 3",
+        "has_stderr_section": True,
+        "log_text": log_content,
+    }
+
+    # --stderr 단독
+    out_err = run.render(resolved, opts={"stderr": True})
+    assert out_err == "stderr line 1\nstderr line 2\nstderr line 3"
+
+    # --stderr with limit (-n 2)
+    out_err_limit = run.render(resolved, opts={"stderr": True, "limit": 2})
+    assert out_err_limit == "stderr line 1\nstderr line 2"
+
+    # --stdout과 --stderr 동시 지정 (STDOUT, 빈 줄, STDERR 순서)
+    out_both = run.render(resolved, opts={"stdout": True, "stderr": True})
+    expected_both = "stdout line 1\nstdout line 2\n\nstderr line 1\nstderr line 2\nstderr line 3"
+    assert out_both == expected_both
+
+    # 2. STDERR 절이 비었을 때 -> (STDERR 없음)
+    resolved_empty_err = {
+        "run_record": run_record,
+        "log_path": log_file,
+        "stdout": "only stdout",
+        "stderr": "",
+        "has_stderr_section": True,
+        "log_text": "--- STDOUT ---\nonly stdout\n--- STDERR ---\n",
+    }
+    out_empty = run.render(resolved_empty_err, opts={"stderr": True})
+    assert out_empty == "(STDERR 없음)"
+
+    # 3. --- STDERR --- 표시가 없는 옛 로그 -> 빈 문자열
+    resolved_old_log = {
+        "run_record": run_record,
+        "log_path": log_file,
+        "stdout": "old stdout",
+        "stderr": "",
+        "has_stderr_section": False,
+        "log_text": "old log without stderr delimiter",
+    }
+    out_old = run.render(resolved_old_log, opts={"stderr": True})
+    assert out_old == ""

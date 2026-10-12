@@ -29,6 +29,7 @@ uv run yunhee table --page ast01                 # 페이지 mapper가 참조하
 uv run yunhee run "mvn compile"                  # 외부 명령어 실행, 성공 시 1줄 / 실패 시 Qwen 원문 에러 요약 (exec과 동일)
 uv run yunhee last-run                           # 가장 최근 실행 결과 및 요약 확인
 uv run yunhee runs                               # 최근 실행 이력 테이블 출력
+uv run yunhee analysis run last --stderr         # 직전 실행의 STDERR(에러/예외)만 분리 출력 (-n 줄수 제한)
 uv run yunhee api GET /api/v1/sys/roles          # 테스트 계정 자동 로그인 기반 API 스모크 테스트 (행수/필드 요약). --timeout <초>(기본 YUNHEE_API_TIMEOUT 또는 15), 시간 초과는 연결 실패와 다른 문구
 uv run yunhee api GET /api/v1/emp/others -c kfstest --log # API 호출 직후 서버가 실제로 실행한 SQL과 바인딩 파라미터 요약
 uv run yunhee log trace <traceId>                     # 단일 요청 trace의 실행 요약 및 SQL 목록

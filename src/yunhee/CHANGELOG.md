@@ -2,6 +2,13 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.2.9] - 2026-10-13
+수정사항 025 (analysis run에 --stderr 추가 및 실패 요약 STDERR 안내) 반영.
+- analysis run: `--stderr` 옵션 추가 (STDERR 절 단독 추출, `-n` 줄 수 제한, 비어 있을 시 `(STDERR 없음)` 처리)
+- analysis run: `--stdout`과 `--stderr` 동시 지정 시 STDOUT, 빈 줄, STDERR 순서로 둘 다 출력
+- run: 실패 요약(Exit ≠ 0)에 STDERR 첫 줄 및 `→ yunhee analysis run last --stderr` 안내 표기
+- agent-guide & CLI: `analysis run last --stderr` 안내 및 `--list` 설명 추가
+
 ## [0.2.8] - 2026-10-12
 수정사항 024 (`log --since-run` 시작 시각 보정) 반영.
 - run & save_run: `created_at`에 명령어 시작 시각(UTC ISO)을 저장하여 `yunhee runs`의 Created At 및 기록이 실제 시작 시각으로 일치

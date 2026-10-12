@@ -24,6 +24,16 @@
 - 다른 폴더에서는 yunhee로 실행
 - yunhee는 .env.local을 읽어서 그 변수들을 활용함.
 
+### 주요 명령어
+- `yunhee outline <경로>`: Java/TSX/XML 클래스·메서드 시그니처 및 줄 번호 정적 추출
+- `yunhee table <테이블>`: DBML 스키마 블록 추출
+- `yunhee run "<명령>"`: 빌드/테스트 격리 실행 및 요약
+- `yunhee analysis run last --stderr`: 직전 실행의 STDERR(에러/예외)만 분리 출력
+- `yunhee api <METHOD> <PATH> [--log]`: 자동 로그인 기반 API 스모크 테스트 및 서버 trace 요약
+- `yunhee log <trace|req|errors|tail>`: Docker/로컬 서버 로그 요약 (요청 추적, SQL, KST 시간대, 마스킹)
+- `yunhee analysis screen <화면> --section layout`: 폼 탭 FormPanel 레이아웃(에디터, 너비, readOnly) 정적 파싱
+- `yunhee agent-guide`: AI 에이전트용 토큰 절약 지침서 출력
+
 ## 자원
 
 - docs/docker-compose.yml 참조
