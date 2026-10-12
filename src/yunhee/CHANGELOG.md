@@ -2,6 +2,15 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.2.7] - 2026-10-12
+수정사항 023 (`yunhee log --archived` 마무리) 반영.
+- log req & errors & tail: `--archived` 지정 시 시간 범위(UTC 변환 기준)에 해당하는 날짜의 압축 로그(archived/yyyy-MM/*.gz) 및 분할 파일(.0, .1) 정밀 조회 및 오늘 날짜 포함 시 오늘 파일 병합
+- log req & errors & tail: 범위 미지정 시 `--archived` 안내 (`(--archived: 범위가 오늘이라 지난 파일을 읽지 않음)`) 표시 및 불필요한 지난 파일 조회 생략
+- log req & errors & tail: `--archived` 없이 오늘 이전 시각 조회 시 안내 (`오늘 파일은 HH:MM부터 — 그 전은 --archived`) 표시
+- log trace & req & tail: 오늘(로그 시간대)이 아닌 레코드 시각에 날짜 표기 (`YYYY-MM-DD HH:MM:SS UTC (MM-DD HH:MM:SS KST)` 및 `MM-DD HH:MM:SS`)
+- log trace: `--archived`로 찾았을 때 원문 실행 안내에 `--archived` 추가 (`원문: yunhee log trace <id> --raw --archived`)
+- log trace: `--archived`로도 못 찾았을 때 안내 문구 개선 (`trace <id>: 로그에 없음 (오늘 파일 + archived gz N개 검색)`)
+
 ## [0.2.6] - 2026-10-12
 수정사항 022 (`yunhee log` 결함 해결 및 사용성 개선) 반영.
 - log errors & tail: 첫 줄이 빈 WARN/ERROR(Spring Boot 기동 로그 등) 파싱 시 IndexError 방지 및 비어 있지 않은 첫 줄/본문 탐색

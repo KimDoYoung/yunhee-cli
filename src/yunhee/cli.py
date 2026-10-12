@@ -1349,6 +1349,7 @@ def log_req_cmd(
             to_time=to_time,
             since_deploy=since_deploy,
             since_run=since_run,
+            archived=archived,
             mask=not no_mask,
         )
     except DockerExecError as e:
@@ -1397,6 +1398,7 @@ def log_errors_cmd(
             since_run=since_run,
             ignore_loggers=ignore,
             explain=explain,
+            archived=archived,
             mask=not no_mask,
         )
     except DockerExecError as e:
@@ -1449,6 +1451,7 @@ def log_tail_cmd(
             to_time=to_time,
             since_deploy=since_deploy,
             since_run=since_run,
+            archived=archived,
             mask=not no_mask,
         )
     except DockerExecError as e:

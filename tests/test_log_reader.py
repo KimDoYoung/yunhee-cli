@@ -190,3 +190,73 @@ def test_022_trace_id_validation():
         log_reader.get_trace_summary(trace_id="xyz")
     assert exc_info.value.exit_code == 2
 
+
+def test_023_archived_range_local():
+    res = log_reader.get_req_summary(
+        method="GET",
+        path_pattern="companies",
+        source="local",
+        log_dir=str(FIXTURES_DIR),
+        archived=True,
+        from_time="2026-10-08 16:30",
+        to_time="2026-10-08 16:45",
+        log_tz="UTC",
+    )
+    assert "abd1f6520f3647c6" in res
+    assert "10-08 07:39:15" in res
+
+
+def test_023_archived_range_without_archived_notice():
+    res = log_reader.get_req_summary(
+        method="GET",
+        path_pattern="companies",
+        source="local",
+        log_dir=str(FIXTURES_DIR),
+        archived=False,
+        from_time="2026-10-08 15:00",
+        to_time="2026-10-08 15:20",
+        log_tz="UTC",
+    )
+    assert "(일치하는 요청 없음)" in res
+    assert "그 전은 --archived" in res
+    assert "오늘 파일은 06:33부터" in res
+
+
+def test_023_trace_archived_found():
+    res = log_reader.get_trace_summary(
+        trace_id="abd1f6520f3647c6",
+        source="local",
+        log_dir=str(FIXTURES_DIR),
+        archived=True,
+        log_tz="UTC",
+    )
+    assert "원문: yunhee log trace abd1f6520f3647c6 --raw --archived" in res
+    assert "2026-10-08 07:39:15 UTC (10-08 16:39:15 KST)" in res
+
+
+def test_023_trace_archived_not_found(capsys):
+    with pytest.raises(typer.Exit) as exc_info:
+        log_reader.get_trace_summary(
+            trace_id="deadbeef00000000",
+            source="local",
+            log_dir=str(FIXTURES_DIR),
+            archived=True,
+            log_tz="UTC",
+        )
+    assert exc_info.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "archived gz" in err
+    assert "지난 날은 --archived" not in err
+
+
+def test_023_archived_without_range_notice():
+    res = log_reader.get_req_summary(
+        method="GET",
+        path_pattern="companies",
+        source="local",
+        log_dir=str(FIXTURES_DIR),
+        archived=True,
+    )
+    assert "(--archived: 범위가 오늘이라 지난 파일을 읽지 않음)" in res
+
+

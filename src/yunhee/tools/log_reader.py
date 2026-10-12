@@ -4,7 +4,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -188,6 +188,39 @@ class DockerExecError(Exception):
     pass
 
 
+def count_archived_files(
+    source_type: str,
+    docker_container: str | None,
+    log_dir: str,
+    app: str,
+) -> int:
+    """보관된 압축 로그 파일 수 조회."""
+    if source_type == "docker" and docker_container:
+        cmd = [
+            "docker", "exec", docker_container,
+            "sh", "-c",
+            f"ls -1 {log_dir}/archived/*/{app}*.log.gz 2>/dev/null | wc -l",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode == 0:
+            out = proc.stdout.strip()
+            if out.isdigit():
+                return int(out)
+        return 0
+    elif source_type == "local":
+        p = Path(log_dir)
+        return len(list(p.glob(f"archived/*/{app}*.log.gz")))
+    return 0
+
+
+def get_dates_in_range(start_date: date, end_date: date) -> list[date]:
+    """시작일부터 종료일까지의 날짜 목록 반환 (포함)."""
+    if start_date > end_date:
+        return []
+    days = (end_date - start_date).days
+    return [start_date + timedelta(days=i) for i in range(days + 1)]
+
+
 def read_logs_docker(
     container: str,
     log_dir: str,
@@ -197,7 +230,10 @@ def read_logs_docker(
     include_error: bool = True,
     error_only: bool = False,
     start_dt: datetime | None = None,
+    end_dt: datetime | None = None,
     archived: bool = False,
+    user_range_specified: bool = False,
+    log_tz: str = "UTC",
 ) -> str:
     """Docker 컨테이너 안의 로그 파일을 읽는다."""
     info_file = f"{log_dir}/{app}-info.log"
@@ -220,49 +256,91 @@ def read_logs_docker(
 
     target_file = error_file if error_only else info_file
 
-    current_lines = tail_lines
-    while True:
-        cmd = [
-            "docker", "exec", container,
-            "sh", "-c",
-            f'tail -n {current_lines} {target_file}'
-        ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if proc.returncode != 0:
-            err_msg = proc.stderr.strip() or f"docker exec 종료 코드 {proc.returncode}"
-            raise DockerExecError(f"docker exec 실패 ({container}): {err_msg}")
+    archived_out = ""
+    today_date = datetime.now(UTC).date() if log_tz.upper() == "UTC" else datetime.now(KST).date()
 
-        out = proc.stdout
-        if not start_dt or current_lines >= 200000:
-            break
+    if archived and user_range_specified:
+        start_date = start_dt.date() if start_dt else today_date
+        end_date = end_dt.date() if end_dt else today_date
+        dates = get_dates_in_range(start_date, end_date)
+        patterns = []
+        for d in dates:
+            ym = d.strftime("%Y-%m")
+            ymd = d.strftime("%Y-%m-%d")
+            if error_only:
+                patterns.append(f"{log_dir}/archived/{ym}/{app}-error-{ymd}.*.log.gz")
+            elif include_error:
+                patterns.append(f"{log_dir}/archived/{ym}/{app}-info-{ymd}.*.log.gz")
+                patterns.append(f"{log_dir}/archived/{ym}/{app}-error-{ymd}.*.log.gz")
+            else:
+                patterns.append(f"{log_dir}/archived/{ym}/{app}-info-{ymd}.*.log.gz")
+        if patterns:
+            pat_str = " ".join(patterns)
+            sh_cmd = f'for f in {pat_str}; do [ -f "$f" ] && zcat "$f" 2>/dev/null; done'
+            cmd = ["docker", "exec", container, "sh", "-c", sh_cmd]
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if proc.returncode == 0 and proc.stdout:
+                archived_out = proc.stdout
 
-        # 첫 번째 라인의 시각 확인
-        first_line = next((l for l in out.splitlines() if LINE_RE.match(l)), None)
-        if not first_line:
-            break
-        m = LINE_RE.match(first_line)
-        if m:
-            try:
-                first_dt = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S.%f")  # noqa: DTZ007
-            except ValueError:
-                first_dt = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007
-            if first_dt <= start_dt:
+    read_today = True
+    if archived and user_range_specified:
+        end_date = end_dt.date() if end_dt else today_date
+        if end_date < today_date:
+            read_today = False
+
+    out = ""
+    if read_today:
+        current_lines = tail_lines
+        prev_len = None
+        while True:
+            cmd = [
+                "docker", "exec", container,
+                "sh", "-c",
+                f'tail -n {current_lines} {target_file}'
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if proc.returncode != 0:
+                err_msg = proc.stderr.strip() or f"docker exec 종료 코드 {proc.returncode}"
+                raise DockerExecError(f"docker exec 실패 ({container}): {err_msg}")
+
+            out = proc.stdout
+            if not start_dt or current_lines >= 200000:
                 break
-            current_lines = min(current_lines * 2, 200000)
-        else:
-            break
+            if prev_len is not None and len(out) == prev_len:
+                break
+            prev_len = len(out)
 
-    if include_error and not error_only:
-        # error.log도 가져와 병합
-        cmd_err = [
-            "docker", "exec", container,
-            "sh", "-c",
-            f'tail -n {current_lines} {error_file} 2>/dev/null || true'
-        ]
-        proc_err = subprocess.run(cmd_err, capture_output=True, text=True, check=False)
-        if proc_err.returncode == 0 and proc_err.stdout:
-            out = f"{out}\n{proc_err.stdout}"
+            # 첫 번째 라인의 시각 확인
+            first_line = next((l for l in out.splitlines() if LINE_RE.match(l)), None)
+            if not first_line:
+                break
+            m = LINE_RE.match(first_line)
+            if m:
+                try:
+                    first_dt = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S.%f")  # noqa: DTZ007
+                except ValueError:
+                    first_dt = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007
+                if first_dt <= start_dt:
+                    break
+                current_lines = min(current_lines * 2, 200000)
+            else:
+                break
 
+        if include_error and not error_only:
+            # error.log도 가져와 병합
+            cmd_err = [
+                "docker", "exec", container,
+                "sh", "-c",
+                f'tail -n {current_lines} {error_file} 2>/dev/null || true'
+            ]
+            proc_err = subprocess.run(cmd_err, capture_output=True, text=True, check=False)
+            if proc_err.returncode == 0 and proc_err.stdout:
+                out = f"{out}\n{proc_err.stdout}"
+
+    if archived_out and out:
+        return f"{archived_out}\n{out}"
+    if archived_out:
+        return archived_out
     return out
 
 
@@ -273,43 +351,98 @@ def read_logs_local(
     tail_lines: int = 20000,
     include_error: bool = True,
     error_only: bool = False,
+    start_dt: datetime | None = None,
+    end_dt: datetime | None = None,
     archived: bool = False,
+    user_range_specified: bool = False,
+    log_tz: str = "KST",
 ) -> str:
     """로컬 파일시스템에서 로그 파일을 읽는다."""
     info_file = log_dir / f"{app}-info.log"
     error_file = log_dir / f"{app}-error.log"
 
-    if error_only:
-        files = [error_file]
-    elif include_error:
-        files = [info_file, error_file]
-    else:
-        files = [info_file]
-
-    texts = []
-    for f in files:
-        if f.is_file():
-            try:
-                t = f.read_text(encoding="utf-8", errors="replace")
-                texts.append(t)
-            except OSError:
-                pass
-
-    if trace_id and archived:
-        import gzip
-        for gz_file in log_dir.glob(f"archived/*/{app}*.log.gz"):
-            try:
-                with gzip.open(gz_file, "rt", encoding="utf-8", errors="replace") as gf:
-                    for line in gf:
-                        if f"[{trace_id}]" in line:
-                            texts.append(line)
-            except OSError:
-                pass
-
-    combined = "\n".join(texts)
     if trace_id:
+        if error_only:
+            files = [error_file]
+        elif include_error:
+            files = [info_file, error_file]
+        else:
+            files = [info_file]
+
+        texts = []
+        for f in files:
+            if f.is_file():
+                try:
+                    texts.append(f.read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    pass
+
+        if archived:
+            import gzip
+            for gz_file in log_dir.glob(f"archived/*/{app}*.log.gz"):
+                try:
+                    with gzip.open(gz_file, "rt", encoding="utf-8", errors="replace") as gf:
+                        for line in gf:
+                            if f"[{trace_id}]" in line:
+                                texts.append(line)
+                except OSError:
+                    pass
+
+        combined = "\n".join(texts)
         lines = [l for l in combined.splitlines() if f"[{trace_id}]" in l]
         return "\n".join(lines)
+
+    today_date = datetime.now(UTC).date() if log_tz.upper() == "UTC" else datetime.now(KST).date()
+
+    texts = []
+    if archived and user_range_specified:
+        start_date = start_dt.date() if start_dt else today_date
+        end_date = end_dt.date() if end_dt else today_date
+        dates = get_dates_in_range(start_date, end_date)
+        import gzip
+        for d in dates:
+            ym = d.strftime("%Y-%m")
+            ymd = d.strftime("%Y-%m-%d")
+            globs = []
+            if error_only:
+                globs.append(f"archived/{ym}/{app}-error-{ymd}.*.log.gz")
+            elif include_error:
+                globs.append(f"archived/{ym}/{app}-info-{ymd}.*.log.gz")
+                globs.append(f"archived/{ym}/{app}-error-{ymd}.*.log.gz")
+            else:
+                globs.append(f"archived/{ym}/{app}-info-{ymd}.*.log.gz")
+            for pat in globs:
+                for gz_file in sorted(log_dir.glob(pat)):
+                    try:
+                        with gzip.open(gz_file, "rt", encoding="utf-8", errors="replace") as gf:
+                            texts.append(gf.read())
+                    except OSError:
+                        pass
+
+    read_today = True
+    if archived and user_range_specified:
+        end_date = end_dt.date() if end_dt else today_date
+        if end_date < today_date:
+            read_today = False
+
+    if read_today:
+        if error_only:
+            files = [error_file]
+        elif include_error:
+            files = [info_file, error_file]
+        else:
+            files = [info_file]
+
+        for f in files:
+            if f.is_file():
+                try:
+                    texts.append(f.read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    pass
+
+    combined = "\n".join(texts)
+    if archived and user_range_specified:
+        return combined
 
     lines = combined.splitlines()
     return "\n".join(lines[-tail_lines:])
@@ -385,9 +518,15 @@ def format_header(
 def format_time_pair(dt_log: datetime, log_tz_is_utc: bool) -> str:
     """로그 시각과 변환된 로컬 KST 시각을 나란히 포맷팅한다."""
     if log_tz_is_utc:
+        today_date = datetime.now(UTC).date()
         dt_utc = dt_log.replace(tzinfo=UTC)
         dt_kst = dt_utc.astimezone(KST)
+        if dt_log.date() != today_date:
+            return f"{dt_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC ({dt_kst.strftime('%m-%d %H:%M:%S')} KST)"
         return f"{dt_utc.strftime('%H:%M:%S')} UTC ({dt_kst.strftime('%H:%M:%S')} KST)"
+    today_date = datetime.now(KST).date()
+    if dt_log.date() != today_date:
+        return f"{dt_log.strftime('%Y-%m-%d %H:%M:%S')}"
     return f"{dt_log.strftime('%H:%M:%S')}"
 
 
@@ -578,7 +717,11 @@ def get_trace_summary(
         records = parse_log_records(log_text)
 
     if not records:
-        sys.stderr.write(f"trace {trace_id}: 로그에 없음 (오늘 파일만 봄 — 지난 날은 --archived)\n")
+        if archived:
+            n_gz = count_archived_files(src_type, docker, dir_str, app_str)
+            sys.stderr.write(f"trace {trace_id}: 로그에 없음 (오늘 파일 + archived gz {n_gz}개 검색)\n")
+        else:
+            sys.stderr.write(f"trace {trace_id}: 로그에 없음 (오늘 파일만 봄 — 지난 날은 --archived)\n")
         raise typer.Exit(1)
 
     total_masks = 0
@@ -708,7 +851,8 @@ def get_trace_summary(
         err_lines.append(f"WARN/ERROR {len(err_recs)}:")
         for er in err_recs:
             msg_first = get_first_non_empty_line(er.msg, er.extra_lines)
-            t_str = er.ts.strftime("%H:%M:%S")
+            today_date = datetime.now(UTC).date() if log_is_utc else datetime.now(KST).date()
+            t_str = er.ts.strftime("%m-%d %H:%M:%S") if er.ts.date() != today_date else er.ts.strftime("%H:%M:%S")
             err_lines.append(f"  {t_str} {er.level} {er.logger} - {msg_first}")
             if er.extra_lines:
                 cb = next((el.strip() for el in reversed(er.extra_lines) if "Caused by:" in el), None)
@@ -720,7 +864,7 @@ def get_trace_summary(
         req_line,
         "\n".join(sql_section_lines),
         "\n".join(err_lines),
-        f"원문: yunhee log trace {trace_id} --raw",
+        f"원문: yunhee log trace {trace_id} --raw{' --archived' if archived else ''}",
     ]
     return "\n".join(out)
 
@@ -741,6 +885,7 @@ def get_req_summary(
     to_time: str | None = None,
     since_deploy: bool = False,
     since_run: str | None = None,
+    archived: bool = False,
     mask: bool = True,
 ) -> str:
     """접근 로그를 필터링하여 최근 요청 목록 반환."""
@@ -760,6 +905,8 @@ def get_req_summary(
         deploy_getter = lambda: find_deploy_time_docker(docker, dir_str, app_str)
     else:
         deploy_getter = lambda: find_deploy_time_local(Path(dir_str) / f"{app_str}-info.log")
+
+    user_range_specified = bool(since or from_time or since_deploy or since_run)
 
     start_dt, end_dt, header_tag = resolve_time_range(
         since=since,
@@ -782,13 +929,32 @@ def get_req_summary(
     elif docker:
         src_type = "docker"
         try:
-            raw_text = read_logs_docker(docker, dir_str, app_str, include_error=False, start_dt=start_dt)
+            raw_text = read_logs_docker(
+                docker,
+                dir_str,
+                app_str,
+                include_error=False,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                archived=archived,
+                user_range_specified=user_range_specified,
+                log_tz=tz_str,
+            )
         except DockerExecError as e:
             sys.stderr.write(f"{e}\n")
             raise typer.Exit(2) from e
     else:
         src_type = "local"
-        raw_text = read_logs_local(Path(dir_str), app_str, include_error=False)
+        raw_text = read_logs_local(
+            Path(dir_str),
+            app_str,
+            include_error=False,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            archived=archived,
+            user_range_specified=user_range_specified,
+            log_tz=tz_str,
+        )
 
     records = parse_log_records(raw_text)
 
@@ -833,9 +999,14 @@ def get_req_summary(
     )
 
     out = [header]
+    if archived and not user_range_specified:
+        out.append("(--archived: 범위가 오늘이라 지난 파일을 읽지 않음)")
+
+    today_date = datetime.now(UTC).date() if tz_str.upper() == "UTC" else datetime.now(KST).date()
+
     out.append(f"{method.upper()} {path_pattern} 최근 {len(selected)}:")
     for rec, p, st, el in selected:
-        t_str = rec.ts.strftime("%H:%M:%S")
+        t_str = rec.ts.strftime("%m-%d %H:%M:%S") if rec.ts.date() != today_date else rec.ts.strftime("%H:%M:%S")
         out.append(f"  {t_str} {tz_str}  {st:3d}  {el:4d}ms  {rec.user}  trace {rec.trace}")
 
     if selected:
@@ -850,13 +1021,26 @@ def get_req_summary(
                 log_dir=log_dir,
                 app=app,
                 log_tz=log_tz,
+                archived=archived,
                 mask=mask,
             )
             # 머리 줄 제외
             t_lines = trace_body.splitlines()
             out.append("\n" + "\n".join(t_lines[1:] if len(t_lines) > 1 else t_lines))
+        if not archived and start_dt:
+            earliest_dt = records[0].ts if records else None
+            if earliest_dt and start_dt < earliest_dt:
+                out.append(f"  (오늘 파일은 {earliest_dt.strftime('%H:%M')}부터 — 그 전은 --archived)")
+            elif not earliest_dt and start_dt.date() < today_date:
+                out.append("  (오늘 파일은 기록 없음 — 그 전은 --archived)")
     else:
         out.append("  (일치하는 요청 없음)")
+        if not archived and start_dt:
+            earliest_dt = records[0].ts if records else None
+            if earliest_dt and start_dt < earliest_dt:
+                out.append(f"  오늘 파일은 {earliest_dt.strftime('%H:%M')}부터 — 그 전은 --archived")
+            elif not earliest_dt and start_dt.date() < today_date:
+                out.append("  오늘 파일은 기록 없음 — 그 전은 --archived")
 
     return "\n".join(out)
 
@@ -875,6 +1059,7 @@ def get_errors_summary(
     since_run: str | None = None,
     ignore_loggers: list[str] | None = None,
     explain: bool = False,
+    archived: bool = False,
     mask: bool = True,
 ) -> str:
     """WARN/ERROR 로그 그룹화 요약 반환."""
@@ -894,6 +1079,8 @@ def get_errors_summary(
         deploy_getter = lambda: find_deploy_time_docker(docker, dir_str, app_str)
     else:
         deploy_getter = lambda: find_deploy_time_local(Path(dir_str) / f"{app_str}-info.log")
+
+    user_range_specified = bool(since or from_time or since_deploy or since_run)
 
     start_dt, end_dt, header_tag = resolve_time_range(
         since=since,
@@ -916,13 +1103,32 @@ def get_errors_summary(
     elif docker:
         src_type = "docker"
         try:
-            raw_text = read_logs_docker(docker, dir_str, app_str, error_only=True, start_dt=start_dt)
+            raw_text = read_logs_docker(
+                docker,
+                dir_str,
+                app_str,
+                error_only=True,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                archived=archived,
+                user_range_specified=user_range_specified,
+                log_tz=tz_str,
+            )
         except DockerExecError as e:
             sys.stderr.write(f"{e}\n")
             raise typer.Exit(2) from e
     else:
         src_type = "local"
-        raw_text = read_logs_local(Path(dir_str), app_str, error_only=True)
+        raw_text = read_logs_local(
+            Path(dir_str),
+            app_str,
+            error_only=True,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            archived=archived,
+            user_range_specified=user_range_specified,
+            log_tz=tz_str,
+        )
 
     records = parse_log_records(raw_text)
 
@@ -995,6 +1201,8 @@ def get_errors_summary(
     )
 
     out = [header]
+    if archived and not user_range_specified:
+        out.append("(--archived: 범위가 오늘이라 지난 파일을 읽지 않음)")
     time_desc = header_tag if header_tag and not header_tag.startswith("· ") else "선택 범위"
     out.append(f"WARN/ERROR {time_desc}: {len(filtered)}줄, {len(sorted_groups)}종")
 
@@ -1036,8 +1244,21 @@ def get_errors_summary(
             except Exception:  # noqa: BLE001, S110
                 pass
 
+    today_date = datetime.now(UTC).date() if tz_str.upper() == "UTC" else datetime.now(KST).date()
     if not sorted_groups:
         out.append("  (기록 없음)")
+        if not archived and start_dt:
+            earliest_dt = records[0].ts if records else None
+            if earliest_dt and start_dt < earliest_dt:
+                out.append(f"  오늘 파일은 {earliest_dt.strftime('%H:%M')}부터 — 그 전은 --archived")
+            elif not earliest_dt and start_dt.date() < today_date:
+                out.append("  오늘 파일은 기록 없음 — 그 전은 --archived")
+    elif not archived and start_dt:
+        earliest_dt = records[0].ts if records else None
+        if earliest_dt and start_dt < earliest_dt:
+            out.append(f"  (오늘 파일은 {earliest_dt.strftime('%H:%M')}부터 — 그 전은 --archived)")
+        elif not earliest_dt and start_dt.date() < today_date:
+            out.append("  (오늘 파일은 기록 없음 — 그 전은 --archived)")
 
     return "\n".join(out)
 
@@ -1058,6 +1279,7 @@ def get_tail_summary(
     to_time: str | None = None,
     since_deploy: bool = False,
     since_run: str | None = None,
+    archived: bool = False,
     mask: bool = True,
 ) -> str:
     """최근 로그를 요청(trace) 단위로 접어서 요약 반환."""
@@ -1077,6 +1299,8 @@ def get_tail_summary(
         deploy_getter = lambda: find_deploy_time_docker(docker, dir_str, app_str)
     else:
         deploy_getter = lambda: find_deploy_time_local(Path(dir_str) / f"{app_str}-info.log")
+
+    user_range_specified = bool(since or from_time or since_deploy or since_run)
 
     start_dt, end_dt, header_tag = resolve_time_range(
         since=since,
@@ -1099,13 +1323,32 @@ def get_tail_summary(
     elif docker:
         src_type = "docker"
         try:
-            raw_text = read_logs_docker(docker, dir_str, app_str, include_error=True, start_dt=start_dt)
+            raw_text = read_logs_docker(
+                docker,
+                dir_str,
+                app_str,
+                include_error=True,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                archived=archived,
+                user_range_specified=user_range_specified,
+                log_tz=tz_str,
+            )
         except DockerExecError as e:
             sys.stderr.write(f"{e}\n")
             raise typer.Exit(2) from e
     else:
         src_type = "local"
-        raw_text = read_logs_local(Path(dir_str), app_str, include_error=True)
+        raw_text = read_logs_local(
+            Path(dir_str),
+            app_str,
+            include_error=True,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            archived=archived,
+            user_range_specified=user_range_specified,
+            log_tz=tz_str,
+        )
 
     records = parse_log_records(raw_text)
 
@@ -1212,12 +1455,14 @@ def get_tail_summary(
     hidden_ws = 0
     req_items: list[tuple[datetime, str]] = []  # (ts, line_str)
 
+    today_date = datetime.now(UTC).date() if tz_str.upper() == "UTC" else datetime.now(KST).date()
+
     for tid, recs in traces_map.items():
         access_r = next((r for r in recs if r.logger == "kr.co.kfs.asseterp.access"), None)
         t_sql_cnt = sum(1 for r in recs if "==>  Preparing:" in r.msg)
         first_r = recs[0]
         ts = access_r.ts if access_r else first_r.ts
-        t_str = ts.strftime("%H:%M:%S")
+        t_str = ts.strftime("%m-%d %H:%M:%S") if ts.date() != today_date else ts.strftime("%H:%M:%S")
 
         # trace 내 WARN/ERROR 요약 (Item 5)
         err_recs = [r for r in recs if r.level in ("WARN", "ERROR")]
@@ -1260,7 +1505,7 @@ def get_tail_summary(
     if not trace_only:
         for er in standalone_records:
             if er.level in ("WARN", "ERROR"):
-                t_str = er.ts.strftime("%H:%M:%S")
+                t_str = er.ts.strftime("%m-%d %H:%M:%S") if er.ts.date() != today_date else er.ts.strftime("%H:%M:%S")
                 msg_first = get_first_non_empty_line(er.msg, er.extra_lines)
                 if len(msg_first) > 60:
                     msg_first = msg_first[:57] + "…"
@@ -1281,6 +1526,9 @@ def get_tail_summary(
     )
 
     out = [header]
+    if archived and not user_range_specified:
+        out.append("(--archived: 범위가 오늘이라 지난 파일을 읽지 않음)")
+
     time_desc = header_tag if header_tag and not header_tag.startswith("· ") else "선택 범위"
     summary_line = f"{time_desc}: 요청 {len(traces_map)}, SQL {sql_count}, WARN {warn_count}, ERROR {error_count}"
 
@@ -1298,5 +1546,17 @@ def get_tail_summary(
 
     if not req_items:
         out.append("  (기록 없음)")
+        if not archived and start_dt:
+            earliest_dt = records[0].ts if records else None
+            if earliest_dt and start_dt < earliest_dt:
+                out.append(f"  오늘 파일은 {earliest_dt.strftime('%H:%M')}부터 — 그 전은 --archived")
+            elif not earliest_dt and start_dt.date() < today_date:
+                out.append("  오늘 파일은 기록 없음 — 그 전은 --archived")
+    elif not archived and start_dt:
+        earliest_dt = records[0].ts if records else None
+        if earliest_dt and start_dt < earliest_dt:
+            out.append(f"  (오늘 파일은 {earliest_dt.strftime('%H:%M')}부터 — 그 전은 --archived)")
+        elif not earliest_dt and start_dt.date() < today_date:
+            out.append("  (오늘 파일은 기록 없음 — 그 전은 --archived)")
 
     return "\n".join(out)
