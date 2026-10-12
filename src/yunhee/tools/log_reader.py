@@ -32,6 +32,7 @@ class LogRecord:
     logger: str
     msg: str
     extra_lines: list[str] = field(default_factory=list)
+    raw_text: str = ""
 
 
 # 매퍼 XML 캐시 (workspace 내)
@@ -104,11 +105,47 @@ def mask_sensitive(text: str, enabled: bool = True) -> tuple[str, int]:
 
     text, _ = re.subn(r"eyJ[\w-]+\.[\w-]+\.[\w-]+", repl_jwt, text)
 
+    # 3. Spring Security generated password: Using generated security password: <UUID>
+    def repl_sec_pwd(m: re.Match) -> str:
+        nonlocal count
+        count += 1
+        return f"{m.group(1)}****"
+
+    text, _ = re.subn(r"(Using generated security password:\s*)\S+", repl_sec_pwd, text)
+
     return text, count
 
 
-def parse_log_records(raw_text: str) -> list[LogRecord]:
-    """로그 본문을 파싱하여 LogRecord 리스트로 반환 (멀티라인 continuation 병합)."""
+def get_first_non_empty_line(msg: str, extra_lines: list[str] | None = None) -> str:
+    """msg 또는 extra_lines에서 첫 번째 비어있지 않은 줄을 반환한다."""
+    for line in msg.splitlines():
+        s = line.strip()
+        if s:
+            return s
+    if extra_lines:
+        for line in extra_lines:
+            s = line.strip()
+            if s:
+                return s
+    return "(빈 메시지)"
+
+
+def deduplicate_records(records: list[LogRecord]) -> list[LogRecord]:
+    """중복 레코드 제거 (ts_raw, trace, thread, level, logger, msg) 및 시각 순 정렬."""
+    seen: set[tuple[str, str, str, str, str, str]] = set()
+    deduped: list[LogRecord] = []
+    for r in records:
+        key = (r.ts_raw, r.trace, r.thread, r.level, r.logger, r.msg)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(r)
+    deduped.sort(key=lambda r: r.ts)
+    return deduped
+
+
+def parse_log_records(raw_text: str, deduplicate: bool = True) -> list[LogRecord]:
+    """로그 본문을 파싱하여 LogRecord 리스트로 반환 (멀티라인 continuation 병합 및 중복 제거)."""
     records: list[LogRecord] = []
     lines = raw_text.splitlines()
 
@@ -134,12 +171,16 @@ def parse_log_records(raw_text: str) -> list[LogRecord]:
                 level=level,
                 logger=logger,
                 msg=msg,
+                raw_text=line,
             )
             records.append(rec)
         else:
             if records:
                 records[-1].extra_lines.append(line)
+                records[-1].raw_text += "\n" + line
 
+    if deduplicate:
+        return deduplicate_records(records)
     return records
 
 
@@ -156,16 +197,20 @@ def read_logs_docker(
     include_error: bool = True,
     error_only: bool = False,
     start_dt: datetime | None = None,
+    archived: bool = False,
 ) -> str:
     """Docker 컨테이너 안의 로그 파일을 읽는다."""
     info_file = f"{log_dir}/{app}-info.log"
     error_file = f"{log_dir}/{app}-error.log"
 
     if trace_id:
+        sh_cmd = f'grep -F -h "[{trace_id}]" {info_file} {error_file if include_error else ""} 2>/dev/null || true'
+        if archived:
+            sh_cmd += f'; zgrep -F -h "[{trace_id}]" {log_dir}/archived/*/{app}*.log.gz 2>/dev/null || true'
         cmd = [
             "docker", "exec", container,
             "sh", "-c",
-            f'grep -F -h "[{trace_id}]" {info_file} {error_file if include_error else ""} 2>/dev/null || true'
+            sh_cmd,
         ]
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if proc.returncode != 0:
@@ -228,6 +273,7 @@ def read_logs_local(
     tail_lines: int = 20000,
     include_error: bool = True,
     error_only: bool = False,
+    archived: bool = False,
 ) -> str:
     """로컬 파일시스템에서 로그 파일을 읽는다."""
     info_file = log_dir / f"{app}-info.log"
@@ -246,6 +292,17 @@ def read_logs_local(
             try:
                 t = f.read_text(encoding="utf-8", errors="replace")
                 texts.append(t)
+            except OSError:
+                pass
+
+    if trace_id and archived:
+        import gzip
+        for gz_file in log_dir.glob(f"archived/*/{app}*.log.gz"):
+            try:
+                with gzip.open(gz_file, "rt", encoding="utf-8", errors="replace") as gf:
+                    for line in gf:
+                        if f"[{trace_id}]" in line:
+                            texts.append(line)
             except OSError:
                 pass
 
@@ -475,9 +532,14 @@ def get_trace_summary(
     log_tz: str | None = None,
     raw: bool = False,
     show_sql: bool = False,
+    archived: bool = False,
     mask: bool = True,
 ) -> str:
     """단일 trace의 실행 요약 또는 원문 반환."""
+    if not re.fullmatch(r"[0-9a-fA-F]{8,32}", trace_id):
+        sys.stderr.write("오류: trace ID는 16진수 (8~32자)\n")
+        raise typer.Exit(2)
+
     docker = docker_container if docker_container is not None else config.LOG_DOCKER
     if source == "local":
         docker = ""
@@ -494,23 +556,25 @@ def get_trace_summary(
         if not f.is_file():
             sys.stderr.write(f"로그 파일을 찾을 수 없습니다: {file_path}\n")
             raise typer.Exit(1)
-        raw_text = f.read_text(encoding="utf-8", errors="replace")
+        if str(file_path).endswith(".gz"):
+            import gzip
+            raw_text = gzip.decompress(f.read_bytes()).decode("utf-8", errors="replace")
+        else:
+            raw_text = f.read_text(encoding="utf-8", errors="replace")
         all_recs = parse_log_records(raw_text)
         records = [r for r in all_recs if r.trace == trace_id]
-        lines = [l for l in raw_text.splitlines() if f"[{trace_id}]" in l]
-        log_text = "\n".join(lines)
         src_type = "file"
     elif docker:
         src_type = "docker"
         try:
-            log_text = read_logs_docker(docker, dir_str, app_str, trace_id=trace_id)
+            log_text = read_logs_docker(docker, dir_str, app_str, trace_id=trace_id, archived=archived)
         except DockerExecError as e:
             sys.stderr.write(f"{e}\n")
             raise typer.Exit(2) from e
         records = parse_log_records(log_text)
     else:
         src_type = "local"
-        log_text = read_logs_local(Path(dir_str), app_str, trace_id=trace_id)
+        log_text = read_logs_local(Path(dir_str), app_str, trace_id=trace_id, archived=archived)
         records = parse_log_records(log_text)
 
     if not records:
@@ -519,12 +583,16 @@ def get_trace_summary(
 
     total_masks = 0
     if mask:
-        log_text, total_masks = mask_sensitive(log_text, enabled=True)
-        # 레코드 내 메시지도 마스킹 적용
         for r in records:
             r.msg, c = mask_sensitive(r.msg, enabled=True)
             total_masks += c
-            r.extra_lines = [mask_sensitive(el, enabled=True)[0] for el in r.extra_lines]
+            new_extras = []
+            for el in r.extra_lines:
+                mel, cel = mask_sensitive(el, enabled=True)
+                new_extras.append(mel)
+                total_masks += cel
+            r.extra_lines = new_extras
+            r.raw_text, _ = mask_sensitive(r.raw_text, enabled=True)
 
     header = format_header(
         source_type=src_type,
@@ -537,7 +605,8 @@ def get_trace_summary(
     )
 
     if raw:
-        return f"{header}\n{log_text.strip()}"
+        raw_body = "\n".join(r.raw_text for r in records)
+        return f"{header}\n{raw_body.strip()}"
 
     # 접근 로그 탐색
     access_rec = next((r for r in records if r.logger == "kr.co.kfs.asseterp.access"), None)
@@ -638,7 +707,7 @@ def get_trace_summary(
     else:
         err_lines.append(f"WARN/ERROR {len(err_recs)}:")
         for er in err_recs:
-            msg_first = er.msg.splitlines()[0]
+            msg_first = get_first_non_empty_line(er.msg, er.extra_lines)
             t_str = er.ts.strftime("%H:%M:%S")
             err_lines.append(f"  {t_str} {er.level} {er.logger} - {msg_first}")
             if er.extra_lines:
@@ -870,10 +939,23 @@ def get_errors_summary(
             continue
         filtered.append(r)
 
+    total_masks = 0
+    if mask:
+        for r in filtered:
+            r.msg, c = mask_sensitive(r.msg, enabled=True)
+            total_masks += c
+            new_extras = []
+            for el in r.extra_lines:
+                mel, cel = mask_sensitive(el, enabled=True)
+                new_extras.append(mel)
+                total_masks += cel
+            r.extra_lines = new_extras
+            r.raw_text, _ = mask_sensitive(r.raw_text, enabled=True)
+
     # 묶기: 키 = (level, logger, norm_msg[:80])
     groups: dict[tuple[str, str, str], dict[str, Any]] = {}
     for r in filtered:
-        msg_first = r.msg.splitlines()[0]
+        msg_first = get_first_non_empty_line(r.msg, r.extra_lines)
         # 숫자·UUID·16진 ID를 '#'으로 치환
         norm = re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b", "#", msg_first)
         norm = re.sub(r"\b[0-9a-fA-F]{8,}\b", "#", norm)
@@ -901,7 +983,6 @@ def get_errors_summary(
 
     sorted_groups = sorted(groups.values(), key=lambda x: x["count"], reverse=True)
 
-    total_masks = 0
     header = format_header(
         source_type=src_type,
         file_path=file_path,
@@ -919,7 +1000,7 @@ def get_errors_summary(
 
     for g in sorted_groups:
         sample_r: LogRecord = g["sample_rec"]
-        msg_sample = g["norm_msg"] if g["count"] > 1 else sample_r.msg.splitlines()[0]
+        msg_sample = g["norm_msg"] if g["count"] > 1 else get_first_non_empty_line(sample_r.msg, sample_r.extra_lines)
         if mask:
             msg_sample, _ = mask_sensitive(msg_sample, enabled=True)
 
@@ -949,7 +1030,8 @@ def get_errors_summary(
             )
             try:
                 res_exp = chat([{"role": "user", "content": prompt}], max_tokens=150)
-                exp_line = res_exp.strip().splitlines()[0]
+                exp_lines = res_exp.strip().splitlines()
+                exp_line = exp_lines[0] if exp_lines else "(설명 없음)"
                 out.append(f"    ↳ 원인: {exp_line}")
             except Exception:  # noqa: BLE001, S110
                 pass
@@ -964,6 +1046,7 @@ def get_tail_summary(
     level: str | None = None,
     grep_pattern: str | None = None,
     trace_only: bool = False,
+    show_all: bool = False,
     file_path: str | None = None,
     source: str | None = None,
     docker_container: str | None = None,
@@ -1031,18 +1114,92 @@ def get_tail_summary(
         r for r in records
         if (start_dt is None or r.ts >= start_dt) and (end_dt is None or r.ts < end_dt)
     ]
-    if grep_pattern:
-        filtered = [r for r in filtered if grep_pattern in r.msg or grep_pattern in r.logger]
+
+    total_masks = 0
+    if mask:
+        for r in filtered:
+            r.msg, c = mask_sensitive(r.msg, enabled=True)
+            total_masks += c
+            new_extras = []
+            for el in r.extra_lines:
+                mel, cel = mask_sensitive(el, enabled=True)
+                new_extras.append(mel)
+                total_masks += cel
+            r.extra_lines = new_extras
+            r.raw_text, _ = mask_sensitive(r.raw_text, enabled=True)
 
     # trace 그룹핑
     traces_map: dict[str, list[LogRecord]] = {}
-    standalone_warn_errors: list[LogRecord] = []
+    standalone_records: list[LogRecord] = []
 
+    for r in filtered:
+        if r.trace not in ("SYSTEM", "-", ""):
+            traces_map.setdefault(r.trace, []).append(r)
+        else:
+            standalone_records.append(r)
+
+    # grep 필터 (Item 4: trace 내 어느 줄이라도 일치하면 trace 전체 보존)
+    if grep_pattern:
+        filtered_traces = {}
+        for tid, recs in traces_map.items():
+            if any(
+                grep_pattern in r.msg
+                or grep_pattern in r.logger
+                or any(grep_pattern in el for el in r.extra_lines)
+                for r in recs
+            ):
+                filtered_traces[tid] = recs
+        traces_map = filtered_traces
+
+        standalone_records = [
+            r for r in standalone_records
+            if grep_pattern in r.msg
+            or grep_pattern in r.logger
+            or any(grep_pattern in el for el in r.extra_lines)
+        ]
+
+    # level 필터 (Item 3: trace 내 해당 레벨 이상 레코드가 하나라도 있는 경우만 보존)
+    if level:
+        lvl_upper = level.upper()
+        if lvl_upper == "ERROR":
+            valid_levels = {"ERROR"}
+        elif lvl_upper == "WARN":
+            valid_levels = {"WARN", "ERROR"}
+        elif lvl_upper == "INFO":
+            valid_levels = {"INFO", "WARN", "ERROR"}
+        elif lvl_upper == "DEBUG":
+            valid_levels = {"DEBUG", "INFO", "WARN", "ERROR"}
+        elif lvl_upper == "TRACE":
+            valid_levels = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR"}
+        else:
+            valid_levels = {lvl_upper}
+
+        filtered_traces = {}
+        for tid, recs in traces_map.items():
+            if any(r.level in valid_levels for r in recs):
+                filtered_traces[tid] = recs
+        traces_map = filtered_traces
+
+        standalone_records = [
+            r for r in standalone_records
+            if r.level in valid_levels
+        ]
+
+    # 요약 통계 계산
     sql_count = 0
     warn_count = 0
     error_count = 0
 
-    for r in filtered:
+    for recs in traces_map.values():
+        for r in recs:
+            if "==>  Preparing:" in r.msg:
+                sql_count += 1
+            if r.level == "WARN":
+                warn_count += 1
+            elif r.level == "ERROR":
+                error_count += 1
+
+    for r in standalone_records:
         if "==>  Preparing:" in r.msg:
             sql_count += 1
         if r.level == "WARN":
@@ -1050,14 +1207,11 @@ def get_tail_summary(
         elif r.level == "ERROR":
             error_count += 1
 
-        if r.trace not in ("SYSTEM", "-", ""):
-            traces_map.setdefault(r.trace, []).append(r)
-        else:
-            if r.level in ("WARN", "ERROR"):
-                standalone_warn_errors.append(r)
-
     # 요청(trace) 목록 구성
+    hidden_non_http = 0
+    hidden_ws = 0
     req_items: list[tuple[datetime, str]] = []  # (ts, line_str)
+
     for tid, recs in traces_map.items():
         access_r = next((r for r in recs if r.logger == "kr.co.kfs.asseterp.access"), None)
         t_sql_cnt = sum(1 for r in recs if "==>  Preparing:" in r.msg)
@@ -1065,28 +1219,53 @@ def get_tail_summary(
         ts = access_r.ts if access_r else first_r.ts
         t_str = ts.strftime("%H:%M:%S")
 
+        # trace 내 WARN/ERROR 요약 (Item 5)
+        err_recs = [r for r in recs if r.level in ("WARN", "ERROR")]
+        warn_err_suffix = ""
+        if err_recs:
+            best_err = next((r for r in err_recs if r.level == "ERROR"), err_recs[0])
+            msg_first = get_first_non_empty_line(best_err.msg, best_err.extra_lines)
+            if len(msg_first) > 60:
+                msg_first = msg_first[:57] + "…"
+            warn_err_suffix = f"  ⚠{best_err.level} {msg_first}"
+
         if access_r:
             m_acc = re.match(r"^(\w+)\s+(\S+)\s+(\d{3})\s+(\d+)ms$", access_r.msg)
             if m_acc:
                 meth, full_path, st, el = m_acc.groups()
                 context = config.LOG_CONTEXT
                 path = full_path[len(context):] if context and full_path.startswith(context) else full_path
-                line = f"  {t_str}  {meth:<4}  {path:<40}  {st}  {el:>4}ms  SQL {t_sql_cnt}  trace {tid[:8]}…"
+
+                # WebSocket 노이즈 숨김 (Item 7-4): WARN/ERROR가 없는 /ws 또는 st == 101
+                is_ws = (st == "101" or path == "/ws" or path.startswith("/ws/"))
+                if not show_all and is_ws and not err_recs:
+                    hidden_ws += 1
+                    continue
+
+                line = f"  {t_str}  {meth:<4}  {path:<40}  {st}  {el:>4}ms  SQL {t_sql_cnt}  trace {tid[:8]}…{warn_err_suffix}"
+                req_items.append((ts, line))
+            else:
+                line = f"  {t_str}  {access_r.msg}  SQL {t_sql_cnt}  trace {tid[:8]}…{warn_err_suffix}"
                 req_items.append((ts, line))
         else:
+            # 비-HTTP 요청 숨김 (Item 7-4): WARN/ERROR가 없는 경우만 숨김
+            if not show_all and not err_recs:
+                hidden_non_http += 1
+                continue
             if not trace_only:
-                line = f"  {t_str}  (비-HTTP 요청)  SQL {t_sql_cnt}  trace {tid[:8]}…"
+                line = f"  {t_str}  (비-HTTP 요청)  SQL {t_sql_cnt}  trace {tid[:8]}…{warn_err_suffix}"
                 req_items.append((ts, line))
 
     # standalone 에러 추가
     if not trace_only:
-        for er in standalone_warn_errors:
-            t_str = er.ts.strftime("%H:%M:%S")
-            msg_first = er.msg.splitlines()[0]
-            if len(msg_first) > 60:
-                msg_first = msg_first[:57] + "…"
-            line = f"  {er.level} {t_str} {er.logger} - {msg_first}"
-            req_items.append((er.ts, line))
+        for er in standalone_records:
+            if er.level in ("WARN", "ERROR"):
+                t_str = er.ts.strftime("%H:%M:%S")
+                msg_first = get_first_non_empty_line(er.msg, er.extra_lines)
+                if len(msg_first) > 60:
+                    msg_first = msg_first[:57] + "…"
+                line = f"  {er.level} {t_str} {er.logger} - {msg_first}"
+                req_items.append((er.ts, line))
 
     req_items.sort(key=lambda x: x[0], reverse=True)
 
@@ -1097,13 +1276,23 @@ def get_tail_summary(
         log_dir=dir_str,
         app=app_str,
         tz_str=tz_str,
-        mask_count=0,
+        mask_count=total_masks,
         extra_tag=header_tag if header_tag.startswith("· ") else "",
     )
 
     out = [header]
     time_desc = header_tag if header_tag and not header_tag.startswith("· ") else "선택 범위"
-    out.append(f"{time_desc}: 요청 {len(traces_map)}, SQL {sql_count}, WARN {warn_count}, ERROR {error_count}")
+    summary_line = f"{time_desc}: 요청 {len(traces_map)}, SQL {sql_count}, WARN {warn_count}, ERROR {error_count}"
+
+    hidden_info = []
+    if hidden_non_http > 0:
+        hidden_info.append(f"비-HTTP {hidden_non_http}")
+    if hidden_ws > 0:
+        hidden_info.append(f"/ws {hidden_ws}")
+    if hidden_info:
+        summary_line += f" ({', '.join(hidden_info)} 숨김 — --all)"
+
+    out.append(summary_line)
     for _, item_str in req_items:
         out.append(item_str)
 

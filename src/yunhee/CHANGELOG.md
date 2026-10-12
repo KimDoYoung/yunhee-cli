@@ -2,6 +2,16 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.2.6] - 2026-10-12
+수정사항 022 (`yunhee log` 결함 해결 및 사용성 개선) 반영.
+- log errors & tail: 첫 줄이 빈 WARN/ERROR(Spring Boot 기동 로그 등) 파싱 시 IndexError 방지 및 비어 있지 않은 첫 줄/본문 탐색
+- log 마스킹: Spring Security 자동 생성 비밀번호(`Using generated security password: <UUID>`)를 `****`로 자동 마스킹
+- log trace & errors & tail: info 및 error 로그 파일 간 동일 WARN/ERROR 중복 기록 de-duplicate 및 `--raw` 시각순 정렬 출력
+- log tail: `--level` 필터 동작(해당 레벨 이상 포함 trace/standalone 필터링), `--grep` 시 trace 단위 전체 보존 및 SQL 개수 보존
+- log tail: 요청 줄 끝에 해당 trace의 `⚠WARN`/`⚠ERROR` 및 첫 에러 메시지 요약 표시
+- log tail: 비-HTTP 요청 및 WebSocket(`/ws`, 101) 노이즈 기본 숨김 및 요약 줄 표시, `--all` 옵션 지원
+- log trace: 16진수 trace ID(8~32자) 유효성 검사(위반 시 Exit 2), `--archived` 옵션 지원 및 안내 문구 정합
+
 ## [0.2.5] - 2026-10-12
 수정사항 021 (정적 분석 고도화, 테스트 실패 메시지 추출, 서버 로그 분석 명령 신설) 반영.
 - analysis ui: TOBE E-id 범위([E5]~[E9]), 중복 E-id 카운트 배제, 생략 표기([E1 생략], [E1]~[E3 생략]) 감지 및 10/7 (생략 3) 형식 집계

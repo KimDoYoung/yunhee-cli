@@ -7,3 +7,6 @@ java.lang.IllegalStateException: 픽스처 오류
 	at x.Foo.baz(Foo.java:20)
 Caused by: java.lang.NullPointerException: 픽스처 원인
 	at x.Foo.qux(Foo.java:30)
+2026-10-12 00:22:18.509 [SYSTEM] [-] [-] [-] [main] WARN  o.s.b.a.s.s.UserDetailsServiceAutoConfiguration - 
+Using generated security password: 70ea24fd-b57f-4f64-9be1-558e652a970d
+

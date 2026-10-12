@@ -1272,14 +1272,19 @@ def log_trace_cmd(
     sql: Annotated[bool, typer.Option("--sql", help="실행 가능한 바인딩 SQL 포함")] = False,
     raw: Annotated[bool, typer.Option("--raw", help="원문 로그 출력")] = False,
     no_mask: Annotated[bool, typer.Option("--no-mask", help="개인정보 마스킹 해제")] = False,
+    archived: Annotated[bool, typer.Option("--archived", help="지난 날짜의 압축 로그(archived/*.gz)까지 검색")] = False,
     file: Annotated[str | None, typer.Option("--file", "-f", help="직접 읽을 로그 파일 경로")] = None,
     source: Annotated[str | None, typer.Option("--source", help="로그 소스 (docker 또는 local)")] = None,
     dir: Annotated[str | None, typer.Option("--dir", help="로그 디렉터리 경로")] = None,
     app_name: Annotated[str | None, typer.Option("--app", help="로그 앱 접두어")] = None,
-    tz: Annotated[str | None, typer.Option("--tz", help="로그 시간대 (UTC 또는 KST)")] = None,
+    tz: Annotated[str | None, typer.Option("--tz", help="로그 파일에 쓰인 시각의 시간대 (docker 기본 UTC — 보통 지정하지 않음, --file과 함께 쓸 때만)")] = None,
 ) -> None:
     """단일 요청(trace)의 실행 요약 또는 원문 출력"""
     from yunhee.tools.log_reader import DockerExecError, get_trace_summary
+
+    if not re.fullmatch(r"[0-9a-fA-F]{8,32}", trace_id):
+        typer.secho("오류: trace ID는 16진수 (8~32자)", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
 
     try:
         res = get_trace_summary(
@@ -1291,6 +1296,7 @@ def log_trace_cmd(
             log_tz=tz,
             raw=raw,
             show_sql=sql,
+            archived=archived,
             mask=not no_mask,
         )
     except DockerExecError as e:
@@ -1312,15 +1318,16 @@ def log_req_cmd(
     last: Annotated[int, typer.Option("--last", "-n", help="표시할 최근 요청 수 (기본: 5)")] = 5,
     trace: Annotated[bool, typer.Option("--trace", help="가장 최근 요청의 상세 trace 요약 이어붙이기")] = False,
     since: Annotated[str | None, typer.Option("--since", help="지금부터 거슬러 올라간 기간 (예: 30m, 1h)")] = None,
-    from_time: Annotated[str | None, typer.Option("--from", help="시작 시각 (예: 15:10, 2026-10-08 15:10)")] = None,
-    to_time: Annotated[str | None, typer.Option("--to", help="종료 시각 (예: 15:20)")] = None,
+    from_time: Annotated[str | None, typer.Option("--from", help="시작 시각, 호스트 시간대(KST) — 예: 15:10, 2026-10-08 15:10")] = None,
+    to_time: Annotated[str | None, typer.Option("--to", help="종료 시각, 호스트 시간대(KST) — 예: 15:20")] = None,
     since_deploy: Annotated[bool, typer.Option("--since-deploy", help="마지막 배포(앱 시작) 이후")] = False,
     since_run: Annotated[str | None, typer.Option("--since-run", help="명령어 실행 시작 이후 (run id 또는 last)")] = None,
+    archived: Annotated[bool, typer.Option("--archived", help="지난 날짜의 압축 로그(archived/*.gz)까지 검색")] = False,
     file: Annotated[str | None, typer.Option("--file", "-f", help="직접 읽을 로그 파일 경로")] = None,
     source: Annotated[str | None, typer.Option("--source", help="로그 소스 (docker 또는 local)")] = None,
     dir: Annotated[str | None, typer.Option("--dir", help="로그 디렉터리 경로")] = None,
     app_name: Annotated[str | None, typer.Option("--app", help="로그 앱 접두어")] = None,
-    tz: Annotated[str | None, typer.Option("--tz", help="로그 시간대")] = None,
+    tz: Annotated[str | None, typer.Option("--tz", help="로그 파일에 쓰인 시각의 시간대 (docker 기본 UTC — 보통 지정하지 않음, --file과 함께 쓸 때만)")] = None,
     no_mask: Annotated[bool, typer.Option("--no-mask", help="개인정보 마스킹 해제")] = False,
 ) -> None:
     """접근 로그에서 지정한 메서드/경로와 일치하는 최근 요청 검색"""
@@ -1359,17 +1366,18 @@ def log_req_cmd(
 @log_app.command(name="errors")
 def log_errors_cmd(
     since: Annotated[str | None, typer.Option("--since", help="지금부터 거슬러 올라간 기간 (예: 1h)")] = None,
-    from_time: Annotated[str | None, typer.Option("--from", help="시작 시각 (예: 15:10)")] = None,
-    to_time: Annotated[str | None, typer.Option("--to", help="종료 시각 (예: 15:20)")] = None,
+    from_time: Annotated[str | None, typer.Option("--from", help="시작 시각, 호스트 시간대(KST) — 예: 15:10")] = None,
+    to_time: Annotated[str | None, typer.Option("--to", help="종료 시각, 호스트 시간대(KST) — 예: 15:20")] = None,
     since_deploy: Annotated[bool, typer.Option("--since-deploy", help="마지막 배포(앱 시작) 이후")] = False,
     since_run: Annotated[str | None, typer.Option("--since-run", help="명령어 실행 시작 이후 (run id 또는 last)")] = None,
     ignore: Annotated[list[str] | None, typer.Option("--ignore", help="제외할 logger 이름 일부 (반복 가능)")] = None,
     explain: Annotated[bool, typer.Option("--explain", help="Qwen 모델로 원인 요약")] = False,
+    archived: Annotated[bool, typer.Option("--archived", help="지난 날짜의 압축 로그(archived/*.gz)까지 검색")] = False,
     file: Annotated[str | None, typer.Option("--file", "-f", help="직접 읽을 로그 파일 경로")] = None,
     source: Annotated[str | None, typer.Option("--source", help="로그 소스 (docker 또는 local)")] = None,
     dir: Annotated[str | None, typer.Option("--dir", help="로그 디렉터리 경로")] = None,
     app_name: Annotated[str | None, typer.Option("--app", help="로그 앱 접두어")] = None,
-    tz: Annotated[str | None, typer.Option("--tz", help="로그 시간대")] = None,
+    tz: Annotated[str | None, typer.Option("--tz", help="로그 파일에 쓰인 시각의 시간대 (docker 기본 UTC — 보통 지정하지 않음, --file과 함께 쓸 때만)")] = None,
     no_mask: Annotated[bool, typer.Option("--no-mask", help="개인정보 마스킹 해제")] = False,
 ) -> None:
     """에러 로그(WARN·ERROR)를 묶어서 발생 빈도 및 스택 요약 출력"""
@@ -1406,18 +1414,20 @@ def log_errors_cmd(
 @log_app.command(name="tail")
 def log_tail_cmd(
     since: Annotated[str | None, typer.Option("--since", help="지금부터 거슬러 올라간 기간 (예: 10m)")] = None,
-    from_time: Annotated[str | None, typer.Option("--from", help="시작 시각")] = None,
-    to_time: Annotated[str | None, typer.Option("--to", help="종료 시각")] = None,
+    from_time: Annotated[str | None, typer.Option("--from", help="시작 시각, 호스트 시간대(KST) — 예: 15:10")] = None,
+    to_time: Annotated[str | None, typer.Option("--to", help="종료 시각, 호스트 시간대(KST) — 예: 15:20")] = None,
     since_deploy: Annotated[bool, typer.Option("--since-deploy", help="마지막 배포(앱 시작) 이후")] = False,
     since_run: Annotated[str | None, typer.Option("--since-run", help="명령어 실행 시작 이후")] = None,
     level: Annotated[str | None, typer.Option("--level", help="필터링할 최소 로그 레벨 (WARN, ERROR 등)")] = None,
     grep: Annotated[str | None, typer.Option("--grep", help="검색할 문자열")] = None,
     trace_only: Annotated[bool, typer.Option("--trace-only", help="요청(trace) 로그만 표시")] = False,
+    all: Annotated[bool, typer.Option("--all", help="비-HTTP 요청 및 WebSocket(/ws) 포함 전체 출력")] = False,
+    archived: Annotated[bool, typer.Option("--archived", help="지난 날짜의 압축 로그(archived/*.gz)까지 검색")] = False,
     file: Annotated[str | None, typer.Option("--file", "-f", help="직접 읽을 로그 파일 경로")] = None,
     source: Annotated[str | None, typer.Option("--source", help="로그 소스 (docker 또는 local)")] = None,
     dir: Annotated[str | None, typer.Option("--dir", help="로그 디렉터리 경로")] = None,
     app_name: Annotated[str | None, typer.Option("--app", help="로그 앱 접두어")] = None,
-    tz: Annotated[str | None, typer.Option("--tz", help="로그 시간대")] = None,
+    tz: Annotated[str | None, typer.Option("--tz", help="로그 파일에 쓰인 시각의 시간대 (docker 기본 UTC — 보통 지정하지 않음, --file과 함께 쓸 때만)")] = None,
     no_mask: Annotated[bool, typer.Option("--no-mask", help="개인정보 마스킹 해제")] = False,
 ) -> None:
     """최근 로그를 요청(trace) 단위로 접어서 전체 흐름 요약 출력"""
@@ -1428,6 +1438,7 @@ def log_tail_cmd(
             level=level,
             grep_pattern=grep,
             trace_only=trace_only,
+            show_all=all,
             file_path=file,
             source=source,
             log_dir=dir,
