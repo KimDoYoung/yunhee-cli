@@ -7,7 +7,7 @@ from typing import Any
 from yunhee.tools.analysis.common import resolve_as_is_paths
 
 NAME = "ui"
-DESCRIPTION = "UI 대조표 및 단계별 버튼/이벤트/그리드 현황 분석"
+DESCRIPTION = "UI 대조표 및 단계별 버튼/이벤트/그리드 현황 분석 (연결 컴포넌트 포함)"
 TARGET_HELP = "<화면클래스>"
 FORMATS = ("md",)
 EXAMPLES = [
@@ -74,6 +74,10 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     if not matched_files:
         matched_files = [f for f in src_index.glob("**/screens/*.md") if f.stem.lower() == target_name.lower()]
     if not matched_files:
+        matched_files = list(src_index.glob(f"**/components/{target_name}.md"))
+    if not matched_files:
+        matched_files = [f for f in src_index.glob("**/components/*.md") if f.stem.lower() == target_name.lower()]
+    if not matched_files:
         raise ValueError(f"색인 화면 파일을 찾을 수 없습니다: {target_name}.md")
 
     screen_file = matched_files[0]
@@ -104,6 +108,65 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         ev_cnt = len(re.findall(r"\[E\d+\]", c_text))
         grid_cnt = 1 if re.search(r"const buildGrid\b|그리드[^\n]*\(buildGrid", c_text) else 0
         as_is_stats[c["name"]] = {
+            "buttons": btn_cnt,
+            "events": ev_cnt,
+            "grids": grid_cnt,
+        }
+
+    # 연결 컴포넌트 탐색 (같은 도메인만 포함)
+    linked_candidates: list[tuple[str, str | None]] = []
+    m_link_line = re.search(r"^-\s*연결\s*화면[·\s]*컴포넌트[^\n]*", text, re.MULTILINE)
+    if m_link_line:
+        line_str = m_link_line.group(0)
+        for m in re.finditer(r"\[`?([A-Za-z0-9_]+)`?\]\(([^)]+)\)", line_str):
+            linked_candidates.append((m.group(1), m.group(2)))
+
+    for m in re.finditer(r"조회창\s+([A-Za-z0-9_]+)\s+열기", text):
+        c_name = m.group(1)
+        if not any(cand[0] == c_name for cand in linked_candidates):
+            linked_candidates.append((c_name, None))
+
+    try:
+        screen_rel = screen_file.relative_to(src_index)
+        screen_domain = screen_rel.parts[0]
+    except (ValueError, IndexError):
+        screen_domain = screen_file.parent.parent.name
+
+    for comp_name, comp_rel in linked_candidates:
+        if comp_name in as_is_stats:
+            continue
+
+        comp_file = None
+        if comp_rel:
+            cand = (screen_file.parent / comp_rel).resolve()
+            if cand.is_file():
+                comp_file = cand
+        if not comp_file or not comp_file.is_file():
+            cands = list(src_index.glob(f"**/components/{comp_name}.md"))
+            if not cands:
+                cands = [f for f in src_index.glob("**/components/*.md") if f.stem.lower() == comp_name.lower()]
+            if cands:
+                comp_file = cands[0]
+
+        if not comp_file or not comp_file.is_file():
+            continue
+
+        try:
+            comp_rel_path = comp_file.relative_to(src_index)
+            comp_domain = comp_rel_path.parts[0]
+        except (ValueError, IndexError):
+            comp_domain = comp_file.parent.parent.name
+
+        # 같은 도메인 연결 컴포넌트만 대조표에 포함
+        if comp_domain != screen_domain:
+            continue
+
+        comp_text = comp_file.read_text(encoding="utf-8", errors="replace")
+        btn_cnt = len(re.findall(r"-\s*<Button\b|\d+\.\s+<Button\b", comp_text))
+        ev_cnt = len(re.findall(r"\[E\d+\]", comp_text))
+        grid_cnt = 1 if re.search(r"const buildGrid\b|그리드[^\n]*\(buildGrid", comp_text) else 0
+
+        as_is_stats[comp_name] = {
             "buttons": btn_cnt,
             "events": ev_cnt,
             "grids": grid_cnt,

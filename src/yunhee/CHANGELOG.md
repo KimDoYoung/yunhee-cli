@@ -2,6 +2,17 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.3.1] - 2026-10-13
+수정사항 026 (연결 컴포넌트 화면 분석 및 UI 대조 포함, `api --log`·`log trace` SQL 파라미터 이름 매핑) 반영.
+- analysis screen: `screens/` 외에 `components/` 디렉터리 파일 직접 조회 지원 (`analysis screen <컴포넌트명>`)
+- analysis screen: `--list`에 화면의 "연결 화면·컴포넌트" 링크 및 `조회창 X 열기` 대상을 파악하여 연결 컴포넌트 행 추가 (`(연결)` 및 타 도메인 의존 시 `(연결·다른 도메인)` 표기)
+- analysis screen: 같은 도메인 연결 컴포넌트는 기본적으로 합계에 포함, 타 도메인은 합계 제외, `--no-linked` 옵션 지정 시 연결 컴포넌트 목록 및 합계 제외 지원
+- analysis screen: `--class <연결컴포넌트>` 및 `--section` (buttons, events, grid, layout 등) 연결 컴포넌트 내용 기반 동작 보강
+- analysis ui: TOBE 대조표에 같은 도메인 연결 컴포넌트 행 자동 포함 및 대조 지원
+- log reader: TOBE 매퍼 XML 파싱 기반으로 SQL `==> Parameters:` 값에 대응하는 `#{...}` 파라미터 이름 매핑 (`이름=값` 표기)
+- log reader: `<foreach>` 동적 파라미터 및 개수 불일치/매퍼 부재 시 기존 값 형식으로 조용히 fallback
+- agent-guide & CLI: screen 및 ui 분석 명령어 설명에 연결 컴포넌트 포함 안내 갱신
+
 ## [0.2.9] - 2026-10-13
 수정사항 025 (analysis run에 --stderr 추가 및 실패 요약 STDERR 안내) 반영.
 - analysis run: `--stderr` 옵션 추가 (STDERR 절 단독 추출, `-n` 줄 수 제한, 비어 있을 시 `(STDERR 없음)` 처리)

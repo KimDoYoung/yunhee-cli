@@ -37,6 +37,7 @@ class LogRecord:
 
 # 매퍼 XML 캐시 (workspace 내)
 _MAPPER_CACHE: dict[str, list[tuple[str, str]]] | None = None  # id -> list of (simple_cls, full_ns)
+_MAPPER_PARAM_CACHE: dict[tuple[str, str], list[str] | None] | None = None  # (simple_cls, sid) -> param_names
 
 
 def _load_mapper_cache() -> dict[str, list[tuple[str, str]]]:
@@ -64,6 +65,117 @@ def _load_mapper_cache() -> dict[str, list[tuple[str, str]]]:
 
     _MAPPER_CACHE = cache
     return cache
+
+
+def _load_mapper_param_cache() -> dict[tuple[str, str], list[str] | None]:
+    """TOBE 매퍼 XML에서 각 statement의 #{...} 파라미터 이름 목록을 파싱하여 캐싱한다."""
+    global _MAPPER_PARAM_CACHE
+    if _MAPPER_PARAM_CACHE is not None:
+        return _MAPPER_PARAM_CACHE
+
+    param_cache: dict[tuple[str, str], list[str] | None] = {}
+    work_dir = config.WORK_DIR
+
+    xml_files: list[Path] = []
+    for cand_dir in [
+        work_dir / "backend" / "src" / "main" / "resources" / "mapper",
+        work_dir / "src" / "main" / "resources" / "mapper",
+    ]:
+        if cand_dir.is_dir():
+            xml_files.extend(cand_dir.rglob("*.xml"))
+
+    if not xml_files:
+        xml_files.extend([
+            f for f in work_dir.glob("**/src/main/resources/mapper/**/*.xml")
+            if "target" not in f.parts
+        ])
+    if not xml_files:
+        xml_files.extend([
+            f for f in work_dir.glob("**/src/main/resources/mapper/*.xml")
+            if "target" not in f.parts
+        ])
+    if not xml_files:
+        xml_files.extend([
+            f for f in work_dir.rglob("*.xml")
+            if "target" not in f.parts and "test" not in f.parts
+        ])
+
+    for xml_file in xml_files:
+        try:
+            content = xml_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        m_ns = re.search(r'<mapper\s+namespace="([^"]+)"', content)
+        if not m_ns:
+            continue
+        ns = m_ns.group(1)
+        simple_cls = ns.split(".")[-1]
+
+        # 1. <sql id="..."> 태그 수집
+        sql_fragments: dict[str, str] = {}
+        for m_sql in re.finditer(r'<sql\b[^>]*\bid="([^"]+)"[^>]*>(.*?)</sql>', content, re.DOTALL):
+            sql_fragments[m_sql.group(1)] = m_sql.group(2)
+
+        # 2. statement 태그 수집
+        for m_stmt in re.finditer(
+            r'<(select|insert|update|delete)\b[^>]*\bid="([^"]+)"[^>]*>(.*?)</\1>',
+            content,
+            re.DOTALL,
+        ):
+            sid = m_stmt.group(2)
+            body = m_stmt.group(3)
+
+            # <include> 치환 (최대 5회)
+            for _ in range(5):
+                m_inc = re.search(r'<include\s+refid="([^"]+)"\s*(?:/>|>[^<]*</include>)', body)
+                if not m_inc:
+                    break
+                refid = m_inc.group(1).split(".")[-1]
+                frag = sql_fragments.get(refid, "")
+                body = body[:m_inc.start()] + frag + body[m_inc.end():]
+
+            # <foreach> 태그가 있으면 컬렉션 크기에 따라 동적으로 개수가 변하므로 제외
+            if re.search(r'<foreach\b', body):
+                param_cache[(simple_cls, sid)] = None
+                param_cache[(ns, sid)] = None
+                continue
+
+            cleaned_body = re.sub(r'<!--.*?-->', '', body, flags=re.DOTALL)
+            cleaned_body = re.sub(r'/\*.*?\*/', '', cleaned_body, flags=re.DOTALL)
+            cleaned_body = re.sub(r'--[^\n]*', '', cleaned_body)
+
+            params = re.findall(r'#\{\s*([a-zA-Z0-9_.]+)(?:[,\s:][^}]*)?\}', cleaned_body)
+            param_cache[(simple_cls, sid)] = params
+            param_cache[(ns, sid)] = params
+
+    _MAPPER_PARAM_CACHE = param_cache
+    return param_cache
+
+
+def get_mapper_param_names(logger_str: str) -> list[str] | None:
+    """logger 문자열에서 statement의 파라미터 이름 목록을 조회한다."""
+    cache = _load_mapper_param_cache()
+    if not cache:
+        return None
+
+    stmt_name = recover_mapper_name(logger_str)
+    parts = stmt_name.split(".")
+    if len(parts) >= 2:
+        simple_cls = parts[-2]
+        sid = parts[-1]
+        if (simple_cls, sid) in cache:
+            return cache[(simple_cls, sid)]
+
+    log_parts = logger_str.split(".")
+    if len(log_parts) >= 2:
+        sid = log_parts[-1]
+        cls_cand = log_parts[-2]
+        for (c_name, s_id), p_list in cache.items():
+            if s_id == sid and (c_name == cls_cand or c_name.startswith(cls_cand)):
+                return p_list
+
+    return None
 
 
 def recover_mapper_name(logger_str: str) -> str:
@@ -852,16 +964,22 @@ def get_trace_summary(
             sql_groups.append(curr_sql)
             curr_sql = None
 
-    def parse_params(raw_p: str) -> str:
+    def parse_params(raw_p: str, logger_str: str = "") -> str:
         if not raw_p:
             return ""
         items = [p.strip() for p in raw_p.split(",")]
         clean_items = []
         for it in items:
-            c = re.sub(r"\([A-Za-z]+\)$", "", it)
+            c = re.sub(r"\([A-Za-z]+\)$", "", it).strip()
             if len(c) > 60:
                 c = c[:57] + "…"
             clean_items.append(c)
+
+        if logger_str:
+            p_names = get_mapper_param_names(logger_str)
+            if p_names is not None and len(p_names) == len(clean_items):
+                clean_items = [f"{n}={v}" for n, v in zip(p_names, clean_items)]
+
         if len(clean_items) <= 6:
             return ", ".join(clean_items)
         return f"{', '.join(clean_items[:4])}, … {len(clean_items)}개"
@@ -870,7 +988,7 @@ def get_trace_summary(
     consec_count = 1
     for i, g in enumerate(sql_groups):
         stmt_name = recover_mapper_name(g["logger"])
-        param_str = parse_params(g["params"])
+        param_str = parse_params(g["params"], g["logger"])
         p_desc = f"({param_str})" if param_str else "()"
         res_str = f"→ {g['result']}" if g["result"] else ""
         line_item = f"{stmt_name} {p_desc} {res_str}".strip()

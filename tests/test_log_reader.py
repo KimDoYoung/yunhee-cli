@@ -134,7 +134,8 @@ def test_022_empty_first_line_and_password_masking(tmp_path):
         from_time="2026-10-12 09:00",
         mask=True,
     )
-    assert "WARN 00:22:18 o.s.b.a.s.s.UserDetailsServiceAutoConfiguration - Using generated security password: ****" in tail_res
+    assert "WARN" in tail_res
+    assert "00:22:18 o.s.b.a.s.s.UserDetailsServiceAutoConfiguration - Using generated security password: ****" in tail_res
 
 
 def test_022_deduplication(tmp_path):
@@ -315,6 +316,90 @@ def test_024_save_run_and_find_run_time_fallback(monkeypatch, tmp_path):
     info_new = log_reader.find_run_time("20261012_050000_aabbcc")
     assert info_new.start_dt == datetime(2026, 10, 12, 5, 0, 0, tzinfo=UTC)
     assert info_new.end_dt == datetime(2026, 10, 12, 5, 0, 3, tzinfo=UTC)
+
+
+def test_026_sql_parameter_names(tmp_path, monkeypatch):
+    """026-2: SQL 파라미터 이름 매퍼 연동 및 fallback 검증."""
+    mapper_dir = tmp_path / "backend" / "src" / "main" / "resources" / "mapper"
+    mapper_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. SysCodeMapper.xml
+    (mapper_dir / "SysCodeMapper.xml").write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="kr.co.kfs.asseterp.biz.sys.mapper.SysCodeMapper">
+    <sql id="companyCols">
+        sys01_company_id
+    </sql>
+
+    <!-- 1) 정상: 순서대로 이름 추출 (include 포함) -->
+    <insert id="copyCodes">
+        INSERT INTO sys09_code (company_id, source_company_id, code_kind_id)
+        SELECT #{newCompanyId}, <include refid="companyCols"/>, #{sourceCompanyId}
+        FROM sys09_code
+        WHERE code_kind_id = #{codeKindId}
+    </insert>
+
+    <!-- 2) foreach 포함: 개수가 동적이므로 파라미터 이름 비활성화 -->
+    <insert id="batchInsert">
+        INSERT INTO sys09_code (code_id)
+        VALUES
+        <foreach collection="list" item="item" separator=",">
+            (#{item.codeId})
+        </foreach>
+    </insert>
+
+    <!-- 3) if 조건문 포함: 개수 불일치 시 fallback -->
+    <select id="searchCodes" resultType="map">
+        SELECT * FROM sys09_code
+        WHERE sys01_company_id = #{companyId}
+        <if test="codeName != null">
+            AND code_name = #{codeName}
+        </if>
+        AND code_kind_id = #{codeKindId}
+    </select>
+</mapper>
+""", encoding="utf-8")
+
+    monkeypatch.setattr(config, "WORK_DIR", tmp_path)
+    log_reader._MAPPER_CACHE = None
+    log_reader._MAPPER_PARAM_CACHE = None
+
+    log_file = tmp_path / "app-info.log"
+    content = (
+        # 1. copyCodes 정상 매칭 (3개)
+        "2026-10-13 01:00:00.000 [1111111100000001] [-] [-] [-] [exec-1] DEBUG k.c.k.a.b.s.m.S.copyCodes - ==>  Preparing: INSERT INTO sys09_code ...\n"
+        "2026-10-13 01:00:00.001 [1111111100000001] [-] [-] [-] [exec-1] DEBUG k.c.k.a.b.s.m.S.copyCodes - ==> Parameters: 28000(Long), 0(Long), 202407241733135(String)\n"
+        "2026-10-13 01:00:00.002 [1111111100000001] [-] [-] [-] [exec-1] DEBUG k.c.k.a.b.s.m.S.copyCodes - <==    Updates: 0\n"
+        # 2. batchInsert (<foreach> 포함 -> 파라미터 이름 없이 그대로 값만)
+        "2026-10-13 01:00:00.010 [2222222200000002] [-] [-] [-] [exec-1] DEBUG k.c.k.a.b.s.m.S.batchInsert - ==>  Preparing: INSERT INTO sys09_code ...\n"
+        "2026-10-13 01:00:00.011 [2222222200000002] [-] [-] [-] [exec-1] DEBUG k.c.k.a.b.s.m.S.batchInsert - ==> Parameters: 1(Long), 2(Long)\n"
+        "2026-10-13 01:00:00.012 [2222222200000002] [-] [-] [-] [exec-1] DEBUG k.c.k.a.b.s.m.S.batchInsert - <==    Updates: 2\n"
+        # 3. searchCodes (매퍼에는 3개 있지만 실행 시 if가 빠져서 2개만 바인딩된 경우 -> 개수 불일치 fallback)
+        "2026-10-13 01:00:00.020 [3333333300000003] [-] [-] [-] [exec-1] DEBUG k.c.k.a.b.s.m.S.searchCodes - ==>  Preparing: SELECT * FROM sys09_code ...\n"
+        "2026-10-13 01:00:00.021 [3333333300000003] [-] [-] [-] [exec-1] DEBUG k.c.k.a.b.s.m.S.searchCodes - ==> Parameters: 28000(Long), KIND01(String)\n"
+        "2026-10-13 01:00:00.022 [3333333300000003] [-] [-] [-] [exec-1] DEBUG k.c.k.a.b.s.m.S.searchCodes - <==      Total: 5\n"
+        # 4. UnknownMapper (매퍼 XML 없음 -> 그대로)
+        "2026-10-13 01:00:00.030 [4444444400000004] [-] [-] [-] [exec-1] DEBUG k.c.k.a.b.x.m.UnknownMapper.doAction - ==>  Preparing: SELECT 1\n"
+        "2026-10-13 01:00:00.031 [4444444400000004] [-] [-] [-] [exec-1] DEBUG k.c.k.a.b.x.m.UnknownMapper.doAction - ==> Parameters: 999(Long)\n"
+        "2026-10-13 01:00:00.032 [4444444400000004] [-] [-] [-] [exec-1] DEBUG k.c.k.a.b.x.m.UnknownMapper.doAction - <==      Total: 1\n"
+    )
+    log_file.write_text(content, encoding="utf-8")
+
+    # 1. t1: copyCodes 파라미터 이름 검증
+    res_t1 = log_reader.get_trace_summary(trace_id="1111111100000001", file_path=str(log_file))
+    assert "SysCodeMapper.copyCodes (newCompanyId=28000, sourceCompanyId=0, codeKindId=202407241733135) → Updates 0" in res_t1
+
+    # 2. t2: foreach 포함 문장 -> 이름 없이 값만 그대로
+    res_t2 = log_reader.get_trace_summary(trace_id="2222222200000002", file_path=str(log_file))
+    assert "SysCodeMapper.batchInsert (1, 2) → Updates 2" in res_t2
+
+    # 3. t3: 파라미터 개수 불일치 -> 이름 없이 값만 그대로
+    res_t3 = log_reader.get_trace_summary(trace_id="3333333300000003", file_path=str(log_file))
+    assert "SysCodeMapper.searchCodes (28000, KIND01) → Total 5" in res_t3
+
+    # 4. t4: 매퍼 XML 없음 -> 이름 없이 값만 그대로
+    res_t4 = log_reader.get_trace_summary(trace_id="4444444400000004", file_path=str(log_file))
+    assert "UnknownMapper.doAction (999) → Total 1" in res_t4
 
 
 

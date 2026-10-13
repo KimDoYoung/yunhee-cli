@@ -9,7 +9,9 @@ from yunhee.tools import analysis
 from yunhee.tools.analysis import (
     method,
     run,
+    screen,
     tobe,
+    ui,
 )
 from yunhee.tools.analysis.common import AmbiguousTargetError
 
@@ -236,3 +238,156 @@ stderr line 3
     }
     out_old = run.render(resolved_old_log, opts={"stderr": True})
     assert out_old == ""
+
+
+def test_026_analysis_screen_and_ui_linked_components(tmp_path: Path):
+    """026-1: analysis screen 및 ui에서 연결 컴포넌트 처리 검증."""
+    src_index = tmp_path / "docs" / "as-is" / "src"
+    sys_screens = src_index / "sys" / "screens"
+    sys_comps = src_index / "sys" / "components"
+    apr_comps = src_index / "apr" / "components"
+    sys_screens.mkdir(parents=True, exist_ok=True)
+    sys_comps.mkdir(parents=True, exist_ok=True)
+    apr_comps.mkdir(parents=True, exist_ok=True)
+
+    # 1. 같은 도메인 연결 컴포넌트: Sys01_Lookup_SelectMulti.md
+    (sys_comps / "Sys01_Lookup_SelectMulti.md").write_text("""# Sys01_Lookup_SelectMulti
+
+- 종류: 컴포넌트
+- 파일: `client/vi/sys/Sys01_Lookup_SelectMulti.java`
+
+## UI
+
+### Sys01_Lookup_SelectMulti (`client/vi/sys/Sys01_Lookup_SelectMulti.java`, 166줄)
+
+## Grid Spec
+const buildGrid = () => [
+  { id: 'companyId', label: '회사' },
+];
+
+## 사용된 버튼들
+1. <Button type="submit">조회</Button>
+2. <Button type="button">확인</Button>
+3. <Button type="button">취소</Button>
+
+## 이벤트
+[E0] 생성자 초기화
+[E1] 조회 버튼 클릭
+[E2] 확인 버튼 클릭
+[E3] 취소 버튼 클릭
+[E4] 행 더블클릭
+""", encoding="utf-8")
+
+    # 2. 다른 도메인 연결 컴포넌트: Apr01_Edit_ApprDoc.md
+    (apr_comps / "Apr01_Edit_ApprDoc.md").write_text("""# Apr01_Edit_ApprDoc
+
+- 종류: 컴포넌트
+- 파일: `client/vi/apr/Apr01_Edit_ApprDoc.java`
+
+## UI
+
+### Apr01_Edit_ApprDoc (`client/vi/apr/Apr01_Edit_ApprDoc.java`, 200줄)
+
+## Grid Spec
+const buildGrid = () => [];
+
+## 사용된 버튼들
+1. <Button>결재</Button>
+
+## 이벤트
+[E0] 초기화
+""", encoding="utf-8")
+
+    # 3. 링크가 없는 단순 화면: SimpleScreen.md
+    (sys_screens / "SimpleScreen.md").write_text("""# SimpleScreen
+
+## UI
+
+### SimpleScreen (`SimpleScreen.java`, 100줄)
+1. <Button>확인</Button>
+[E0] 초기화
+const buildGrid = () => [];
+""", encoding="utf-8")
+
+    # 4. 링크가 있는 복합 화면: Sys08_Tab_CodeKindClient.md
+    (sys_screens / "Sys08_Tab_CodeKindClient.md").write_text("""# Sys08_Tab_CodeKindClient
+
+- 종류: 화면
+- 연결 화면·컴포넌트 (각 파일 참고): [`Sys01_Lookup_SelectMulti`](../../sys/components/Sys01_Lookup_SelectMulti.md), [`Apr01_Edit_ApprDoc`](../../apr/components/Apr01_Edit_ApprDoc.md)
+
+## UI
+
+### Sys08_Tab_CodeKindClient (`client/vi/sys/Sys08_Tab_CodeKindClient.java`, 285줄)
+1. <Button>조회</Button>
+2. <Button>복사</Button>
+[E0] 초기화
+[E1] 복사 확인 → copyChk() 에서 조회창 Sys01_Lookup_SelectMulti 열기
+const buildGrid = () => [];
+
+### Sys09_Grid_Code (`client/vi/sys/Sys09_Grid_Code.java`, 219줄)
+1. <Button>저장</Button>
+[E0] 초기화
+const buildGrid = () => [];
+""", encoding="utf-8")
+
+    opts = {"src_index": src_index}
+
+    # [검증 A] 링크가 없는 화면은 지금과 같은 출력
+    res_simple = screen.resolve("SimpleScreen", opts)
+    out_simple = screen.render(res_simple, opts={"list": True})
+    assert "SimpleScreen" in out_simple
+    assert "(연결)" not in out_simple
+    assert "| **합계** |" in out_simple
+
+    # [검증 B] 화면 파일에서 연결 컴포넌트 추출 (--list)
+    res_main = screen.resolve("Sys08_Tab_CodeKindClient", opts)
+    out_list = screen.render(res_main, opts={"list": True})
+
+    # 같은 도메인은 `(연결)` 표시
+    assert "Sys01_Lookup_SelectMulti (연결)" in out_list
+    # 다른 도메인은 `(연결·다른 도메인)` 표시
+    assert "Apr01_Edit_ApprDoc (연결·다른 도메인)" in out_list
+
+    # 합계 계산:
+    # Sys08(버튼 2, 이벤트 2, 그리드 1) + Sys09(버튼 1, 이벤트 1, 그리드 1) = 본 화면 (버튼 3, 이벤트 3, 그리드 2)
+    # Sys01_Lookup_SelectMulti: 버튼 3, 이벤트 5, 그리드 1 (같은 도메인이라 기본 합계 포함)
+    # Apr01_Edit_ApprDoc: 버튼 1, 이벤트 1, 그리드 1 (다른 도메인은 합계 제외!)
+    # 총 합계: 버튼 3 + 3 = 6, 이벤트 3 + 5 = 8, 그리드 2 + 1 = 3
+    assert "| **합계** |" in out_list
+    assert "| **6** | **8** | **3** |" in out_list
+
+    # [검증 C] --no-linked 옵션 시 연결 컴포넌트 제외
+    out_no_linked = screen.render(res_main, opts={"list": True, "no_linked": True})
+    assert "(연결)" not in out_no_linked
+    # 본 화면만 합산: 버튼 3, 이벤트 3, 그리드 2
+    assert "| **3** | **3** | **2** |" in out_no_linked
+
+    # [검증 D] components 파일 직접 조회: screen Sys01_Lookup_SelectMulti --section buttons
+    res_comp = screen.resolve("Sys01_Lookup_SelectMulti", opts)
+    out_buttons = screen.render(res_comp, opts={"section": "buttons"})
+    assert "조회" in out_buttons
+    assert "확인" in out_buttons
+    assert "취소" in out_buttons
+
+    # [검증 E] 메인 화면에서 --class Sys01_Lookup_SelectMulti --section buttons 조회
+    out_comp_sec = screen.render(res_main, opts={"class": "Sys01_Lookup_SelectMulti", "section": "buttons"})
+    assert "조회" in out_comp_sec
+    assert "확인" in out_comp_sec
+    assert "취소" in out_comp_sec
+
+    # [검증 F] analysis ui --tobe: 같은 도메인 연결 컴포넌트가 대조표에 포함됨
+    tobe_dir = tmp_path / "frontend" / "src" / "pages" / "sys"
+    tobe_dir.mkdir(parents=True, exist_ok=True)
+    # TOBE tsx 작성
+    (tobe_dir / "Sys08_Tab_CodeKindClient.tsx").write_text("<Button>조회</Button><Button>복사</Button><SingleGrid />", encoding="utf-8")
+    (tobe_dir / "Sys01_Lookup_SelectMulti.tsx").write_text("<Button>조회</Button><Button>확인</Button><Button>취소</Button><SingleGrid />", encoding="utf-8")
+
+    ui_res = ui.resolve("Sys08_Tab_CodeKindClient", {"src_index": src_index, "tobe": tobe_dir})
+    ui_out = ui.render(ui_res)
+
+    assert "Sys01_Lookup_SelectMulti" in ui_out
+    assert "3/3" in ui_out  # 버튼 3개 대조
+    assert "1/1" in ui_out  # 그리드 1개 대조
+    # 다른 도메인 Apr01은 ui 대조표에 포함되지 않음
+    assert "Apr01_Edit_ApprDoc" not in ui_out
+

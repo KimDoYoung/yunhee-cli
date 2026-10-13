@@ -747,8 +747,9 @@ def agent_guide():
 ## 5. AS-IS 정적 분석 및 폼 레이아웃 파악 (토큰 90% 절약)
 - ❌ 절대 금지: 복잡한 GXT 폼 탭의 컴포넌트 크기, 라벨, 배치, 읽기 전용 속성을 파악하려고 수백 줄의 자바 소스를 직접 열지 마세요.
 - ✅ 권장 명령:
+  - `yunhee analysis screen <화면> --list`: 클래스 목록 및 줄/버튼/이벤트/그리드 통계 (연결 컴포넌트 포함(`(연결)` 표시), `--no-linked` 지원)
   - `yunhee analysis screen <화면> --section layout`: 폼 탭은 원본 Java를 열기 전에 이것부터 확인하세요.
-  - `yunhee analysis ui <화면>`: TOBE 이벤트 구현율 및 `(생략 N)` (TOBE에서 생략하기로 결정된 이벤트 수) 확인.
+  - `yunhee analysis ui <화면>`: TOBE 이벤트 구현율 및 `(생략 N)` (TOBE에서 생략하기로 결정된 이벤트 수) 확인 (연결 컴포넌트 포함(`(연결)` 표시)).
 
 ## 6. 서버 로그 및 실제 실행 SQL 확인 시 (grep 금지)
 - ❌ 절대 금지: docker logs나 서버 로그 파일을 직접 grep하지 마세요. (호스트 같은 경로는 로컬 테스트 로그이며, 배포본은 docker 컨테이너 t3600-tomcat 안에 있습니다)
@@ -1156,6 +1157,10 @@ def analysis_cmd(
         bool,
         typer.Option("--tests", help="테스트 실행 결과 통계 요약"),
     ] = False,
+    no_linked: Annotated[
+        bool,
+        typer.Option("--no-linked", help="연결 컴포넌트를 합계 및 목록에서 제외"),
+    ] = False,
 ):
     """AS-IS 및 TOBE 통합 정적 분석 도구 (method, sql, model, grid, screen, ui, tobe, run)
 
@@ -1245,6 +1250,7 @@ def analysis_cmd(
         "json": json_flag,
         "keys": keys,
         "tests": tests,
+        "no_linked": no_linked,
     }
 
     try:

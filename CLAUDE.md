@@ -31,11 +31,12 @@ uv run yunhee last-run                           # 가장 최근 실행 결과 �
 uv run yunhee runs                               # 최근 실행 이력 테이블 출력
 uv run yunhee analysis run last --stderr         # 직전 실행의 STDERR(에러/예외)만 분리 출력 (-n 줄수 제한)
 uv run yunhee api GET /api/v1/sys/roles          # 테스트 계정 자동 로그인 기반 API 스모크 테스트 (행수/필드 요약). --timeout <초>(기본 YUNHEE_API_TIMEOUT 또는 15), 시간 초과는 연결 실패와 다른 문구
-uv run yunhee api GET /api/v1/emp/others -c kfstest --log # API 호출 직후 서버가 실제로 실행한 SQL과 바인딩 파라미터 요약
-uv run yunhee log trace <traceId>                     # 단일 요청 trace의 실행 요약 및 SQL 목록
+uv run yunhee api GET /api/v1/emp/others -c kfstest --log # API 호출 직후 서버가 실제로 실행한 SQL과 바인딩 파라미터(이름=값) 요약
+uv run yunhee log trace <traceId>                     # 단일 요청 trace의 실행 요약 및 SQL/바인딩 파라미터(이름=값) 목록
 uv run yunhee log req GET /api/v1/emp/others          # 접근 로그에서 최근 요청 목록 검색
 uv run yunhee log errors                              # WARN/ERROR 묶음 요약
 uv run yunhee log tail                                # 최근 전체 로그 흐름을 trace 단위로 접어서 요약
+uv run yunhee analysis screen <화면> --list           # 화면 및 연결 컴포넌트 클래스 목록 통계 (--no-linked 지원)
 uv run yunhee analysis screen <화면> --section layout # GXT 폼 탭 레이아웃(라벨 폭, 행 구조, 위젯 크기, readOnly/disable) 추출
 uv run yunhee agent-guide                        # 상용 AI 에이전트용 토큰 절약 지침서(Markdown) 출력
 uv run yunhee changelog                          # 현재 버전 변경 내용. 0.1.3(특정 버전) / --since 0.1.1 / --all

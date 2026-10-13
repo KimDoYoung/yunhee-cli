@@ -43,9 +43,10 @@ uv run yunhee sql-check --tobe src/main/resources/mapper             # TOBE 매�
 uv run yunhee port-sql sys04_role.selectByName                       # AS-IS MyBatis SQL → TOBE 매퍼 조각 및 Java Record DTO 자동 생성
 uv run yunhee port-save sys04_role --cols role_nm,seq,note           # AS-IS 테이블 기반 TOBE CUD 명시적 쿼리 및 채번/사이드이펙트 생성
 uv run yunhee compare GET /api/v1/sys/roles sys04_role.selectByName -c kfstest # HTTP API 결과와 AS-IS SQL 결과 행수/컬럼 커버리지 비교
+uv run yunhee analysis screen <화면> --list # 화면 및 연결 컴포넌트 클래스 목록 통계 (--no-linked 지원)
 uv run yunhee analysis screen <화면> --section layout # GXT 폼 탭 레이아웃(라벨 폭, 행 구조, 위젯 크기, readOnly/disable) 추출
-uv run yunhee api GET /api/v1/emp/others -c kfstest --log # API 호출 직후 서버가 실제로 실행한 SQL과 바인딩 파라미터 요약
-uv run yunhee log trace <traceId>                     # 단일 요청 trace의 실행 요약 및 SQL 목록
+uv run yunhee api GET /api/v1/emp/others -c kfstest --log # API 호출 직후 서버가 실제로 실행한 SQL과 바인딩 파라미터(이름=값) 요약
+uv run yunhee log trace <traceId>                     # 단일 요청 trace의 실행 요약 및 SQL/바인딩 파라미터(이름=값) 목록
 uv run yunhee log req GET /api/v1/emp/others          # 접근 로그에서 최근 요청 목록 검색
 uv run yunhee log errors                              # WARN/ERROR 묶음 요약
 uv run yunhee log tail                                # 최근 전체 로그 흐름을 trace 단위로 접어서 요약
