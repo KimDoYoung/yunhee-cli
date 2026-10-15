@@ -371,7 +371,11 @@ def ui_lines(cls: Any, with_events: bool = False) -> list[str]:
                 edit = ""
                 if len(args) > 3:
                     em = re.match(r"new\s+(\w+)", args[3])
-                    edit = f" 편집:{em.group(1) if em else _short(args[3], 20)}"
+                    ed_name = em.group(1) if em else _short(args[3], 20)
+                    if op == "addCell" or any(kw in ed_name for kw in ("ImageCell", "ActionCell", "actionCell")) or fld == "actionCell":
+                        edit = ""
+                    else:
+                        edit = f" 편집:{ed_name}"
                 kind = op[3:] or "Text"
                 cols.append(f"{fld} {width} \"{head}\" {kind}{edit}")
         if cols:

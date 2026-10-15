@@ -152,24 +152,36 @@ def _parse_single_grid(
         label = args[2].strip(" \t\"'")
 
         editor_kind = None
-        if len(args) >= 4:
+        is_action_cell = (
+            meth == "addCell"
+            or prop == "actionCell"
+            or (len(args) >= 4 and any(kw in args[3] for kw in ("ImageCell", "ActionCell", "actionCell")))
+        )
+        if len(args) >= 4 and not is_action_cell:
             ed_arg = args[3].strip()
             if ed_arg and ed_arg != "null":
-                has_editors = True
                 if "TextField" in ed_arg:
                     editor_kind = "text"
+                    has_editors = True
                 elif "DateField" in ed_arg or "MyDateField" in ed_arg:
                     editor_kind = "date"
+                    has_editors = True
                 elif "ComboBox" in ed_arg:
                     editor_kind = "select"
-                elif "NumberField" in ed_arg or "LongField" in ed_arg:
+                    has_editors = True
+                elif "NumberField" in ed_arg or "LongField" in ed_arg or "DoubleField" in ed_arg:
                     editor_kind = "number"
+                    has_editors = True
+                elif "CheckBox" in ed_arg:
+                    editor_kind = "checkbox"
+                    has_editors = True
                 elif "Lookup" in ed_arg or "Search" in ed_arg:
                     editor_kind = "lookup"
-                else:
-                    editor_kind = ed_arg
+                    has_editors = True
 
         renderer_desc = SPECIAL_RENDERERS.get(meth, "")
+        if is_action_cell and not renderer_desc:
+            renderer_desc = "아이콘"
 
         raw_cols.append({
             "line": line_num,

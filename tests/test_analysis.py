@@ -1,6 +1,7 @@
 """yunhee analysis 도구 및 서브모듈 단위 테스트."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -508,5 +509,64 @@ public class Sys05_Tab_PersonRole {
     parsed_json = json.loads(json_out)
     assert isinstance(parsed_json, list)
     assert len(parsed_json) == 2
+
+
+def test_030_grid_action_cell_not_editor(tmp_path: Path):
+    """030-3: addCell + ImageCell/actionCell은 아이콘 셀로 판정하여 SingleGrid로 분류하고 편집기로 보지 않음."""
+    from yunhee.tools.analysis import grid
+
+    src_dir = tmp_path / "src"
+    client_dir = src_dir / "client" / "vi" / "sms"
+    client_dir.mkdir(parents=True, exist_ok=True)
+
+    java_code = """
+package test;
+
+public class Sms02_Tab_TotalCount {
+    public Grid<Sms02_HistoryModel> buildGrid() {
+        GridBuilder<Sms02_HistoryModel> gb = new GridBuilder<Sms02_HistoryModel>();
+        ActionCell<Sms02_HistoryModel> actionCell = new ActionCell<Sms02_HistoryModel>("삭제", null);
+        gb.addCell(properties.actionCell(), actionCell, 50, "관리");
+        gb.addText(properties.companyNm(), 200, "회사명");
+        return gb.getGrid();
+    }
+}
+"""
+    (client_dir / "Sms02_Tab_TotalCount.java").write_text(java_code, encoding="utf-8")
+
+    res = grid.resolve("Sms02_Tab_TotalCount", {"src": src_dir})
+    assert len(res["grids"]) == 1
+    g = res["grids"][0]
+    # SingleGrid로 분류됨 (has_editors == False)
+    assert g["grid_type"] == "SingleGrid"
+    assert all(c.get("editor") is None for c in g["columns"])
+
+    rendered = grid.render(res, fmt="md")
+    assert "SingleGrid" in rendered
+    assert "CellEditGrid" not in rendered
+
+
+def test_030_sql_count_aggregate():
+    """030-5: analysis sql --count 단일 집계 쿼리는 rows=1 count=<val> 로 출력."""
+    from yunhee.tools.analysis import sql
+
+    # 1. 집계 쿼리 감지 정규식 검증
+    agg_sql = "SELECT count(emp01_person_id) FROM emp01_person WHERE emp01_company_id = 28000"
+    m_agg = re.match(r"^\s*SELECT\s+(count|sum|avg|max|min)\s*\([^)]+\)\s+FROM\b", agg_sql, re.IGNORECASE)
+    assert m_agg is not None
+    assert m_agg.group(1).lower() == "count"
+
+    # 2. sql.render with count_opt 목킹
+    from unittest import mock
+    with mock.patch("psycopg.connect") as mock_conn:
+        mock_cursor = mock.MagicMock()
+        mock_cursor.fetchall.return_value = [(758,)]
+        mock_cursor.description = [("count",)]
+        mock_conn.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+        obj = sql.resolve("emp01_person.selectByCompanyIdTotal", {})
+        out = sql.render(obj, opts={"count": True})
+        assert out == "rows=1 count=758"
+
 
 

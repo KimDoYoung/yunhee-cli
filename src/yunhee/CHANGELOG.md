@@ -2,6 +2,19 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.3.6] - 2026-10-15
+수정사항 030 (port-sql 서브쿼리 FROM 오류 해결, port-save 회사 컬럼명 보정, analysis grid 아이콘 셀 오판 방지, compare 0건/컴포넌트 탐색 개선, analysis sql 단일 집계값 출력) 반영.
+- port-sql: 괄호/서브쿼리/OVER/CASE 깊이 0 기준 SELECT 열 분리(`split_depth0_commas`) 및 최상위 `FROM` 절 원문 보존으로 상관 서브쿼리·서브쿼리 JOIN이 있는 복합 SQL의 열 누락 및 중복 `FROM {table}` 문법 오류 해결
+- port-sql: `--cols` 지정 시 매칭 컬럼을 별칭/DTO에 반영하고 매칭 순서대로 정렬, SQL에 없는 속성은 `⚠ SQL 열 없음: x` 경고 안내
+- port-save: `--company-col`에 접두사 없는 이름을 지정해도 `{prefix}company_id` 자동 보정, 파라미터명 `#{companyId}` 통일 및 delete 문 `<foreach>`의 item 변수를 분리하여 `#{companyId}`와의 파라미터 충돌 방지
+- port-save: 테이블 컬럼 분석을 통한 화면 INSERT 후보 열(person_id, start_date 등) 자동 안내 경고 추가
+- analysis grid & src_indexer: `addCell`, `ActionCell`, `ImageCell`을 편집기로 오인하지 않고 아이콘 셀로 판정하여 `SingleGrid` 분류 유지 및 표 편집기 열 비움/아이콘 표기
+- compare: `actionCell`, `rowNumberer`, `checkBoxSelection` 등 비데이터 화면 컬럼을 그리드 대조 대상에서 제외하여 불필요한 missing 경고 제거
+- compare: API 응답이 0건일 때 불필요한 필드 누락 경고 대신 `필드 비교 못 함 (행 0건)`으로 명확히 안내
+- compare: `**/screens/*.md`뿐 아니라 `**/components/*.md` 경로까지 컴포넌트 그리드 색인 탐색 확장, 미발견 시 탐색 디렉터리 경로 안내
+- analysis sql: `SELECT count(...)`, `SELECT sum(...)` 등 단일 집계 쿼리에 대해 `SELECT count(*) FROM (sql) z` 래핑 대신 직접 실행하여 `rows=1 count=<val>` 단일 요약값 출력
+- yunhee-guard.sh: heredoc/리다이렉션 쓰기(`cat >`, `<<`, `sed -i`) 및 출력 파이프(`| tail`) 분리 파싱 지원, 차단 시 원인 명령어(`[차단 원인: ...]`) 명시
+
 ## [0.3.5] - 2026-10-15
 MyBatis XML 조건식 태그 파싱 오류 수정 및 수치 비교 연산자 지원.
 - mybatis_render: `<if test="personId > 1">` 등 따옴표 내부의 `>` 또는 `<` 문자를 태그 끝으로 오인하지 않도록 XML 토크나이저(`TOKEN_RE`) 및 `mask_sql_preserve`의 따옴표 보호 처리

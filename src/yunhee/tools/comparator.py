@@ -107,9 +107,11 @@ def find_screen_grid_info(
     all_screens: list[Path] = []
     if src_index_dir and src_index_dir.is_dir():
         all_screens.extend(src_index_dir.glob("**/screens/*.md"))
+        all_screens.extend(src_index_dir.glob("**/components/*.md"))
 
     # grid_class가 직접 지정된 경우
     if grid_class:
+        search_dir_str = str(src_index_dir) if src_index_dir else "알 수 없음"
         if "#" in grid_class:
             cls_name, target_meth = grid_class.split("#", 1)
         elif "." in grid_class:
@@ -125,7 +127,7 @@ def find_screen_grid_info(
             if sf.stem.lower() == cls_name.lower() or f"### {cls_name}" in text:
                 grids = _extract_all_grids(text, sf.stem, roots, target_section=cls_name)
                 if not grids:
-                    return {"cols": set(), "label": "", "not_found": True, "class_name": grid_class}
+                    return {"cols": set(), "label": "", "not_found": True, "class_name": grid_class, "search_dir": search_dir_str}
                 if target_meth:
                     matched = next(
                         (
@@ -142,7 +144,7 @@ def find_screen_grid_info(
                             "label": f"{cls_name}#{matched['method']}",
                             "not_found": False,
                         }
-                    return {"cols": set(), "label": "", "not_found": True, "class_name": grid_class}
+                    return {"cols": set(), "label": "", "not_found": True, "class_name": grid_class, "search_dir": search_dir_str}
 
                 if len(grids) == 1:
                     chosen = grids[0]
@@ -158,7 +160,7 @@ def find_screen_grid_info(
                 }
 
         # grid_class를 지정했으나 찾지 못함 (Rule 4: fallback 금지)
-        return {"cols": set(), "label": "", "not_found": True, "class_name": grid_class}
+        return {"cols": set(), "label": "", "not_found": True, "class_name": grid_class, "search_dir": search_dir_str}
 
     ns = sql_ref.split(".")[0]
     pfx_m = re.match(r"^([a-z]+\d*)", ns)
@@ -327,8 +329,11 @@ def _extract_all_grids(
         )
         prop_to_col, _ns, _tbl, _aliases = find_mapper_for_model(model_name, roots)
         tbl_pfx = (re.match(r"^([a-z]+\d*)_", _tbl).group(1) + "_") if (_tbl and re.match(r"^([a-z]+\d*)_", _tbl)) else ""
+        NON_DATA_PROPS = {"rownumberer", "checkboxselection", "actioncell"}
         tobe_props = set()
         for p in g["props"]:
+            if p.lower() in NON_DATA_PROPS or p.lower().endswith("actioncell"):
+                continue
             col = prop_to_col.get(p, "")
             tobe_props.add(col_to_tobe_prop(col, tbl_pfx) if col else p)
         g["cols"] = tobe_props
@@ -456,7 +461,9 @@ def compare_api_sql(
     # Grid Spec 컬럼 우선 매핑, 없으면 SQL 컬럼 사용
     grid_info = find_screen_grid_info(sql_ref, src_root, grid_class=grid, api_fields=api_fields)
     if grid_info.get("not_found"):
-        summary_line = f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}  ⚠ 그리드 못 찾음: {grid_info['class_name']}"
+        search_dir = grid_info.get("search_dir", "")
+        search_suffix = f" (탐색 폴더: {search_dir})" if search_dir else ""
+        summary_line = f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}  ⚠ 그리드 못 찾음: {grid_info['class_name']}{search_suffix}"
         return ToolResult(
             ok=True,
             data={
@@ -486,14 +493,16 @@ def compare_api_sql(
     cols_covered = (len(missing_fields) == 0)
     cols_mark = "✅" if cols_covered else "⚠️"
 
-    summary_parts = [
-        f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}",
-        f"fields ⊇ grid cols {cols_mark}{cols_desc}",
-    ]
-    if not cols_covered and api_fields:
-        summary_parts.append(f"(missing: {', '.join(sorted(missing_fields))})")
-
-    summary_line = "  ".join(summary_parts)
+    if api_row_count == 0:
+        summary_line = f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}  필드 비교 못 함 (행 0건){cols_desc}"
+    else:
+        summary_parts = [
+            f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}",
+            f"fields ⊇ grid cols {cols_mark}{cols_desc}",
+        ]
+        if not cols_covered and api_fields:
+            summary_parts.append(f"(missing: {', '.join(sorted(missing_fields))})")
+        summary_line = "  ".join(summary_parts)
 
     return ToolResult(
         ok=True,

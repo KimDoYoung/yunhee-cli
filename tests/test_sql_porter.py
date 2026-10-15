@@ -176,3 +176,65 @@ def test_port_save_side_effects_unique_ids():
     assert re.findall(r'<select\s+id="([^"]+)"', out) == ["selectNextId"]
     assert "#{useYn}" not in out and "#{itemTypeCodeName}" not in out
     assert "    int ics30ComplianceInsertFormIcs30(Long companyId);" in res.data["mapper_methods"]
+
+
+def test_030_port_sql_sms02_history():
+    """030-1: port-sql에서 상관 서브쿼리가 있어도 전체 SELECT 열과 FROM 절 원문 유지 및 DTO 생성 검증."""
+    res = sql_porter.port_sql(
+        "sms02_history.selectByTotalCount",
+        cols=["companyName", "locName", "runningTotalCount"],
+        getter_defaults=True,
+        dto_package="kr.co.kfs.asseterp.biz.sms.dto",
+    )
+    assert res.ok
+    out = res.data["output"]
+    # 1. 6개 열 모두 보존
+    assert "AS history_id" in out
+    assert "AS company_id" in out
+    assert "AS company_name" in out
+    assert "AS loc_name" in out
+    assert "AS total_count" in out
+    assert "AS running_total_count" in out
+
+    # 2. FROM 절 원문 유지 (중복 FROM sms02_history 없음)
+    assert "FROM sms02_history ( SELECT" not in out
+    assert "FROM (" in out
+    assert "INNER JOIN sys01_company ON sys01_company_id = sms02_company_id" in out
+
+    # 3. Record DTO 필드 3개
+    dto = res.data["record_dto"]
+    assert "String companyName" in dto
+    assert "String locName" in dto
+    assert "Long runningTotalCount" in dto
+    assert len(res.data["warnings"]) == 0
+
+
+def test_030_port_sql_missing_col_warning():
+    """030-1: --cols에 준 속성 중 SQL에 없는 속성은 ⚠ SQL 열 없음 경고."""
+    res = sql_porter.port_sql(
+        "sms02_history.selectByTotalCount",
+        cols=["companyName", "actionCell"],
+    )
+    assert res.ok
+    assert any("SQL 열 없음: actionCell" in w for w in res.data["warnings"])
+    assert "⚠ SQL 열 없음: actionCell" in res.data["record_dto"]
+
+
+def test_030_port_save_company_col_prefix_and_foreach_id():
+    """030-2: port-save --company-col에 접두사 없는 이름을 줘도 접두사 자동 보정 및 foreach item 변수 분리."""
+    res = sql_porter.port_save(
+        "sms03_group_send",
+        cols=["title", "content", "note"],
+        company_col="company_id",
+    )
+    assert res.ok
+    out = res.data["output"]
+    # sms03_company_id 컬럼 사용
+    assert "sms03_company_id" in out
+    assert "#{companyId}" in out
+    # foreach item이 groupSendId로 되어 #{companyId}와 충돌하지 않음
+    assert '<foreach collection="groupSendIds" item="groupSendId"' in out
+    assert "#{groupSendId}</foreach>" in out
+    # INSERT 후보 열 경고 확인
+    assert any("INSERT 후보 열" in w for w in res.data["warnings"])
+

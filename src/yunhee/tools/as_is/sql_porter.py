@@ -86,6 +86,74 @@ def java_params(body: str) -> str:
     return ", ".join(f'@Param("{n}") {t} {n}' for n, t in names)
 
 
+def split_depth0_commas(s: str) -> list[str]:
+    """괄호·따옴표·CASE/END 깊이 0에 있는 쉼표로만 분리한다."""
+    tokens: list[str] = []
+    depth = 0
+    case_depth = 0
+    cur: list[str] = []
+    in_q = None
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if in_q:
+            if ch == in_q:
+                if in_q == "'" and i + 1 < n and s[i + 1] == "'":
+                    cur.append(ch)
+                    cur.append(s[i + 1])
+                    i += 2
+                    continue
+                in_q = None
+            cur.append(ch)
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            in_q = ch
+            cur.append(ch)
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            if depth > 0:
+                depth -= 1
+        elif s[i : i + 4].upper() == "CASE" and (i == 0 or not s[i - 1].isalnum()) and (i + 4 == n or not s[i + 4].isalnum()):
+            case_depth += 1
+        elif s[i : i + 3].upper() == "END" and (i == 0 or not s[i - 1].isalnum()) and (i + 3 == n or not s[i + 3].isalnum()):
+            if case_depth > 0:
+                case_depth -= 1
+        elif ch == "," and depth == 0 and case_depth == 0:
+            token = "".join(cur).strip()
+            if token:
+                tokens.append(token)
+            cur = []
+            i += 1
+            continue
+        cur.append(ch)
+        i += 1
+    if "".join(cur).strip():
+        tokens.append("".join(cur).strip())
+    return tokens
+
+
+def camel_to_snake(name: str) -> str:
+    """camelCase 문자열을 snake_case로 변환한다."""
+    s = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+    return re.sub(r"_+", "_", s)
+
+
+def _normalize_col_name(name: str) -> str:
+    """컬럼명 또는 프로퍼티명을 비교용 표준 형태로 정규화한다."""
+    s = re.sub(r"^[a-z]+\d*_", "", name.strip()).lower().replace("_", "")
+    s = re.sub(r"name$", "nm", s)
+    s = re.sub(r"address$", "addr", s)
+    s = re.sub(r"telno$", "tel", s)
+    s = re.sub(r"count$", "cnt", s)
+    s = re.sub(r"number$", "no", s)
+    return s
+
+
 def find_mapper_file(ns: str, src_root: Path | None = None) -> Path | None:
     """AS-IS 소스 트리에서 지정한 namespace/파일명의 매퍼 XML을 찾는다."""
     roots: list[Path] = []
@@ -349,42 +417,53 @@ def port_sql(
     items: list[dict[str, Any]] = []
 
     # 1. raw_select_items에서 계산식이나 개별 컬럼 분리
-    # 먼저 comma로 나누되 괄호 안의 콤마는 보존
-    tokens: list[str] = []
-    depth = 0
-    cur: list[str] = []
-    for char in raw_select_items:
-        if char == "(":
-            depth += 1
-        elif char == ")":
-            if depth > 0:
-                depth -= 1
-        elif char == "," and depth == 0:
-            token = "".join(cur).strip()
-            if token:
-                tokens.append(token)
-            cur = []
-            continue
-        cur.append(char)
-    if "".join(cur).strip():
-        tokens.append("".join(cur).strip())
+    tokens = split_depth0_commas(raw_select_items)
 
     for token in tokens:
         # token 예: sys04_role.* 또는 *
         if re.search(r"(?:\b\w+\.)?\*", token):
-            # 와일드카드 전개: resultMap 컬럼 중 main_table 컬럼 또는 전체 resultMap 컬럼
-            for c, p in rm_mappings:
-                if table_cols is not None and c.lower() not in table_cols:
-                    continue
-                snake_alias = c[len(tbl_prefix):] if (tbl_prefix and c.startswith(tbl_prefix)) else re.sub(r"^[a-z]+\d*_", "", c)
-                camel_prop = col_to_tobe_prop(c, tbl_prefix)
-                items.append({
-                    "expr": c,
-                    "alias": snake_alias,
-                    "prop": camel_prop,
-                    "col": c,
-                    "is_calc": False,
-                })
+            # 와일드카드 전개: cols가 주어지면 cols에 매핑되는 컬럼만 전개
+            if cols:
+                cols_norm_map: dict[str, str] = {}
+                for u in cols:
+                    u_c = u.strip()
+                    if u_c:
+                        cols_norm_map[_normalize_col_name(u_c)] = u_c
+
+                col_by_norm: dict[str, tuple[str, str]] = {}
+                for c, p in rm_mappings:
+                    if table_cols is not None and c.lower() not in table_cols:
+                        continue
+                    snake_alias = c[len(tbl_prefix):] if (tbl_prefix and c.startswith(tbl_prefix)) else re.sub(r"^[a-z]+\d*_", "", c)
+                    camel_prop = col_to_tobe_prop(c, tbl_prefix)
+                    for k in (_normalize_col_name(camel_prop), _normalize_col_name(snake_alias), _normalize_col_name(c)):
+                        if k not in col_by_norm:
+                            col_by_norm[k] = (c, p)
+
+                for u_norm, u_clean in cols_norm_map.items():
+                    if u_norm in col_by_norm:
+                        c, p = col_by_norm[u_norm]
+                        snake_alias = camel_to_snake(u_clean)
+                        items.append({
+                            "expr": c,
+                            "alias": snake_alias,
+                            "prop": u_clean,
+                            "col": c,
+                            "is_calc": False,
+                        })
+            else:
+                for c, p in rm_mappings:
+                    if table_cols is not None and c.lower() not in table_cols:
+                        continue
+                    snake_alias = c[len(tbl_prefix):] if (tbl_prefix and c.startswith(tbl_prefix)) else re.sub(r"^[a-z]+\d*_", "", c)
+                    camel_prop = col_to_tobe_prop(c, tbl_prefix)
+                    items.append({
+                        "expr": c,
+                        "alias": snake_alias,
+                        "prop": camel_prop,
+                        "col": c,
+                        "is_calc": False,
+                    })
         else:
             # 개별 표현식 (예: f_get_company_nm(sys04_company_id) as sys04_company_nm)
             as_m = re.search(r"^(.*?)\bAS\s+([a-zA-Z0-9_]+)$", token, re.IGNORECASE | re.DOTALL)
@@ -420,17 +499,6 @@ def port_sql(
             seen_aliases.add(it["alias"])
             dedup_items.append(it)
     items = dedup_items
-
-    # --cols 필터링 (--cols 순서 유지)
-    if cols:
-        order = [c.strip().lower().replace("_", "") for c in cols if c.strip()]
-
-        def col_rank(it: dict[str, Any]) -> int | None:
-            keys = (it["alias"].lower().replace("_", ""), it["prop"].lower(), it["col"].lower().replace("_", ""))
-            return next((i for i, c in enumerate(order) if c in keys), None)
-
-        ranked = [(col_rank(it), it) for it in items]
-        items = [it for r, it in sorted((x for x in ranked if x[0] is not None), key=lambda x: x[0])]
 
     # --getter-defaults 적용
     if getter_defaults and getter_map:
@@ -481,7 +549,53 @@ def port_sql(
     columns_sql_id = f"{entity_name}Columns"
     dto_name = f"{entity_title}Res"
 
-    # 1. 매퍼 조각 렌더링
+    # --cols 매핑 및 Record DTO 필드 생성
+    warnings: list[str] = []
+    dto_fields: list[str] = []
+
+    if cols:
+        matched_items: list[dict[str, Any]] = []
+        matched_indices: set[int] = set()
+        for user_col in cols:
+            u_clean = user_col.strip()
+            if not u_clean:
+                continue
+            u_norm = _normalize_col_name(u_clean)
+            match_idx = None
+            for idx, it in enumerate(items):
+                if idx in matched_indices:
+                    continue
+                keys = (
+                    _normalize_col_name(it["prop"]),
+                    _normalize_col_name(it["alias"]),
+                    _normalize_col_name(it["col"]),
+                )
+                if u_norm in keys:
+                    match_idx = idx
+                    break
+            if match_idx is not None:
+                matched_indices.add(match_idx)
+                it = items[match_idx]
+                snake_alias = camel_to_snake(u_clean)
+                it["alias"] = snake_alias
+                it["prop"] = u_clean
+                db_type = col_types_map.get(it["col"], "")
+                jtype = determine_java_type(it["col"], db_type=db_type, is_calculated=it["is_calc"], expr=it["expr"])
+                dto_fields.append(f"        {jtype} {u_clean}")
+                matched_items.append(it)
+            else:
+                warnings.append(f"SQL 열 없음: {u_clean}")
+                dto_fields.append(f"        // ⚠ SQL 열 없음: {u_clean}\n        String {u_clean}")
+
+        remaining_items = [it for idx, it in enumerate(items) if idx not in matched_indices]
+        items = matched_items + remaining_items
+    else:
+        for it in items:
+            db_type = col_types_map.get(it["col"], "")
+            jtype = determine_java_type(it["col"], db_type=db_type, is_calculated=it["is_calc"], expr=it["expr"])
+            dto_fields.append(f"        {jtype} {it['prop']}")
+
+    # 1. 매퍼 조각 렌더링 (SELECT 열 전체 보존)
     max_expr_len = max((len(it["expr"]) for it in items), default=30)
     col_lines = []
     for it in items:
@@ -489,14 +603,25 @@ def port_sql(
         col_lines.append(f"        {padded_expr}   AS {it['alias']}")
     rendered_cols = ",\n".join(col_lines)
 
-    # WHERE, ORDER BY 등 본문 정리
-    where_body = re.sub(r"^\s*FROM\s+[a-zA-Z0-9_]+", "", after_from, flags=re.IGNORECASE).strip()
-    where_lines = [f"        {line.strip()}" for line in where_body.splitlines() if line.strip()]
-    formatted_where = "\n".join(where_lines) if where_lines else ""
+    # FROM 절 및 본문 포맷팅 (최상위 FROM부터 원문 그대로 복사)
+    from_raw = sbody[from_matches[0].start():].strip()
+    from_lines = from_raw.splitlines()
+    formatted_from_lines = []
+    for idx, line in enumerate(from_lines):
+        st_line = line.strip()
+        if not st_line:
+            continue
+        if idx == 0 and re.match(r"^FROM\b", st_line, re.IGNORECASE):
+            rest_first = re.sub(r"^FROM\s*", "", st_line, flags=re.IGNORECASE)
+            formatted_from_lines.append(f"          FROM {rest_first}")
+        else:
+            formatted_from_lines.append(f"        {st_line}")
+    formatted_from = "\n".join(formatted_from_lines)
 
     select_id = "search" + to_plural(entity_title) if sid == "selectByName" else (f"select{entity_title}" if sid == "selectById" else sid)
 
     param_comment = f" (파라미터: {', '.join(params)})" if params else ""
+    warn_comment = ("\n    <!-- ⚠ " + "; ".join(warnings) + " -->") if warnings else ""
     if dto_package:
         result_type = f"{dto_package.rstrip('.')}.{dto_name}"
         type_comment = ""
@@ -507,19 +632,13 @@ def port_sql(
 {rendered_cols}
     </sql>
 
-    <!-- AS-IS {ns}.{sid}{param_comment} -->{type_comment}
+    <!-- AS-IS {ns}.{sid}{param_comment} -->{type_comment}{warn_comment}
     <select id="{select_id}" resultType="{result_type}">
 {cte_block}        SELECT <include refid="{columns_sql_id}"/>
-          FROM {main_table}
-{formatted_where}
+{formatted_from}
     </select>"""
 
     # 2. Record DTO 렌더링
-    dto_fields = []
-    for it in items:
-        db_type = col_types_map.get(it["col"], "")
-        jtype = determine_java_type(it["col"], db_type=db_type, is_calculated=it["is_calc"], expr=it["expr"])
-        dto_fields.append(f"        {jtype} {it['prop']}")
     rendered_fields = ",\n".join(dto_fields)
 
     record_dto = f"""public record {dto_name}(
@@ -543,6 +662,7 @@ def port_sql(
             "dto_name": dto_name,
             "params": params,
             "item_count": len(items),
+            "warnings": warnings,
         },
     )
 
@@ -605,21 +725,33 @@ def port_save(
         if table_cols is not None:
             if cand_comp in table_cols:
                 company_col = cand_comp
-                company_prop = col_to_tobe_prop(company_col, tbl_prefix)
+                company_prop = "companyId"
             else:
                 comp_match = next((c for c in table_cols if "company_id" in c), None)
                 if comp_match:
                     company_col = comp_match
-                    company_prop = col_to_tobe_prop(company_col, tbl_prefix)
+                    company_prop = "companyId"
                 else:
                     has_company = False
                     company_col = None
                     warnings.append("회사 컬럼 없음")
         else:
             company_col = cand_comp
-            company_prop = col_to_tobe_prop(company_col, tbl_prefix)
+            company_prop = "companyId"
     else:
-        company_prop = col_to_tobe_prop(company_col, tbl_prefix)
+        # company_col이 명시적으로 주어진 경우
+        if table_cols is not None:
+            if company_col in table_cols:
+                pass
+            elif tbl_prefix and f"{tbl_prefix}{company_col}" in table_cols:
+                company_col = f"{tbl_prefix}{company_col}"
+            else:
+                candidates = [c for c in table_cols if "company" in c.lower()]
+                warnings.append(
+                    f"컬럼 없음: {company_col}"
+                    + (f" (후보: {', '.join(candidates)})" if candidates else "")
+                )
+        company_prop = "companyId" if "company" in company_col.lower() else col_to_tobe_prop(company_col, tbl_prefix)
 
     # cols 정규화 (DB 컬럼명 및 camelCase 프로퍼티명)
     norm_cols: list[tuple[str, str]] = []
@@ -632,6 +764,22 @@ def port_save(
             db_col = f"{tbl_prefix}{db_col}"
         prop_name = col_to_tobe_prop(db_col, tbl_prefix)
         norm_cols.append((db_col, prop_name))
+
+    # 화면 insertRow()의 setter 후보 탐색 (선택)
+    insert_candidates: list[str] = []
+    if table_cols:
+        norm_col_names = {c for c, _ in norm_cols} | {id_col, company_col}
+        common_cols = {"reg_date", "reg_dt", "mod_date", "mod_dt", "created_at", "updated_at"}
+        for tc in table_cols:
+            if (
+                tc not in norm_col_names
+                and not any(tc.endswith(f"_{cc}") for cc in common_cols)
+                and any(kw in tc.lower() for kw in ("person_id", "start_date", "user_id"))
+            ):
+                base_c = tc[len(tbl_prefix):] if (tbl_prefix and tc.startswith(tbl_prefix)) else tc
+                insert_candidates.append(base_c)
+    if insert_candidates:
+        warnings.append(f"INSERT 후보 열: {', '.join(insert_candidates)} — 화면이 채움, 서버가 넣을 값인지 확인")
 
     plural_title = to_plural(entity_title)
     plural_prop = to_plural(id_prop)
@@ -685,10 +833,11 @@ def port_save(
     </update>"""
 
     # 4. delete{Entity}s
+    delete_item_var = id_prop if id_prop != company_prop else "item"
     delete_sql = f"""    <delete id="delete{plural_title}">
         DELETE FROM {table}
 {delete_where}
-        <foreach collection="{plural_prop}" item="id" open="(" separator="," close=")">#{{id}}</foreach>
+        <foreach collection="{plural_prop}" item="{delete_item_var}" open="(" separator="," close=")">#{{{delete_item_var}}}</foreach>
     </delete>"""
 
     fragments = [next_id_sql, insert_sql, update_sql, delete_sql]

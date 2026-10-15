@@ -259,3 +259,47 @@ const buildGridRole = () => [
         "buildUserGrid",
         "buildGridRole",
     ]
+
+
+def test_030_comparator_non_data_props_and_zero_rows():
+    """030-4: actionCell/rowNumberer/checkBoxSelection 제외 및 0건 시 '필드 비교 못 함' 출력."""
+    # 1. 비데이터 프로퍼티 제외 확인
+    spec_text = """## Grid Spec
+```ts
+const buildGrid = () => [
+  gb.text('rowNumberer', 40, 'No'),
+  gb.text('checkBoxSelection', 40, '선택'),
+  gb.text('companyNm', 150, '회사명'),
+  gb.text('actionCell', 60, '관리'),
+];
+```"""
+    grids = comparator._extract_all_grids(spec_text, "TestScreen")
+    assert len(grids) == 1
+    cols = grids[0]["cols"]
+    assert "companyNm" in cols
+    assert "rowNumberer" not in cols
+    assert "checkBoxSelection" not in cols
+    assert "actionCell" not in cols
+
+    # 2. 0건 시 렌더링 메시지 확인 (compare_api_sql 목킹)
+    from unittest import mock
+    with mock.patch("yunhee.tools.comparator.request_api") as mock_api, \
+         mock.patch("yunhee.tools.comparator.psycopg.connect") as mock_conn:
+        mock_api.return_value = comparator.ToolResult(
+            ok=True,
+            data={"status": 200, "data": [], "body": '{"data": []}'},
+        )
+        mock_cursor = mock.MagicMock()
+        mock_cursor.fetchall.return_value = []
+        mock_cursor.description = [("company_id",), ("company_nm",)]
+        mock_conn.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+        res = comparator.compare_api_sql(
+            "GET",
+            "/api/v1/test",
+            "sys01_company.selectByName",
+        )
+        assert res.ok
+        assert "필드 비교 못 함 (행 0건)" in res.data["summary"]
+        assert "API rows=0, SQL rows=0 ✅" in res.data["summary"]
+

@@ -91,13 +91,29 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
 
             from yunhee.tools.sql_runner import get_connection_string
 
-            count_sql = f"SELECT count(*) FROM (\n{sql}\n) z"
             db_name = opts.get("db", "asseterpdb")
             conn_str = get_connection_string(db_name)
             try:
                 with psycopg.connect(conn_str, autocommit=False) as conn:
                     conn.read_only = True
                     with conn.cursor() as cur:
+                        is_single_agg = bool(re.search(r"^\s*SELECT\s+(?:count|sum|avg|max|min)\s*\(", sql, re.IGNORECASE))
+                        if is_single_agg:
+                            cur.execute(sql)
+                            rows = cur.fetchall()
+                            if len(rows) == 1 and cur.description and len(cur.description) == 1:
+                                val = rows[0][0]
+                                col_name = cur.description[0][0].lower()
+                                if col_name.startswith("count") or col_name == "count":
+                                    label = "count"
+                                elif col_name.startswith("sum") or col_name == "sum":
+                                    label = "sum"
+                                else:
+                                    label = col_name
+                                return f"rows=1 {label}={val}"
+                            return str(len(rows))
+
+                        count_sql = f"SELECT count(*) FROM (\n{sql}\n) z"
                         cur.execute(count_sql)
                         row = cur.fetchone()
                         return str(row[0]) if row else "0"

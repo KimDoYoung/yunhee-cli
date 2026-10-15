@@ -175,43 +175,50 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             "events": ev_cnt,
             "grids": grid_cnt,
             "grid_warn": grid_warn,
+            "is_linked": True,
+            "same_domain": True,
         }
 
     # TOBE 통계 파싱 (지정된 경우)
     tobe_path_raw = opts.get("tobe")
     tobe_stats: dict[str, dict[str, Any]] = {}
     if tobe_path_raw:
-        tobe_dir = Path(tobe_path_raw)
-        if tobe_dir.is_dir():
-            for f in tobe_dir.rglob("*.tsx"):
+        if isinstance(tobe_path_raw, (list, tuple)):
+            raw_paths = [str(p).strip() for p in tobe_path_raw if str(p).strip()]
+        else:
+            raw_paths = [p.strip() for p in str(tobe_path_raw).split(",") if p.strip()]
+        for p_str in raw_paths:
+            tobe_target = Path(p_str)
+            if tobe_target.is_dir():
+                for f in tobe_target.rglob("*.tsx"):
+                    try:
+                        f_text = f.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    f_name = f.stem
+                    t_btn = len(re.findall(r"<Button\b", f_text))
+                    impl_ev, skip_ev = _tobe_event_ids(f_text)
+                    t_grid = count_tobe_grids(f_text)
+                    tobe_stats[f_name] = {
+                        "buttons": t_btn,
+                        "events": len(impl_ev),
+                        "events_skipped": len(skip_ev),
+                        "grids": t_grid,
+                    }
+            elif tobe_target.is_file():
                 try:
-                    f_text = f.read_text(encoding="utf-8", errors="replace")
+                    f_text = tobe_target.read_text(encoding="utf-8", errors="replace")
+                    t_btn = len(re.findall(r"<Button\b", f_text))
+                    impl_ev, skip_ev = _tobe_event_ids(f_text)
+                    t_grid = count_tobe_grids(f_text)
+                    tobe_stats[tobe_target.stem] = {
+                        "buttons": t_btn,
+                        "events": len(impl_ev),
+                        "events_skipped": len(skip_ev),
+                        "grids": t_grid,
+                    }
                 except OSError:
-                    continue
-                f_name = f.stem
-                t_btn = len(re.findall(r"<Button\b", f_text))
-                impl_ev, skip_ev = _tobe_event_ids(f_text)
-                t_grid = count_tobe_grids(f_text)
-                tobe_stats[f_name] = {
-                    "buttons": t_btn,
-                    "events": len(impl_ev),
-                    "events_skipped": len(skip_ev),
-                    "grids": t_grid,
-                }
-        elif tobe_dir.is_file():
-            try:
-                f_text = tobe_dir.read_text(encoding="utf-8", errors="replace")
-                t_btn = len(re.findall(r"<Button\b", f_text))
-                impl_ev, skip_ev = _tobe_event_ids(f_text)
-                t_grid = count_tobe_grids(f_text)
-                tobe_stats[tobe_dir.stem] = {
-                    "buttons": t_btn,
-                    "events": len(impl_ev),
-                    "events_skipped": len(skip_ev),
-                    "grids": t_grid,
-                }
-            except OSError:
-                pass
+                    pass
 
     return {
         "screen": screen_file.stem,
@@ -274,24 +281,29 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     lines.append("|:---|---:|---:|---:|---:|")
 
     def calc_sum(names: list[str]) -> tuple[int, int, int]:
-        b = sum(as_is[n]["buttons"] for n in names)
-        e = sum(as_is[n]["events"] for n in names)
-        g = sum(as_is[n]["grids"] for n in names)
+        valid_names = [n for n in names if not (as_is[n].get("is_linked") and not as_is[n].get("same_domain", True))]
+        b = sum(as_is[n]["buttons"] for n in valid_names)
+        e = sum(as_is[n]["events"] for n in valid_names)
+        g = sum(as_is[n]["grids"] for n in valid_names)
         return b, e, g
 
     if group_done:
         b, e, g = calc_sum(group_done)
-        lines.append(f"| 이번 단계 (done) | {len(group_done)} | {b} | {e} | {g} |")
+        cnt = len([n for n in group_done if not (as_is[n].get("is_linked") and not as_is[n].get("same_domain", True))])
+        lines.append(f"| 이번 단계 (done) | {cnt} | {b} | {e} | {g} |")
 
     if group_later:
         b, e, g = calc_sum(group_later)
-        lines.append(f"| {later_label} | {len(group_later)} | {b} | {e} | {g} |")
+        cnt = len([n for n in group_later if not (as_is[n].get("is_linked") and not as_is[n].get("same_domain", True))])
+        lines.append(f"| {later_label} | {cnt} | {b} | {e} | {g} |")
 
     if group_remain:
         b, e, g = calc_sum(group_remain)
-        lines.append(f"| 미착수 (remain) | {len(group_remain)} | {b} | {e} | {g} |")
+        cnt = len([n for n in group_remain if not (as_is[n].get("is_linked") and not as_is[n].get("same_domain", True))])
+        lines.append(f"| 미착수 (remain) | {cnt} | {b} | {e} | {g} |")
 
+    valid_total = [n for n in all_cls_names if not (as_is[n].get("is_linked") and not as_is[n].get("same_domain", True))]
     tot_b, tot_e, tot_g = calc_sum(all_cls_names)
-    lines.append(f"| **전체 합계** | **{len(all_cls_names)}** | **{tot_b}** | **{tot_e}** | **{tot_g}** |")
+    lines.append(f"| **전체 합계** | **{len(valid_total)}** | **{tot_b}** | **{tot_e}** | **{tot_g}** |")
 
     return "\n".join(lines)
