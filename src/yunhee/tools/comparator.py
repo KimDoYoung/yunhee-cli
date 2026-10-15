@@ -8,6 +8,7 @@ from typing import Any
 import psycopg
 
 from yunhee import config
+from yunhee.tools.analysis.common import GRID_METHOD_NAME_PATTERN
 from yunhee.tools.api_client import request_api
 from yunhee.tools.as_is.events import (
     col_to_tobe_prop,
@@ -58,28 +59,44 @@ def _field_covered(expected_col: str, api_fields: set[str]) -> bool:
     cand_name = re.sub(r"Nm$", "Name", expected_col)
     if cand_nm in api_fields or cand_name in api_fields:
         return True
+    cand_addr = re.sub(r"Address$", "Addr", expected_col)
+    cand_address = re.sub(r"Addr$", "Address", expected_col)
+    if cand_addr in api_fields or cand_address in api_fields:
+        return True
     unprefixed = re.sub(r"^[a-z]{3,4}", "", expected_col)
     if unprefixed:
         unprefixed_camel = unprefixed[0].lower() + unprefixed[1:]
         cand_u_nm = re.sub(r"Name$", "Nm", unprefixed_camel)
         cand_u_name = re.sub(r"Nm$", "Name", unprefixed_camel)
-        if unprefixed_camel in api_fields or cand_u_nm in api_fields or cand_u_name in api_fields:
+        cand_u_addr = re.sub(r"Address$", "Addr", unprefixed_camel)
+        cand_u_address = re.sub(r"Addr$", "Address", unprefixed_camel)
+        if (
+            unprefixed_camel in api_fields
+            or cand_u_nm in api_fields
+            or cand_u_name in api_fields
+            or cand_u_addr in api_fields
+            or cand_u_address in api_fields
+        ):
             return True
     return False
 
 
-def find_screen_grid_cols(
+def find_screen_grid_info(
     sql_ref: str,
     src_root: Path | None = None,
     grid_class: str | None = None,
-    src_index: Path | None = None,
-) -> set[str]:
-    """AS-IS 화면 색인에서 해당 SQL을 사용하는 화면의 Grid 컬럼(TOBE 프로퍼티)을 찾는다."""
+    api_fields: set[str] | None = None,
+) -> dict[str, Any]:
     src_index_dir = (
-        src_index
-        or (Path(config.TOML_CONFIG.get("as_is", {}).get("src_index")) if config.TOML_CONFIG.get("as_is", {}).get("src_index") else None)
-        or find_as_is_dir("src")
-    )
+        Path(config.SRC_INDEX_DIR)
+        if hasattr(config, "SRC_INDEX_DIR") and config.SRC_INDEX_DIR and Path(config.SRC_INDEX_DIR).is_dir()
+        else None
+    ) or (
+        Path(config.TOML_CONFIG.get("as_is", {}).get("src_index"))
+        if config.TOML_CONFIG.get("as_is", {}).get("src_index")
+        else None
+    ) or find_as_is_dir("src")
+
     roots: list[Path] = []
     if src_root and src_root.is_dir():
         roots.append(src_root)
@@ -93,15 +110,55 @@ def find_screen_grid_cols(
 
     # grid_class가 직접 지정된 경우
     if grid_class:
+        if "#" in grid_class:
+            cls_name, target_meth = grid_class.split("#", 1)
+        elif "." in grid_class:
+            cls_name, target_meth = grid_class.split(".", 1)
+        else:
+            cls_name, target_meth = grid_class, None
+
         for sf in all_screens:
             try:
                 text = sf.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if sf.stem.lower() == grid_class.lower() or f"### {grid_class}" in text:
-                props = _extract_grid_props(text, sf.stem, roots, target_section=grid_class)
-                if props:
-                    return props
+            if sf.stem.lower() == cls_name.lower() or f"### {cls_name}" in text:
+                grids = _extract_all_grids(text, sf.stem, roots, target_section=cls_name)
+                if not grids:
+                    return {"cols": set(), "label": "", "not_found": True, "class_name": grid_class}
+                if target_meth:
+                    matched = next(
+                        (
+                            g
+                            for g in grids
+                            if g["method"].lower() == target_meth.lower()
+                            or g.get("var", "").lower() == target_meth.lower()
+                        ),
+                        None,
+                    )
+                    if matched:
+                        return {
+                            "cols": matched["cols"],
+                            "label": f"{cls_name}#{matched['method']}",
+                            "not_found": False,
+                        }
+                    return {"cols": set(), "label": "", "not_found": True, "class_name": grid_class}
+
+                if len(grids) == 1:
+                    chosen = grids[0]
+                else:
+                    if api_fields:
+                        chosen = max(grids, key=lambda g: len(g["cols"] & api_fields))
+                    else:
+                        chosen = grids[0]
+                return {
+                    "cols": chosen["cols"],
+                    "label": f"{cls_name}#{chosen['method']}",
+                    "not_found": False,
+                }
+
+        # grid_class를 지정했으나 찾지 못함 (Rule 4: fallback 금지)
+        return {"cols": set(), "label": "", "not_found": True, "class_name": grid_class}
 
     ns = sql_ref.split(".")[0]
     pfx_m = re.match(r"^([a-z]+\d*)", ns)
@@ -114,7 +171,6 @@ def find_screen_grid_cols(
         )
     )
 
-    # SQL을 부르는 서비스의 클래스 탐색
     calling_class = None
     matched_screen = None
     for sf in all_screens:
@@ -128,7 +184,6 @@ def find_screen_grid_cols(
         for line in text.splitlines():
             if sql_ref in line and "|" in line:
                 parts = [p.strip() for p in line.split("|")]
-                # | 서비스 | 호출 위치 | 서버 | SQL ID | 형태
                 if len(parts) >= 3:
                     m_call = re.search(r"\b([A-Z]\w+)(?::\d+|\.\w+)?\b", parts[2])
                     if m_call and m_call.group(1) not in ("ServiceRequest", "ServiceResult", "SqlSession"):
@@ -142,85 +197,144 @@ def find_screen_grid_cols(
         if calling_class:
             break
 
+    screens_to_try = []
     if calling_class and matched_screen:
-        try:
-            text = matched_screen.read_text(encoding="utf-8", errors="replace")
-            props = _extract_grid_props(text, matched_screen.stem, roots, target_section=calling_class)
-            if props:
-                return props
-        except OSError:
-            pass
-
+        screens_to_try.append((matched_screen, calling_class))
     if calling_class:
-        # 호출 클래스의 별도 화면 파일 탐색
         for sf in all_screens:
             if sf.stem.lower() == calling_class.lower():
-                try:
-                    props = _extract_grid_props(sf.read_text(encoding="utf-8", errors="replace"), sf.stem, roots)
-                    if props:
-                        return props
-                except OSError:
-                    pass
+                screens_to_try.append((sf, None))
+    if matched_screen and not screens_to_try:
+        screens_to_try.append((matched_screen, None))
 
-    # fallback: matched_screen에서 추출
-    if matched_screen:
+    for sf, target_sec in screens_to_try:
         try:
-            return _extract_grid_props(matched_screen.read_text(encoding="utf-8", errors="replace"), matched_screen.stem, roots)
+            t = sf.read_text(encoding="utf-8", errors="replace")
+            grids = _extract_all_grids(t, sf.stem, roots, target_section=target_sec)
+            if grids:
+                chosen = (
+                    max(grids, key=lambda g: len(g["cols"] & api_fields))
+                    if api_fields and len(grids) > 1
+                    else grids[0]
+                )
+                return {"cols": chosen["cols"], "label": f"{sf.stem}#{chosen['method']}", "not_found": False}
         except OSError:
             pass
 
-    return set()
+    return {"cols": set(), "label": "", "not_found": False}
 
 
-def _extract_grid_props(
+def find_screen_grid_cols(
+    sql_ref: str,
+    src_root: Path | None = None,
+    grid_class: str | None = None,
+) -> set[str]:
+    info = find_screen_grid_info(sql_ref, src_root=src_root, grid_class=grid_class)
+    return info.get("cols", set())
+
+
+def _extract_all_grids(
     text: str,
     stem: str,
-    roots: list[Path],
+    roots: list[Path] | None = None,
     target_section: str | None = None,
-) -> set[str]:
+) -> list[dict[str, Any]]:
+    if roots is None:
+        roots = []
     section_text = text
     if target_section:
         sec_m = re.search(rf"###\s+{re.escape(target_section)}\b.*?(?=\n###\s|\Z)", text, re.DOTALL)
         if sec_m:
             section_text = sec_m.group(0)
 
-    # 1) UI 그리드 목록
-    m = re.search(r'-\s+그리드[^\n]*\(buildGrid[^\n]*\):\n((?:\s+-\s+[^\n]+\n)+)', section_text)
-    grid_props = []
-    if m:
-        grid_props = [
+    grids: list[dict[str, Any]] = []
+
+    # 1) UI 그리드 목록: - 그리드 `var` (build*Grid*(), ...):
+    for m in re.finditer(
+        r"^-\s+그리드\s+`?([a-zA-Z0-9_]+)`?\s*\((.+)\)\s*:\s*\n((?:\s+-\s+[^\n]+\n)+)",
+        section_text,
+        re.MULTILINE,
+    ):
+        var_name = m.group(1)
+        parens = m.group(2)
+        body = m.group(3)
+        meth_m = re.search(GRID_METHOD_NAME_PATTERN, parens)
+        meth_name = meth_m.group(0) if meth_m else var_name
+        props = [
             re.search(r'^\s*-\s+([a-zA-Z0-9_]+)', line).group(1)
-            for line in m.group(1).strip().splitlines()
+            for line in body.strip().splitlines()
             if re.search(r'^\s*-\s+([a-zA-Z0-9_]+)', line)
         ]
+        if props:
+            grids.append({
+                "method": meth_name,
+                "var": var_name,
+                "props": props,
+            })
 
-    # 2) Grid Spec 코드 블록
-    if not grid_props:
-        m_spec = re.search(r'## Grid Spec.*?(const buildGrid\b.*?\];)', section_text, re.DOTALL)
-        if not m_spec:
-            m_spec = re.search(r'const buildGrid\b.*?\];', section_text, re.DOTALL)
-        if m_spec:
-            code = m_spec.group(0)
-            gb_props = re.findall(r'gb\.\w+\(["\'](\w+)["\']', code)
-            db_props = re.findall(r'//\s*(?:⚠DB없음\s+)?L\d+\s+([a-zA-Z0-9_]+)', code)
-            grid_props = gb_props or db_props
+    # 2) Grid Spec 코드 블록: const build*Grid* = () => [ ... ];
+    for m_spec in re.finditer(
+        rf'const\s+({GRID_METHOD_NAME_PATTERN})\s*=\s*\(\)\s*=>\s*\[(.*?)\];',
+        section_text,
+        re.DOTALL,
+    ):
+        meth_name = m_spec.group(1)
+        code = m_spec.group(2)
+        gb_props = re.findall(r'gb\.\w+\(["\'](\w+)["\']', code)
+        db_props = re.findall(r'//\s*(?:⚠DB없음\s+)?L\d+\s+([a-zA-Z0-9_]+)', code)
+        props = gb_props or db_props
+        if props and not any(g["method"] == meth_name for g in grids):
+            grids.append({
+                "method": meth_name,
+                "var": meth_name,
+                "props": props,
+            })
 
-    if not grid_props:
-        return set()
+    # 3) 단일 buildGrid fallback
+    if not grids:
+        m_single = re.search(
+            r"^-\s+그리드[^\n]*\((.+)\)\s*:\s*\n((?:\s+-\s+[^\n]+\n)+)",
+            section_text,
+            re.MULTILINE,
+        )
+        if m_single:
+            parens = m_single.group(1)
+            meth_m = re.search(GRID_METHOD_NAME_PATTERN, parens)
+            meth_name = meth_m.group(0) if meth_m else "buildGrid"
+            props = [
+                re.search(r'^\s*-\s+([a-zA-Z0-9_]+)', line).group(1)
+                for line in m_single.group(2).strip().splitlines()
+                if re.search(r'^\s*-\s+([a-zA-Z0-9_]+)', line)
+            ]
+            if props:
+                grids.append({"method": meth_name, "var": meth_name, "props": props})
+
+    if not grids:
+        return []
 
     mod_m = re.search(r"Grid<([A-Z]\w+Model)>|GridBuilder<([A-Z]\w+)>|\b([A-Z]\w*_\w*Model)\b", section_text)
-    model_name = next((g for g in mod_m.groups() if g), "") if mod_m else ""
-    if not model_name:
+    default_model_name = next((g for g in mod_m.groups() if g), "") if mod_m else ""
+    if not default_model_name:
         cls_base = target_section or stem
-        model_name = cls_base.replace("_Tab_", "_").replace("_TabPage_", "_").replace("_Page_", "_") + "Model"
+        default_model_name = cls_base.replace("_Tab_", "_").replace("_TabPage_", "_").replace("_Page_", "_") + "Model"
 
-    prop_to_col, _ns, _tbl, _aliases = find_mapper_for_model(model_name, roots)
-    tbl_pfx = (re.match(r"^([a-z]+\d*)_", _tbl).group(1) + "_") if (_tbl and re.match(r"^([a-z]+\d*)_", _tbl)) else ""
-    tobe_props = set()
-    for p in grid_props:
-        col = prop_to_col.get(p, "")
-        tobe_props.add(col_to_tobe_prop(col, tbl_pfx) if col else p)
-    return tobe_props
+    for g in grids:
+        m_spec_model = re.search(rf"{g['method']}[^;\n]*?([A-Z]\w+Model)|([A-Z]\w+Model)[^;\n]*?{g['method']}", section_text)
+        model_name = (
+            (m_spec_model.group(1) or m_spec_model.group(2))
+            if m_spec_model
+            else default_model_name
+        )
+        prop_to_col, _ns, _tbl, _aliases = find_mapper_for_model(model_name, roots)
+        tbl_pfx = (re.match(r"^([a-z]+\d*)_", _tbl).group(1) + "_") if (_tbl and re.match(r"^([a-z]+\d*)_", _tbl)) else ""
+        tobe_props = set()
+        for p in g["props"]:
+            col = prop_to_col.get(p, "")
+            tobe_props.add(col_to_tobe_prop(col, tbl_pfx) if col else p)
+        g["cols"] = tobe_props
+
+    return grids
+
 
 
 def compare_api_sql(
@@ -335,16 +449,38 @@ def compare_api_sql(
     tbl_pfx_m = re.match(r"^([a-z]+\d*)_", ns)
     tbl_prefix = (tbl_pfx_m.group(1) + "_") if tbl_pfx_m else ""
 
-    # Grid Spec 컬럼 우선 매핑, 없으면 SQL 컬럼 사용
-    grid_cols = find_screen_grid_cols(sql_ref, src_root, grid_class=grid)
-    if grid_cols:
-        expected_fields = grid_cols
-    else:
-        expected_fields = {col_to_tobe_prop(c, tbl_prefix) for c in sql_cols}
-
     # 3. 비교 판정
     rows_match = (api_row_count == sql_row_count)
     rows_mark = "✅" if rows_match else "❌"
+
+    # Grid Spec 컬럼 우선 매핑, 없으면 SQL 컬럼 사용
+    grid_info = find_screen_grid_info(sql_ref, src_root, grid_class=grid, api_fields=api_fields)
+    if grid_info.get("not_found"):
+        summary_line = f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}  ⚠ 그리드 못 찾음: {grid_info['class_name']}"
+        return ToolResult(
+            ok=True,
+            data={
+                "summary": summary_line,
+                "api_rows": api_row_count,
+                "sql_rows": sql_row_count,
+                "rows_match": rows_match,
+                "cols_covered": False,
+                "api_fields": sorted(api_fields),
+                "expected_fields": [],
+                "missing_fields": [],
+                "rendered_sql": sql,
+                "trace_id": (api_res.data or {}).get("trace_id"),
+            },
+        )
+
+    grid_cols = grid_info.get("cols")
+    grid_label = grid_info.get("label", "")
+    if grid_cols:
+        expected_fields = grid_cols
+        cols_desc = f" ({grid_label}, {len(expected_fields)}컬럼)"
+    else:
+        expected_fields = {col_to_tobe_prop(c, tbl_prefix) for c in sql_cols}
+        cols_desc = ""
 
     missing_fields = {f for f in expected_fields if not _field_covered(f, api_fields)}
     cols_covered = (len(missing_fields) == 0)
@@ -352,7 +488,7 @@ def compare_api_sql(
 
     summary_parts = [
         f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}",
-        f"fields ⊇ grid cols {cols_mark}",
+        f"fields ⊇ grid cols {cols_mark}{cols_desc}",
     ]
     if not cols_covered and api_fields:
         summary_parts.append(f"(missing: {', '.join(sorted(missing_fields))})")

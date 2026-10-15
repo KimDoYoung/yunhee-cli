@@ -892,9 +892,25 @@ def sql_check_cmd(
         Path | None,
         typer.Argument(help="AS-IS 소스 루트 (미지정 시 YUNHEE_ASIS_SRC_DIR)"),
     ] = None,
+    old: Annotated[
+        Path | None,
+        typer.Option("--old", help="비교할 이전 AS-IS 소스 루트 (지정 시 SQL Drift 검증 모드로 동작)"),
+    ] = None,
+    new: Annotated[
+        Path | None,
+        typer.Option("--new", help="비교할 새 AS-IS 소스 루트 (미지정 시 src_root 또는 YUNHEE_ASIS_SRC_DIR)"),
+    ] = None,
     tobe: Annotated[
         Path | None,
         typer.Option("--tobe", help="TOBE 매퍼 디렉터리 경로 (예: backend/src/main/resources/mapper)"),
+    ] = None,
+    only_tobe: Annotated[
+        bool,
+        typer.Option("--only-tobe", help="TOBE 매퍼가 참조하는 SQL의 변경점만 필터링"),
+    ] = False,
+    output: Annotated[
+        str | None,
+        typer.Option("--output", "-o", help="출력 형식 (md, json)"),
     ] = None,
     db: Annotated[
         str,
@@ -902,15 +918,41 @@ def sql_check_cmd(
     ] = "asseterpdb",
     target: Annotated[
         Path | None,
-        typer.Option("--target", "-t", help="출력 파일 경로 (기본: {repo_root}/docs/as-is/sql-check.md)"),
+        typer.Option("--target", "-t", help="출력 파일 경로 (기본: {repo_root}/docs/as-is/sql-check.md, --old 시 미지정하면 화면에만 출력)"),
     ] = None,
     src_index: Annotated[
         Path | None,
         typer.Option("--src-index", help="src-index 출력 폴더 (기본: docs/as-is/src 탐색)"),
     ] = None,
 ):
-    """MyBatis 매퍼 SQL을 대상 DB에서 EXPLAIN으로 정합성(스키마/환경 차이) 검증"""
-    from yunhee.tools.as_is.sql_checker import check_tobe_sql
+    """MyBatis 매퍼 SQL 정합성 검증 (EXPLAIN 검증 및 --old 지정 시 SQL Drift 검증)"""
+    import json
+
+    from yunhee.tools.as_is.sql_checker import check_sql_drift, check_tobe_sql
+
+    if old:
+        if not old.is_dir():
+            typer.secho(f"[ERROR] 이전 AS-IS 디렉터리를 찾을 수 없습니다: {old}", fg=typer.colors.RED)
+            raise typer.Exit(1)
+        res = check_sql_drift(
+            old_root=old,
+            new_root=new or src_root or ASIS_SRC_DIR,
+            tobe_dir=tobe,
+            only_tobe=only_tobe,
+            fmt=output or "md",
+        )
+        if not res.ok and not res.data:
+            typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED)
+            raise typer.Exit(1)
+        summary_md = res.data.get("summary_text", "")
+        out_content = json.dumps(res.data, ensure_ascii=False, indent=2) if output == "json" else summary_md
+        typer.echo(out_content)
+
+        if target:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(out_content, encoding="utf-8")
+            typer.secho(f"✓ 결과 저장: {target}", fg=typer.colors.GREEN)
+        return
 
     if tobe:
         if not tobe.is_dir():
@@ -1117,6 +1159,10 @@ def analysis_cmd(
         str | None,
         typer.Option("--class", help="화면 하위 클래스 필터링"),
     ] = None,
+    method: Annotated[
+        str | None,
+        typer.Option("--method", "-m", help="특정 메서드 필터링 (grid 등)"),
+    ] = None,
     section: Annotated[
         str | None,
         typer.Option("--section", help="절 필터링 (services, tables, ui, events, methods, grid, buttons, layout)"),
@@ -1240,6 +1286,7 @@ def analysis_cmd(
         "db": db,
         "sql": sql_id,
         "class": cls_name,
+        "method": method,
         "section": section,
         "list": screen_list,
         "done": done,

@@ -85,3 +85,177 @@ def test_compare_api_sql_mock(monkeypatch):
     )
     assert res.ok
     assert "API rows=2" in res.data["summary"]
+
+
+def test_027_compare_multi_grid_and_screen_matching(monkeypatch):
+    """027-3: compare 다중 그리드 분리, --grid Screen#method 지정, 비존재 그리드 fallback 방지 검증."""
+    # 1. find_screen_grid_info 검증 (Sys05_Tab_PersonRole은 buildUserGrid와 buildRoleGrid 두 개 보유)
+    # (1) #method 직접 지정: buildRoleGrid
+    info_role = comparator.find_screen_grid_info(
+        "dummy.sql",
+        grid_class="Sys05_Tab_PersonRole#buildRoleGrid",
+    )
+    assert not info_role["not_found"]
+    assert info_role["label"] == "Sys05_Tab_PersonRole#buildRoleGrid"
+    # buildRoleGrid 4컬럼: roleName, userRoleYn, seq, note (또는 매핑된 이름)
+    assert len(info_role["cols"]) == 4
+    assert any("role" in c.lower() for c in info_role["cols"])
+    assert not any("emp" in c.lower() for c in info_role["cols"])
+
+    # (2) #method 직접 지정: buildUserGrid
+    info_user = comparator.find_screen_grid_info(
+        "dummy.sql",
+        grid_class="Sys05_Tab_PersonRole#buildUserGrid",
+    )
+    assert not info_user["not_found"]
+    assert info_user["label"] == "Sys05_Tab_PersonRole#buildUserGrid"
+    assert len(info_user["cols"]) >= 8
+    assert any("emp" in c.lower() for c in info_user["cols"])
+
+    # (3) 클래스만 지정 시 api_fields와 가장 많이 겹치는 그리드 자동 선택
+    info_auto_role = comparator.find_screen_grid_info(
+        "dummy.sql",
+        grid_class="Sys05_Tab_PersonRole",
+        api_fields={"roleName", "seq", "note"},
+    )
+    assert info_auto_role["label"] == "Sys05_Tab_PersonRole#buildRoleGrid"
+
+    info_auto_user = comparator.find_screen_grid_info(
+        "dummy.sql",
+        grid_class="Sys05_Tab_PersonRole",
+        api_fields={"empKorName", "orgKorName", "empNo"},
+    )
+    assert info_auto_user["label"] == "Sys05_Tab_PersonRole#buildUserGrid"
+
+    # (4) 존재하지 않는 그리드 지정 시 fallback 방지 및 not_found 플래그
+    info_none = comparator.find_screen_grid_info(
+        "dummy.sql",
+        grid_class="NonExistent_Tab_Screen",
+    )
+    assert info_none["not_found"]
+    assert info_none["cols"] == set()
+
+    # 2. compare_api_sql 실행 시 요약문 출력 검증
+    dummy_api_res = {
+        "text": json.dumps({
+            "success": True,
+            "data": [
+                {"roleName": "Admin", "seq": "010", "note": "관리자", "userRoleYn": "Y"},
+            ],
+        })
+    }
+    from yunhee.tools.base import ToolResult
+    monkeypatch.setattr(
+        comparator,
+        "request_api",
+        lambda **kwargs: ToolResult(ok=True, data=dummy_api_res),
+    )
+
+    # (1) 비존재 그리드 지정 시: fallback하지 않고 ⚠ 그리드 못 찾음 경고 출력
+    res_none = comparator.compare_api_sql(
+        method="GET",
+        path="/api/v1/sys/roles",
+        sql_ref="sys04_role.selectByName",
+        sql_params={"roleName": "%", "companyId": "0"},
+        grid="NonExistent_Tab_Screen",
+    )
+    assert res_none.ok
+    assert "⚠ 그리드 못 찾음: NonExistent_Tab_Screen" in res_none.data["summary"]
+
+    # (2) 정상 지정 시: 요약문에 그리드명 및 컬럼수 표기 (Sys05_Tab_PersonRole#buildRoleGrid, 4컬럼)
+    res_role = comparator.compare_api_sql(
+        method="GET",
+        path="/api/v1/sys/roles",
+        sql_ref="sys04_role.selectByName",
+        sql_params={"roleName": "%", "companyId": "0"},
+        grid="Sys05_Tab_PersonRole#buildRoleGrid",
+    )
+    assert res_role.ok
+    assert "(Sys05_Tab_PersonRole#buildRoleGrid, 4컬럼)" in res_role.data["summary"]
+
+
+def test_028_compare_build_grid_xxx_and_addr_mapping():
+    """028-1, 028-5: buildGridXxx 패턴 인식, 변수명 지정(#gridRole), Address ↔ Addr 매핑 검증."""
+    # 1. Address ↔ Addr 매핑 검증
+    assert comparator._field_covered("emailAddress", {"emailAddr"})
+    assert comparator._field_covered("emailAddr", {"emailAddress"})
+    assert comparator._field_covered("zipAddress", {"zipAddr"})
+    assert comparator._field_covered("zipAddr", {"zipAddress"})
+    assert not comparator._field_covered("homeAddress", {"workAddr"})
+
+    # 2. Sys04_Tab_RoleAdmin의 buildGridRole / buildGridCompany 인식 검증
+    # (1) #buildGridRole 직접 지정
+    info_role = comparator.find_screen_grid_info(
+        "dummy.sql",
+        grid_class="Sys04_Tab_RoleAdmin#buildGridRole",
+    )
+    assert not info_role["not_found"]
+    assert info_role["label"] == "Sys04_Tab_RoleAdmin#buildGridRole"
+    assert "roleName" in info_role["cols"]
+    assert "seq" in info_role["cols"]
+    assert "defaultRole" in info_role["cols"]
+
+    # (2) 필드/변수명(#gridRole)으로 지정해도 메서드명 라벨로 바인딩
+    info_by_var = comparator.find_screen_grid_info(
+        "dummy.sql",
+        grid_class="Sys04_Tab_RoleAdmin#gridRole",
+    )
+    assert not info_by_var["not_found"]
+    assert info_by_var["label"] == "Sys04_Tab_RoleAdmin#buildGridRole"
+
+    # (3) 클래스만 지정 시 api_fields에 따라 최적 그리드 자동 선택
+    info_auto_role = comparator.find_screen_grid_info(
+        "dummy.sql",
+        grid_class="Sys04_Tab_RoleAdmin",
+        api_fields={"roleName", "seq", "note"},
+    )
+    assert info_auto_role["label"] == "Sys04_Tab_RoleAdmin#buildGridRole"
+
+    info_auto_company = comparator.find_screen_grid_info(
+        "dummy.sql",
+        grid_class="Sys04_Tab_RoleAdmin",
+        api_fields={"locationName"},
+    )
+    assert info_auto_company["label"] == "Sys04_Tab_RoleAdmin#buildGridCompany"
+
+    # 3. buildGrid, buildXxxGrid, buildGridXxx 3개가 한 화면에 섞인 경우 3개 그리드/라벨 추출
+    # (1) 불릿 형식
+    sample_bullet = """
+- 그리드 `gridBase` (buildGrid()):
+  - col1 100 "C1" Text
+- 그리드 `gridUser` (buildUserGrid()):
+  - col2 100 "C2" Text
+- 그리드 `gridRole` (buildGridRole(), 체크박스(다중)):
+  - col3 100 "C3" Text
+"""
+    grids_bullet = comparator._extract_all_grids(sample_bullet, "MixedScreen")
+    assert len(grids_bullet) == 3
+    assert [g["method"] for g in grids_bullet] == [
+        "buildGrid",
+        "buildUserGrid",
+        "buildGridRole",
+    ]
+
+    # (2) Grid Spec 형식
+    sample_spec = """
+## Grid Spec
+
+```ts
+const buildGrid = () => [
+  gb.text('col1', 100, 'C1'),
+];
+const buildUserGrid = () => [
+  gb.text('col2', 100, 'C2'),
+];
+const buildGridRole = () => [
+  gb.text('col3', 100, 'C3'),
+];
+```
+"""
+    grids_spec = comparator._extract_all_grids(sample_spec, "MixedSpec")
+    assert len(grids_spec) == 3
+    assert [g["method"] for g in grids_spec] == [
+        "buildGrid",
+        "buildUserGrid",
+        "buildGridRole",
+    ]

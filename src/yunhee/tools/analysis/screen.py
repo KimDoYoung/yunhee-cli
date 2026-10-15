@@ -3,7 +3,7 @@
 import re
 from typing import Any
 
-from yunhee.tools.analysis.common import resolve_as_is_paths
+from yunhee.tools.analysis.common import count_as_is_grids, resolve_as_is_paths
 
 NAME = "screen"
 DESCRIPTION = "색인 화면 파일에서 필요한 클래스 및 절(section) 추출 (연결 컴포넌트 포함)"
@@ -62,7 +62,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         lines_cnt = c_text.count("\n") + 1
         btn_cnt = len(re.findall(r"-\s*<Button\b|\d+\.\s+<Button\b", c_text))
         ev_cnt = len(re.findall(r"\[E\d+\]", c_text))
-        grid_cnt = 1 if re.search(r"const buildGrid\b|그리드[^\n]*\(buildGrid", c_text) else 0
+        grid_cnt, grid_warn = count_as_is_grids(c_text)
         class_stats.append({
             "name": c["name"],
             "raw_name": c["name"],
@@ -70,6 +70,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             "buttons": btn_cnt,
             "events": ev_cnt,
             "grids": grid_cnt,
+            "grid_warn": grid_warn,
             "text": c_text,
             "is_linked": False,
             "same_domain": True,
@@ -130,7 +131,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         lines_cnt = comp_text.count("\n") + 1
         btn_cnt = len(re.findall(r"-\s*<Button\b|\d+\.\s+<Button\b", comp_text))
         ev_cnt = len(re.findall(r"\[E\d+\]", comp_text))
-        grid_cnt = 1 if re.search(r"const buildGrid\b|그리드[^\n]*\(buildGrid", comp_text) else 0
+        grid_cnt, grid_warn = count_as_is_grids(comp_text)
 
         disp_name = f"{comp_name} (연결)" if is_same_domain else f"{comp_name} (연결·다른 도메인)"
         class_stats.append({
@@ -140,6 +141,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             "buttons": btn_cnt,
             "events": ev_cnt,
             "grids": grid_cnt,
+            "grid_warn": grid_warn,
             "text": comp_text,
             "is_linked": True,
             "same_domain": is_same_domain,
@@ -184,7 +186,8 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         tot_evs = sum(s["events"] for s in display_stats if include_in_total(s))
         tot_grids = sum(s["grids"] for s in display_stats if include_in_total(s))
         for s in display_stats:
-            lines.append(f"| {s['name']} | {s['lines']} | {s['buttons']} | {s['events']} | {s['grids']} |")
+            g_disp = f"{s['grids']}⚠" if s.get("grid_warn") else f"{s['grids']}"
+            lines.append(f"| {s['name']} | {s['lines']} | {s['buttons']} | {s['events']} | {g_disp} |")
         lines.append(f"| **합계** | **{tot_lines}** | **{tot_btns}** | **{tot_evs}** | **{tot_grids}** |")
         return "\n".join(lines)
 

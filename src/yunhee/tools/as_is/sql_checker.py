@@ -9,8 +9,11 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from yunhee.config import LOCAL_DB, SCHEMA_ENV
+from yunhee.tools.as_is.sql_drift import check_sql_drift
 from yunhee.tools.as_is.src_indexer import find_app
 from yunhee.tools.base import ToolResult
+
+__all__ = ["check_sql", "check_sql_drift", "check_tobe_sql"]
 
 ENV_ERROR_RE = re.compile(r'collation "[^"]+" for encoding "[^"]+" does not exist', re.IGNORECASE)
 SCHEMA_ERROR_RE = re.compile(

@@ -822,18 +822,21 @@ def class_sql_ids(text: str, roots: list[Path]) -> list[str]:
     return list(dict.fromkeys(sids))
 
 
-_PROPERTIES_PATH_CACHE: dict[str, dict[str, str]] = {}
-_PROPERTIES_FILE_MAP: dict[str, list[Path]] | None = None
+_PROPERTIES_PATH_CACHE: dict[tuple[str, tuple[str, ...]], dict[str, str]] = {}
+_PROPERTIES_FILE_MAP: dict[tuple[str, ...], dict[str, list[Path]]] = {}
 _RESULT_MAP_COLS_CACHE: dict[tuple[str, str], dict[str, str]] = {}
-_MAPPER_XMLS_LIST: list[tuple[Path, str]] | None = None
-_MAPPER_BY_NS: dict[str, list[tuple[Path, str]]] | None = None
+_MAPPER_XMLS_CACHE: dict[tuple[str, ...], tuple[list[tuple[Path, str]], dict[str, list[tuple[Path, str]]]]] = {}
 _ALL_DBML_PARSED_TABLES: dict[str, set[str]] | None = None
 
 
+def _roots_key(roots: list[Path]) -> tuple[str, ...]:
+    return tuple(str(r) for r in roots if r and r.is_dir())
+
+
 def _get_properties_files(roots: list[Path]) -> dict[str, list[Path]]:
-    global _PROPERTIES_FILE_MAP
-    if _PROPERTIES_FILE_MAP is not None:
-        return _PROPERTIES_FILE_MAP
+    key = _roots_key(roots)
+    if key in _PROPERTIES_FILE_MAP:
+        return _PROPERTIES_FILE_MAP[key]
     p_map: dict[str, list[Path]] = {}
     for root in roots:
         if not root or not root.is_dir():
@@ -842,7 +845,7 @@ def _get_properties_files(roots: list[Path]) -> dict[str, list[Path]]:
             if "target" in p_file.parts:
                 continue
             p_map.setdefault(p_file.name.lower(), []).append(p_file)
-    _PROPERTIES_FILE_MAP = p_map
+    _PROPERTIES_FILE_MAP[key] = p_map
     return p_map
 
 
@@ -850,8 +853,9 @@ def _parse_properties_paths(roots: list[Path], model_name: str) -> dict[str, str
     """{model_name}Properties.java 파일에서 @Path("...") 매핑을 파싱한다."""
     if not model_name:
         return {}
-    if model_name in _PROPERTIES_PATH_CACHE:
-        return _PROPERTIES_PATH_CACHE[model_name]
+    cache_key = (model_name, _roots_key(roots))
+    if cache_key in _PROPERTIES_PATH_CACHE:
+        return _PROPERTIES_PATH_CACHE[cache_key]
 
     cand_names = [f"{model_name.lower()}properties.java"]
     if model_name.endswith("Model"):
@@ -879,17 +883,17 @@ def _parse_properties_paths(roots: list[Path], model_name: str) -> dict[str, str
                         path_map[m_meth.group(1)] = path_val
                         break
         if path_map:
-            _PROPERTIES_PATH_CACHE[model_name] = path_map
+            _PROPERTIES_PATH_CACHE[cache_key] = path_map
             return path_map
 
-    _PROPERTIES_PATH_CACHE[model_name] = {}
+    _PROPERTIES_PATH_CACHE[cache_key] = {}
     return {}
 
 
 def _get_mapper_xmls(roots: list[Path]) -> tuple[list[tuple[Path, str]], dict[str, list[tuple[Path, str]]]]:
-    global _MAPPER_XMLS_LIST, _MAPPER_BY_NS
-    if _MAPPER_XMLS_LIST is not None and _MAPPER_BY_NS is not None:
-        return _MAPPER_XMLS_LIST, _MAPPER_BY_NS
+    key = _roots_key(roots)
+    if key in _MAPPER_XMLS_CACHE:
+        return _MAPPER_XMLS_CACHE[key]
 
     xml_list: list[tuple[Path, str]] = []
     by_ns: dict[str, list[tuple[Path, str]]] = {}
@@ -913,9 +917,9 @@ def _get_mapper_xmls(roots: list[Path]) -> tuple[list[tuple[Path, str]], dict[st
                 by_ns.setdefault(ns_m.group(1).lower(), []).append(entry)
             by_ns.setdefault(xml_file.stem.lower(), []).append(entry)
 
-    _MAPPER_XMLS_LIST = xml_list
-    _MAPPER_BY_NS = by_ns
-    return xml_list, by_ns
+    res = (xml_list, by_ns)
+    _MAPPER_XMLS_CACHE[key] = res
+    return res
 
 
 def _find_result_map_cols(roots: list[Path], ns: str, rm_id: str, current_xml: str) -> dict[str, str]:
@@ -957,8 +961,9 @@ def find_mapper_for_model(model_name: str, roots: list[Path]) -> tuple[dict[str,
     """AS-IS MyBatis 매퍼 XML을 찾아 model의 resultMap 속성→컬럼 매핑 및 select 별칭 목록을 반환한다."""
     if not model_name:
         return {}, "", "", {}
-    if model_name in _MAPPER_CACHE:
-        return _MAPPER_CACHE[model_name]
+    cache_key = (model_name, _roots_key(roots))
+    if cache_key in _MAPPER_CACHE:
+        return _MAPPER_CACHE[cache_key]
 
     mapper_list, _ = _get_mapper_xmls(roots)
     for _xml_file, xml_text in mapper_list:
@@ -1008,10 +1013,10 @@ def find_mapper_for_model(model_name: str, roots: list[Path]) -> tuple[dict[str,
         _ALIAS_ALL_CACHE[model_name] = extract_select_aliases_all(xml_text)
         alias_map = extract_select_aliases(xml_text)
         res = (prop_to_col, ns, tbl, alias_map)
-        _MAPPER_CACHE[model_name] = res
+        _MAPPER_CACHE[cache_key] = res
         return res
 
-    _MAPPER_CACHE[model_name] = ({}, "", "", {})
+    _MAPPER_CACHE[cache_key] = ({}, "", "", {})
     return {}, "", "", {}
 
 

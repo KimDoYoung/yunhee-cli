@@ -412,3 +412,337 @@ def test_parse_update_data_model_puts(tmp_path: Path):
     assert first["puts"] == [("orgCd", "'10000'", 5)]
     # map.clear() 이후 값만
     assert [(k, v) for k, v, _ in second["puts"]] == [("companyId", None), ("useYn", "'true'")]
+
+
+def test_027_sql_drift_detection(tmp_path: Path):
+    """027-4: SQL Drift 감지 및 TOBE 매퍼 영향 분석 검증."""
+    from yunhee.tools.as_is.sql_drift import check_sql_drift, normalize_sql_for_drift
+
+    # 1. normalize_sql_for_drift 검증
+    raw_sql = """
+    <!-- XML 주석 -->
+    SELECT
+        a, b, /* 인라인 블록 주석 */
+        -- 줄 주석
+        c
+    FROM my_table
+    WHERE 1=1
+    """
+    norm = normalize_sql_for_drift(raw_sql)
+    assert norm == "select a, b, c from my_table where 1=1"
+
+    # 2. check_sql_drift 구/신 AS-IS 및 TOBE 매퍼 검증
+    old_root = tmp_path / "old_asis"
+    new_root = tmp_path / "new_asis"
+    tobe_root = tmp_path / "tobe_mapper"
+
+    for r in (old_root, new_root, tobe_root):
+        r.mkdir(parents=True)
+
+    # 구 AS-IS: selectOne, selectTwo
+    (old_root / "test01.xml").write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<mapper namespace="test01">
+    <select id="selectOne">
+        SELECT col_a, col_b FROM my_tbl
+    </select>
+    <select id="selectTwo">
+        SELECT col_c FROM my_tbl
+    </select>
+    <select id="selectRemoved">
+        SELECT col_del FROM my_tbl
+    </select>
+</mapper>
+""", encoding="utf-8")
+
+    # 신 AS-IS: selectOne(변경), selectTwo(동일), selectThree(추가), selectRemoved(삭제)
+    (new_root / "test01.xml").write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<mapper namespace="test01">
+    <select id="selectOne">
+        SELECT col_a, col_b, col_d FROM my_tbl
+    </select>
+    <select id="selectTwo">
+        SELECT col_c FROM my_tbl
+    </select>
+    <select id="selectThree">
+        SELECT col_e FROM my_tbl
+    </select>
+</mapper>
+""", encoding="utf-8")
+
+    # TOBE 매퍼: test01.xml
+    (tobe_root / "test01.xml").write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<!-- AS-IS server/test/mapper/test01.xml selectOne(L10) · selectTwo(L20) -->
+<mapper namespace="com.example.mapper.Test01Mapper">
+    <!-- AS-IS test01.selectOne -->
+    <select id="selectOne">
+        SELECT col_a, col_b, col_d FROM my_tbl
+    </select>
+    <!-- AS-IS test01.selectTwo -->
+    <select id="selectTwo">
+        SELECT col_c FROM my_tbl
+    </select>
+</mapper>
+""", encoding="utf-8")
+
+    res = check_sql_drift(
+        old_root=old_root,
+        new_root=new_root,
+        tobe_dir=tobe_root,
+    )
+
+    assert res.ok is True
+    summary = res.data["summary"]
+    assert summary["same"] == 1
+    assert summary["changed"] == 1
+    assert summary["added"] == 1
+    assert summary["removed"] == 1
+    assert summary["tobe_affected"] == 1
+
+    changed = res.data["changed"]
+    assert len(changed) == 1
+    assert changed[0]["key"] == "test01.selectOne"
+    assert "col_d" in changed[0]["diff"]
+
+    tobe_affected = res.data["tobe_affected"]
+    # Test01Mapper.selectOne 은 바뀜 상태여야 함
+    s1_aff = next(t for t in tobe_affected if "selectOne" in t["tobe_key"])
+    assert s1_aff["is_changed"] is True
+    assert any("test01.selectOne (바뀜)" in s for s in s1_aff["as_is_refs"])
+
+    # 마크다운 렌더링 확인
+    md = res.data["summary_text"]
+    assert "### SQL Drift 검증 결과" in md
+    assert "동일: 1개, 바뀜: 1개, 신규: 1개, 삭제: 1개" in md
+    assert "Test01Mapper.selectOne" in md
+
+
+def test_028_sql_drift_noise_and_reflection(tmp_path: Path):
+    """028-2, 028-3, 028-4: 머리 주석 경로 무시, 반영 표시 주석, 대소문자 무시, diff 토큰화 검증."""
+    from yunhee.tools.as_is.sql_drift import (
+        check_sql_drift,
+        get_diff_summary,
+        normalize_sql_for_drift,
+    )
+
+    # 1. 028-4 정규화 대소문자 검증: 문자열 리터럴/파라미터 밖은 무시, 안은 보존
+    sql_upper = "SELECT col_a FROM my_tbl WHERE flag = 'Y' AND id = #{myId}"
+    sql_lower = "select COL_A from MY_TBL where flag = 'Y' and id = #{myId}"
+    assert normalize_sql_for_drift(sql_upper) == normalize_sql_for_drift(sql_lower)
+
+    # 리터럴 안이 다르면 다름
+    sql_lit_diff = "select col_a from my_tbl where flag = 'y' and id = #{myId}"
+    assert normalize_sql_for_drift(sql_upper) != normalize_sql_for_drift(sql_lit_diff)
+
+    # 파라미터 안이 다르면 다름
+    sql_param_diff = "select col_a from my_tbl where flag = 'Y' and id = #{myid}"
+    assert normalize_sql_for_drift(sql_upper) != normalize_sql_for_drift(sql_param_diff)
+
+    # 2. 028-4 diff 토큰화: 'false', #{companyId}, != 등이 분리되지 않음
+    diff_s = get_diff_summary("where use_yn = 'false' and id = #{companyId} and a != b",
+                              "where use_yn = 'true' and id = #{newCompanyId} and a == b")
+    assert "- 'false' / + 'true'" in diff_s
+    assert "' false '" not in diff_s
+    assert "- #{companyId} / + #{newCompanyId}" in diff_s
+    assert "# {" not in diff_s
+    assert "- != / + ==" in diff_s
+
+    # 3. 028-2, 028-3: 머리 주석 경로 첫 단어(server) 무시 및 (IDMS-IC) 반영 표시 검증
+    old_root = tmp_path / "Asset-ERP"
+    new_root = tmp_path / "IDMS-IC"
+    tobe_root = tmp_path / "tobe"
+    for r in (old_root, new_root, tobe_root):
+        r.mkdir(parents=True)
+
+    # 구 AS-IS
+    (old_root / "emp00.xml").write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<mapper namespace="emp00">
+    <select id="selectByText">
+        SELECT old_col FROM emp00
+    </select>
+    <select id="selectById">
+        SELECT id FROM emp00
+    </select>
+</mapper>
+""", encoding="utf-8")
+
+    # 신 AS-IS (둘 다 변경됨)
+    (new_root / "emp00.xml").write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<mapper namespace="emp00">
+    <select id="selectByText">
+        SELECT new_col FROM emp00
+    </select>
+    <select id="selectById">
+        SELECT new_id FROM emp00
+    </select>
+</mapper>
+""", encoding="utf-8")
+
+    # TOBE 매퍼:
+    # - 머리 주석에 server/emp/mapper/... 경로 포함 (server가 statement로 오인되면 안 됨)
+    # - searchTransInfos는 (IDMS-IC) 반영 표시됨
+    # - selectById는 반영 표시 없음
+    (tobe_root / "EmpMapper.xml").write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<!--
+AS-IS server/emp/mapper/emp00.xml selectByText(L10) · selectById(L20)
++ common.emp00(Common.xml L100).
+-->
+<mapper namespace="com.example.mapper.EmpMapper">
+    <!-- AS-IS selectByText L10 (IDMS-IC) -->
+    <select id="searchTransInfos">
+        SELECT new_col FROM emp00
+    </select>
+    <!-- AS-IS selectById L20 -->
+    <select id="selectById">
+        SELECT new_id FROM emp00
+    </select>
+</mapper>
+""", encoding="utf-8")
+
+    res = check_sql_drift(
+        old_root=old_root,
+        new_root=new_root,
+        tobe_dir=tobe_root,
+        only_tobe=True,
+    )
+
+    assert res.ok is True
+    # 028-2: server (미존재) 가 없어야 함
+    assert "server (미존재)" not in res.data["summary_text"]
+    assert "emp00.server" not in res.data["summary_text"]
+
+    # 028-3: (IDMS-IC)가 달린 searchTransInfos는 바뀐 영향 목록에서 제외되고 반영 표시됨에 존재
+    md = res.data["summary_text"]
+    assert "EmpMapper.selectById" in md
+    assert "EmpMapper.searchTransInfos" not in md.split("#### 새 원본 반영 표시됨")[0]
+    assert "#### 새 원본 반영 표시됨 (1개)" in md
+    assert "- `EmpMapper.searchTransInfos`" in md
+    assert res.data["summary"]["tobe_affected"] == 1
+    assert res.data["summary"]["tobe_reflected"] == 1
+
+
+def test_029_sql_drift_improvements(tmp_path):
+    """029-1, 029-2, 029-3: 주석 경계 분리, XML 태그 OGNL 대소문자 보존 및 diff 원문 대소문자, diff 요약 길이 제한 검증."""
+    from yunhee.tools.as_is.sql_drift import (
+        check_sql_drift,
+        get_diff_details,
+        get_diff_summary,
+        normalize_sql_for_drift,
+    )
+
+    # 1. 029-2: 정규화 및 diff 원문 대소문자 검증
+    # (1) SQL 키워드 대소문자만 다름 -> 같음
+    sql1 = "SELECT colA FROM tblA WHERE flag = 'Y'"
+    sql2 = "select colA from tblA where flag = 'Y'"
+    assert normalize_sql_for_drift(sql1) == normalize_sql_for_drift(sql2)
+
+    # (2) test="isA == true" vs test="isa == true" -> 바뀜
+    sql_tag1 = '<choose><when test="isA == true">SELECT 1</when></choose>'
+    sql_tag2 = '<choose><when test="isa == true">SELECT 1</when></choose>'
+    assert normalize_sql_for_drift(sql_tag1) != normalize_sql_for_drift(sql_tag2)
+
+    # (3) diff 출력 토큰이 원문 대소문자 유지
+    old_code = '<choose><when test="extrAddTitleYn == true">SELECT id FROM emp</when></choose>'
+    new_code = '<choose><when test="extrAddTitleYn == true">SELECT id FROM emp AND COALESCE(title, \'false\') = \'true\'</when></choose>'
+    diff_s = get_diff_summary(old_code, new_code)
+    assert "AND COALESCE" in diff_s
+    assert "and coalesce" not in diff_s
+    assert "'false'" in diff_s
+    assert "'true'" in diff_s
+
+    # 2. 029-3: diff 요약 줄 길이 및 청크 제한 검증
+    # (1) 긴 변경 덩어리가 30토큰/200자에서 잘리고 (+N토큰) 표기
+    long_exprs = " ".join(f"f_cdnm('Kind{i}', col{i}) as val{i}," for i in range(50))
+    old_long = "SELECT id FROM tbl"
+    new_long = f"SELECT id, {long_exprs} FROM tbl"
+    diff_long, diff_full = get_diff_details(old_long, new_long)
+    assert len(diff_long) <= 405
+    assert "(+" in diff_long and "토큰)" in diff_long
+    assert len(diff_full) >= 1
+
+    # (2) 변경 덩어리가 3개 초과인 경우 '외 N곳' 표기
+    old_chunks = "SELECT a, b, c, d, e, f FROM tbl"
+    new_chunks = "SELECT a1, b1, c1, d1, e1, f FROM tbl"
+    diff_multi = get_diff_summary(old_chunks, new_chunks)
+    assert "외 2곳" in diff_multi
+
+    # 3. 029-1: 주석 경계 분리 및 설명 주석 AS-IS 무시 검증
+    old_root = tmp_path / "Asset-ERP"
+    new_root = tmp_path / "IDMS-IC"
+    tobe_root = tmp_path / "tobe"
+    for r in (old_root, new_root, tobe_root):
+        r.mkdir(parents=True)
+
+    (old_root / "sys01_company.xml").write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<mapper namespace="sys01_company">
+    <select id="selectByName">
+        SELECT old_name FROM sys01_company
+    </select>
+    <select id="selectById">
+        SELECT old_id FROM sys01_company
+    </select>
+</mapper>
+""", encoding="utf-8")
+
+    (new_root / "sys01_company.xml").write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<mapper namespace="sys01_company">
+    <select id="selectByName">
+        SELECT new_name FROM sys01_company
+    </select>
+    <select id="selectById">
+        SELECT new_id FROM sys01_company
+    </select>
+</mapper>
+""", encoding="utf-8")
+
+    # TOBE 매퍼:
+    # 1) <sql id="companyColumns"> 앞의 설명 주석에 'AS-IS SELECT의 ...' 포함 -> searchCompanies에 붙으면 안 됨
+    # 2) searchCompanies 앞에 <!-- AS-IS selectByName: 회사 조회 --> -> sys01_company.selectByName으로 매칭
+    # 3) searchCompanies 본문 내부에 <!-- AS-IS innerSelect L20 (IDMS-IC) --> -> 다음 statement에 전파되면 안 됨
+    # 4) selectById 앞에 <!-- AS-IS selectById L30 --> -> 반영 표시 없이 정상 매칭
+    (tobe_root / "SysCompanyMapper.xml").write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<!--
+AS-IS server/sys/mapper/sys01_company.xml selectByName(L10) · selectById(L20)
+-->
+<mapper namespace="com.example.mapper.SysCompanyMapper">
+    <!-- 그리드 컬럼만. 이름 컬럼은 AS-IS SELECT의 f_cdnm 식 그대로, … -->
+    <sql id="companyColumns">
+        col1, col2
+    </sql>
+
+    <!-- AS-IS selectByName: 회사 조회 -->
+    <select id="searchCompanies">
+        SELECT col1 FROM sys01_company
+        <!-- AS-IS innerSelect L20 (IDMS-IC) -->
+    </select>
+
+    <!-- AS-IS selectById L30 -->
+    <select id="selectById">
+        SELECT col1 FROM sys01_company WHERE id = 1
+    </select>
+</mapper>
+""", encoding="utf-8")
+
+    res = check_sql_drift(
+        old_root=old_root,
+        new_root=new_root,
+        tobe_dir=tobe_root,
+        only_tobe=True,
+    )
+
+    assert res.ok is True
+    summary_text = res.data["summary_text"]
+
+    # 029-1: SELECT (미존재) 없음
+    assert "미존재" not in summary_text
+    assert "sys01_company.SELECT" not in summary_text
+
+    # 029-1: searchCompanies는 selectByName (바뀜)으로 잡힘
+    assert "SysCompanyMapper.searchCompanies" in summary_text
+    assert "sys01_company.selectByName (바뀜)" in summary_text
+
+    # 029-1: innerSelect의 (IDMS-IC)가 selectById나 searchCompanies에 전파되지 않음
+    assert res.data["summary"]["tobe_affected"] == 2
+    assert res.data["summary"]["tobe_reflected"] == 0
+    assert "SysCompanyMapper.selectById" in summary_text
+
+

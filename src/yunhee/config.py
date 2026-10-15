@@ -56,7 +56,7 @@ TOML_FILE, TOML_CONFIG = _find_yunhee_toml()
 _api_conf = TOML_CONFIG.get("api", {})
 
 # API 스모크 테스트 기본 설정 (.yunhee.toml 우선, 없으면 .env.local)
-API_BASE_URL = _api_conf.get("base") or os.getenv("YUNHEE_API_BASE_URL", "http://localhost:8082/OMS")
+API_BASE_URL = _api_conf.get("base") or os.getenv("YUNHEE_API_BASE_URL", "http://localhost:8082/AssetERP_1")
 # YUNHEE_API_TENANT는 0.1.9까지 쓰던 이름 (호환)
 API_DEFAULT_TENANT = (
     _api_conf.get("tenant") or os.getenv("YUNHEE_API_DEFAULT_TENANT") or os.getenv("YUNHEE_API_TENANT")

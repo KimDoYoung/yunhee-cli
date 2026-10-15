@@ -1,5 +1,6 @@
 """분석 도구(analysis) 공통 유틸리티 및 예외 정의."""
 
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -88,3 +89,44 @@ def load_index_data(src_index_dir: Path | None = None, src_root: Path | None = N
         return json.loads(idx_file.read_text(encoding="utf-8", errors="replace"))
     except Exception:  # noqa: BLE001
         return None
+
+
+GRID_METHOD_NAME_PATTERN = r"(?:build\w*Grid\w*|getTreeGrid)"
+
+
+def count_as_is_grids(text: str) -> tuple[int, bool]:
+    r"""AS-IS 클래스 절 텍스트에서 그리드 수를 집계한다.
+
+    1. 클래스 절 안의 `^- 그리드 \`` (또는 `^- 트리 \``/`- 트리`) 줄 수를 센다.
+    2. Grid Spec의 `const build\w*Grid\w*\b` 또는 `getTreeGrid\b` 블록 수를 센다.
+    3. 두 방법의 값이 다르면 큰 값을 쓰고 경고 플래그(True)를 반환한다.
+    """
+    bullet_matches = re.findall(r"^-\s*(?:그리드\s*`|트리\b)", text, re.MULTILINE)
+    bullet_cnt = len(bullet_matches)
+
+    # 불릿 라인(^- ...)에 포함된 메서드명 언급으로 인한 중복 카운트를 방지하기 위해 불릿 라인 제외
+    non_bullet_text = re.sub(r"^-\s*.*$", "", text, flags=re.MULTILINE)
+    code_cnt = len(re.findall(rf"\bconst\s+{GRID_METHOD_NAME_PATTERN}\b", non_bullet_text)) + len(
+        re.findall(r"(?<!const\s)\bgetTreeGrid\b", non_bullet_text)
+    )
+
+    if bullet_cnt > 0 and code_cnt > 0:
+        if bullet_cnt == code_cnt:
+            return bullet_cnt, False
+        return max(bullet_cnt, code_cnt), True
+    if bullet_cnt > 0:
+        return bullet_cnt, False
+    if code_cnt > 0:
+        return code_cnt, False
+    return 0, False
+
+
+def count_tobe_grids(text: str) -> int:
+    """TOBE TSX 텍스트에서 주석을 제외하고 그리드 컴포넌트 출현 횟수를 센다."""
+    # 블록 주석 제거
+    s = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    # 한 줄 주석 제거
+    s = re.sub(r"//.*$", "", s, flags=re.MULTILINE)
+    matches = re.findall(r"<(?:SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid)\b", s)
+    return len(matches)
+

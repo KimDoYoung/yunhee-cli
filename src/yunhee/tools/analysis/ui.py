@@ -4,7 +4,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from yunhee.tools.analysis.common import resolve_as_is_paths
+from yunhee.tools.analysis.common import (
+    count_as_is_grids,
+    count_tobe_grids,
+    resolve_as_is_paths,
+)
 
 NAME = "ui"
 DESCRIPTION = "UI 대조표 및 단계별 버튼/이벤트/그리드 현황 분석 (연결 컴포넌트 포함)"
@@ -100,17 +104,17 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     else:
         classes.append({"name": screen_file.stem, "text": text})
 
-    # 클래스별 AS-IS 통계
-    as_is_stats: dict[str, dict[str, int]] = {}
+    as_is_stats: dict[str, dict[str, Any]] = {}
     for c in classes:
         c_text = c["text"]
         btn_cnt = len(re.findall(r"-\s*<Button\b|\d+\.\s+<Button\b", c_text))
         ev_cnt = len(re.findall(r"\[E\d+\]", c_text))
-        grid_cnt = 1 if re.search(r"const buildGrid\b|그리드[^\n]*\(buildGrid", c_text) else 0
+        grid_cnt, grid_warn = count_as_is_grids(c_text)
         as_is_stats[c["name"]] = {
             "buttons": btn_cnt,
             "events": ev_cnt,
             "grids": grid_cnt,
+            "grid_warn": grid_warn,
         }
 
     # 연결 컴포넌트 탐색 (같은 도메인만 포함)
@@ -164,12 +168,13 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         comp_text = comp_file.read_text(encoding="utf-8", errors="replace")
         btn_cnt = len(re.findall(r"-\s*<Button\b|\d+\.\s+<Button\b", comp_text))
         ev_cnt = len(re.findall(r"\[E\d+\]", comp_text))
-        grid_cnt = 1 if re.search(r"const buildGrid\b|그리드[^\n]*\(buildGrid", comp_text) else 0
+        grid_cnt, grid_warn = count_as_is_grids(comp_text)
 
         as_is_stats[comp_name] = {
             "buttons": btn_cnt,
             "events": ev_cnt,
             "grids": grid_cnt,
+            "grid_warn": grid_warn,
         }
 
     # TOBE 통계 파싱 (지정된 경우)
@@ -186,7 +191,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
                 f_name = f.stem
                 t_btn = len(re.findall(r"<Button\b", f_text))
                 impl_ev, skip_ev = _tobe_event_ids(f_text)
-                t_grid = 1 if re.search(r"<(?:SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid)\b", f_text) else 0
+                t_grid = count_tobe_grids(f_text)
                 tobe_stats[f_name] = {
                     "buttons": t_btn,
                     "events": len(impl_ev),
@@ -198,7 +203,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
                 f_text = tobe_dir.read_text(encoding="utf-8", errors="replace")
                 t_btn = len(re.findall(r"<Button\b", f_text))
                 impl_ev, skip_ev = _tobe_event_ids(f_text)
-                t_grid = 1 if re.search(r"<(?:SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid)\b", f_text) else 0
+                t_grid = count_tobe_grids(f_text)
                 tobe_stats[tobe_dir.stem] = {
                     "buttons": t_btn,
                     "events": len(impl_ev),
@@ -258,8 +263,9 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
             ev_str = f"{ai['events']}/{tb['events']}"
             if skip_cnt > 0:
                 ev_str += f" (생략 {skip_cnt})"
+            ai_g_str = f"{ai['grids']}⚠" if ai.get("grid_warn") else f"{ai['grids']}"
             lines.append(
-                f"| {c} | {ai['buttons']}/{tb['buttons']} | {ev_str} | {ai['grids']}/{tb['grids']} |"
+                f"| {c} | {ai['buttons']}/{tb['buttons']} | {ev_str} | {ai_g_str}/{tb['grids']} |"
             )
         return "\n".join(lines)
 

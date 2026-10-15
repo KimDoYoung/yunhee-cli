@@ -680,6 +680,65 @@ def find_deploy_time_local(file_path: Path) -> datetime:
     return datetime.strptime(ts_str, fmt)  # noqa: DTZ007
 
 
+_LAST_DEPLOY_WARN: str | None = None
+
+
+def check_deploy_startup_staleness(deploy_dt_log: datetime, log_tz_is_utc: bool = True) -> str | None:
+    """로그의 최근 기동 시각이 마지막 deploy 실행 종료 시각보다 이르면 경고 문자열을 반환한다."""
+    try:
+        from yunhee import project
+        from yunhee.store import run_tracker
+
+        eff_root = project.find_project_root()
+        proj_data = project.load(eff_root)
+        p_name = proj_data["name"] if proj_data and proj_data.get("name") else eff_root.name
+        runs = run_tracker.list_runs(project=p_name, limit=50)
+    except Exception:  # noqa: BLE001
+        try:
+            from yunhee.store import run_tracker
+            runs = run_tracker.list_runs(limit=50)
+        except Exception:  # noqa: BLE001
+            runs = []
+
+    for r in runs:
+        cmd = r.get("command", "").lower()
+        if "deploy" in cmd:
+            duration_ms = r.get("duration_ms") or 0
+            created_at_str = r.get("created_at")
+            if not created_at_str:
+                continue
+            try:
+                dt = datetime.fromisoformat(created_at_str)
+            except ValueError:
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            else:
+                dt = dt.astimezone(UTC)
+
+            run_id = r.get("id", "")
+            m = re.match(r"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})", run_id)
+            if m:
+                try:
+                    dt = datetime.strptime(m.group(0), "%Y%m%d_%H%M%S").replace(tzinfo=UTC)
+                except ValueError:
+                    pass
+
+            deploy_end_dt_utc = dt + timedelta(milliseconds=duration_ms)
+
+            if log_tz_is_utc:
+                log_dt_utc = deploy_dt_log.replace(tzinfo=UTC)
+            else:
+                log_dt_utc = deploy_dt_log.replace(tzinfo=KST).astimezone(UTC)
+
+            if log_dt_utc < deploy_end_dt_utc:
+                hh_mm = deploy_end_dt_utc.astimezone(KST).strftime("%H:%M")
+                return f"⚠ 마지막 배포({hh_mm}) 뒤 앱 기동 기록 없음 — 아직 올라오는 중이면 잠시 뒤 다시"
+            break
+
+    return None
+
+
 class RunTimeInfo(tuple):
     """(run_id, cmd, start_dt, end_dt) tuple representation."""
 
@@ -776,6 +835,9 @@ def resolve_time_range(
     is_utc = (log_tz.upper() == "UTC")
     host_now = datetime.now(KST)
 
+    global _LAST_DEPLOY_WARN
+    _LAST_DEPLOY_WARN = None
+
     start_log: datetime | None = None
     header_tag = ""
 
@@ -797,6 +859,7 @@ def resolve_time_range(
                 header_tag = f"· 배포 {deploy_dt_log.strftime('%H:%M:%S')} UTC ({kst_dt.strftime('%H:%M:%S')} KST)"
             else:
                 header_tag = f"· 배포 {deploy_dt_log.strftime('%H:%M:%S')}"
+            _LAST_DEPLOY_WARN = check_deploy_startup_staleness(deploy_dt_log, is_utc)
     elif since_run:
         run_id, cmd, start_dt_utc, end_dt_utc = find_run_time(since_run)
         start_kst = start_dt_utc.astimezone(KST)
@@ -1179,6 +1242,8 @@ def get_req_summary(
     )
 
     out = [header]
+    if _LAST_DEPLOY_WARN:
+        out.append(_LAST_DEPLOY_WARN)
     if archived and not user_range_specified:
         out.append("(--archived: 범위가 오늘이라 지난 파일을 읽지 않음)")
 
@@ -1381,6 +1446,8 @@ def get_errors_summary(
     )
 
     out = [header]
+    if _LAST_DEPLOY_WARN:
+        out.append(_LAST_DEPLOY_WARN)
     if archived and not user_range_specified:
         out.append("(--archived: 범위가 오늘이라 지난 파일을 읽지 않음)")
     time_desc = header_tag if header_tag and not header_tag.startswith("· ") else "선택 범위"
@@ -1706,6 +1773,8 @@ def get_tail_summary(
     )
 
     out = [header]
+    if _LAST_DEPLOY_WARN:
+        out.append(_LAST_DEPLOY_WARN)
     if archived and not user_range_specified:
         out.append("(--archived: 범위가 오늘이라 지난 파일을 읽지 않음)")
 

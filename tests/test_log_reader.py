@@ -402,4 +402,33 @@ def test_026_sql_parameter_names(tmp_path, monkeypatch):
     assert "UnknownMapper.doAction (999) → Total 1" in res_t4
 
 
+def test_027_check_deploy_startup_staleness(monkeypatch):
+    """027-5: 배포 후 컨테이너 기동 전 log 확인 시 경고 출력 검증."""
+    from datetime import UTC, datetime
+
+    fake_runs = [
+        {
+            "id": "20261014_063000_123456",
+            "command": "bash deploy.sh",
+            "created_at": "2026-10-14T06:30:00+00:00",
+            "duration_ms": 10000,  # 06:30:10 UTC (15:30:10 KST)에 종료
+        }
+    ]
+
+    import yunhee.store.run_tracker
+    monkeypatch.setattr(yunhee.store.run_tracker, "list_runs", lambda **kwargs: fake_runs)
+
+    # 1. 기동 시각이 배포 종료보다 이전인 경우 (배포 전 이전 기동 상태)
+    log_dt_stale = datetime(2026, 10, 14, 6, 20, 0, tzinfo=UTC)  # 06:20:00 UTC (15:20:00 KST)
+    warn = log_reader.check_deploy_startup_staleness(log_dt_stale, log_tz_is_utc=True)
+    assert warn is not None
+    assert "15:30" in warn
+    assert "아직 올라오는 중이면 잠시 뒤 다시" in warn
+
+    # 2. 기동 시각이 배포 종료보다 이후인 경우 (정상 기동 완료)
+    log_dt_fresh = datetime(2026, 10, 14, 6, 35, 0, tzinfo=UTC)  # 06:35:00 UTC (15:35:00 KST)
+    assert log_reader.check_deploy_startup_staleness(log_dt_fresh, log_tz_is_utc=True) is None
+
+
+
 

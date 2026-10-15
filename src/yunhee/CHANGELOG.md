@@ -2,6 +2,36 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.3.4] - 2026-10-15
+수정사항 029 (sql-check 주석 범위 분리, XML 태그 OGNL 대소문자 보존, diff 요약 길이 제한) 반영.
+- sql-check: statement 앞 주석 범위를 바로 앞 요소(`</select>`, `</sql>`, `<mapper>` 등)의 끝부터로 한정하여 `<sql>` 조각 및 이전 statement 본문 주석의 오인 전파 방지
+- sql-check: TOBE 주석에서 추출한 statement ID가 원본 매퍼에 존재하는 경우에만 출처로 인식하고, 일반 설명 문장 단어는 무시 (명시적 `L숫자`/`(L숫자)` 표기만 부재 시 `(미존재)` 처리)
+- sql-check: `(IDMS-IC)` 등 새 원본 반영 표시 주석을 단일 주석(`<!-- ... -->`) 내부에서만 감지하여 다중 주석/SQL에 걸친 잘못된 반영 감지 방지
+- sql-check: Drift 정규화 시 XML 태그 전체(`<...>` 안의 태그명, 속성명, OGNL 조건식)의 대소문자를 원문 그대로 보존하여 `test="isA == true"` 등 속성 대소문자 변경점 정상 감지
+- sql-check: diff 요약 생성 시 SQL 키워드 대소문자 차이는 무시하되 출력 토큰은 원문 대소문자로 표기
+- sql-check: diff 요약 덩어리를 최대 30토큰/200자에서 자르고 `… (+N토큰)` 표기, 3개 초과 시 `· 외 N곳` 표기, 줄 전체 400자 제한 적용 및 `-o json`에 `diff_full` 전체 목록 제공
+
+## [0.3.3] - 2026-10-15
+수정사항 028 (compare 그리드 탐색 보강, sql-check Drift 정밀화 및 잡음 제거) 반영.
+- compare: `build\w*Grid\w*` 패턴 확장으로 `buildGridRole()`, `buildGridCompany()` 등 메서드 추출 지원 및 analysis와 정규식 통일
+- compare: 다중 그리드 불릿 파싱 시 중첩 괄호(예: `체크박스(다중)`) 처리 보강 및 변수명(`#gridRole`)으로도 해당 메서드 바인딩 지원
+- compare: 필드 대응에 `Address` ↔ `Addr` 줄임 매핑 추가 (`emailAddress` ↔ `emailAddr`, `zipAddress` ↔ `zipAddr`)
+- sql-check: 매퍼 머리 주석의 경로 첫 단어(`server`)가 statement ID로 오인되는 문제 수정 (`server (미존재)` 방지)
+- sql-check: TOBE 매퍼 주석의 `({새 원본명})`(예: `(IDMS-IC)`) 표시 감지하여 바뀐 원본 영향 목록에서 제외하고 `#### 새 원본 반영 표시됨` 절에 분리 표시
+- sql-check: Drift 비교 시 문자열 리터럴/파라미터 밖은 대소문자 무시(PostgreSQL 식별자 표준)하여 불필요한 변경점 제거
+- sql-check: diff 토큰화 개선으로 `'false'`, `#{companyId}`, `!=`, `</when>` 등이 쪼개지지 않도록 원형 보존
+- sql-check: `--only-tobe` 출력에도 TOBE statement 하단에 바뀐 원본 SQL diff 요약 한 줄 인덴트 출력
+- sql-check: `--old` 지정 시 `-t`/`--target` 옵션을 줄 경우에만 해당 파일로 저장하고, 미지정 시 stdout 출력 전용 동작 지원 및 도움말 갱신
+
+## [0.3.2] - 2026-10-15
+수정사항 027 (다중 그리드 집계 및 분리 정밀화, SQL Drift 감지, 배포 전 기동 상태 감지) 반영.
+- analysis screen & ui: 클래스별 그리드 수 집계 시 `1 if ... else 0` 대신 불릿(`^- 그리드 ` / `^- 트리`) 및 Grid Spec(`const build*Grid` / `getTreeGrid`) 실제 출현 횟수 집계, 불일치 시 `⚠` 경고 표기
+- analysis ui: TOBE `<SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid>` 컴포넌트 출현 횟수 카운트 시 주석(/* ... */, // ...) 제외
+- analysis grid: 다중 그리드를 메서드 단위(`GridBuilder` 선언 기준)로 독립 분리하여 제목별(`buildGrid()`) 복수 표 출력 및 `--method` 필터링 지원, `-o json` 그리드 배열 반환
+- compare: `--grid <Class>[#<method>]` 옵션 지원, 메서드 미지정 시 API 필드와 최대 일치 그리드 자동 선택, 비존재 그리드 fallback 방지 및 경고 출력, 결과 요약에 대조 그리드명 및 컬럼 수 표기
+- sql-check: `--old <구 AS-IS 소스경로>` 옵션 추가로 신/구 AS-IS 소스 간 statement 단위 SQL Drift(변경점) 감지, `--only-tobe` 필터링 및 TOBE 매퍼 영향 분석 리포트 제공
+- log: 배포(`deploy`) 실행 직후 컨테이너가 아직 기동되지 않은 상태에서 `log errors --since-deploy` 등 호출 시 미기동 경고 표기
+
 ## [0.3.1] - 2026-10-13
 수정사항 026 (연결 컴포넌트 화면 분석 및 UI 대조 포함, `api --log`·`log trace` SQL 파라미터 이름 매핑) 반영.
 - analysis screen: `screens/` 외에 `components/` 디렉터리 파일 직접 조회 지원 (`analysis screen <컴포넌트명>`)

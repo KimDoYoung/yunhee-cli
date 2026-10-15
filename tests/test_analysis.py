@@ -391,3 +391,122 @@ const buildGrid = () => [];
     # 다른 도메인 Apr01은 ui 대조표에 포함되지 않음
     assert "Apr01_Edit_ApprDoc" not in ui_out
 
+
+def test_027_grid_counting_and_multi_grid(tmp_path: Path):
+    """027-1, 027-2: 그리드 수 카운트 정밀화 및 analysis grid 다중 그리드 분리 검증."""
+    from yunhee.tools.analysis import grid
+    from yunhee.tools.analysis.common import count_as_is_grids, count_tobe_grids
+
+    # 1. count_as_is_grids 검증
+    # (1) 0개
+    c0, w0 = count_as_is_grids("public class Simple { void test() {} }")
+    assert c0 == 0 and not w0
+
+    # (2) 1개 (buildGrid)
+    c1, w1 = count_as_is_grids("""
+- 그리드 `grid` (buildGrid(), 체크박스):
+  - col1 100 "열1"
+const buildGrid = () => [];
+""")
+    assert c1 == 1 and not w1
+
+    # (3) 2개 (buildUserGrid, buildRoleGrid)
+    c2, w2 = count_as_is_grids("""
+- 그리드 `userGrid` (buildUserGrid(), 체크박스):
+  - orgKorName 200 "부서명"
+- 그리드 `userRoleGrid` (buildRoleGrid(), 체크박스):
+  - roleName 200 "권한명"
+const buildUserGrid = () => [];
+const buildRoleGrid = () => [];
+""")
+    assert c2 == 2 and not w2
+
+    # (4) 트리 그리드 포함 (- 트리 및 getTreeGrid)
+    c_tree, w_tree = count_as_is_grids("""
+- 트리 `orgTree` (getTreeGrid()):
+  - orgName 200 "조직명"
+getTreeGrid()
+""")
+    assert c_tree == 1 and not w_tree
+
+    # (5) 두 방법의 값이 다르면 큰 값 + ⚠
+    c_diff, w_diff = count_as_is_grids("""
+- 그리드 `userGrid` (buildUserGrid(), 체크박스):
+- 그리드 `userRoleGrid` (buildRoleGrid(), 체크박스):
+const buildUserGrid = () => [];
+""")
+    assert c_diff == 2 and w_diff
+
+    # 2. count_tobe_grids 주석 필터링 검증
+    tsx_sample = """
+// <SingleGrid /> 주석 1
+/*
+  <MultiGrid /> 주석 2
+*/
+export const View = () => (
+    <div>
+        <SingleGrid />
+        <CellEditGrid />
+    </div>
+);
+"""
+    assert count_tobe_grids(tsx_sample) == 2
+
+    # 3. analysis grid 다중 그리드 분리 및 --method 검증
+    src_dir = tmp_path / "src"
+    client_dir = src_dir / "client" / "vi" / "sys"
+    client_dir.mkdir(parents=True, exist_ok=True)
+
+    java_code = """
+package test;
+
+public class Sys05_Tab_PersonRole {
+    private Grid<Emp00_TransInfoModel> userGrid = this.buildUserGrid();
+    private Grid<Sys04_RoleModel> userRoleGrid = this.buildRoleGrid();
+
+    public Grid<Emp00_TransInfoModel> buildUserGrid() {
+        GridBuilder<Emp00_TransInfoModel> gb = new GridBuilder<Emp00_TransInfoModel>();
+        gb.setChecked(SelectionMode.SINGLE);
+        gb.addText(properties.orgKorName(), 200, "부서명");
+        gb.addText(properties.emailAddress(), 200, "이메일주소");
+        return gb.getGrid();
+    }
+
+    public Grid<Sys04_RoleModel> buildRoleGrid() {
+        GridBuilder<Sys04_RoleModel> gb = new GridBuilder<Sys04_RoleModel>();
+        gb.setChecked(SelectionMode.SINGLE);
+        gb.addText(properties.roleName(), 200, "권한명");
+        gb.addBoolean(properties.userRoleYn(), 40, "권한");
+        gb.addText(properties.seq(), 80, "순서");
+        gb.addText(properties.note(), 600, "비고");
+        return gb.getGrid();
+    }
+}
+"""
+    (client_dir / "Sys05_Tab_PersonRole.java").write_text(java_code, encoding="utf-8")
+
+    opts = {"src": src_dir}
+
+    # 전체 다중 그리드 resolve & render
+    res_all = grid.resolve("Sys05_Tab_PersonRole", opts)
+    assert len(res_all["grids"]) == 2
+    md_all = grid.render(res_all, fmt="md")
+    assert "buildUserGrid" in md_all
+    assert "buildRoleGrid" in md_all
+    assert "userGrid = buildUserGrid()" in md_all
+    assert "userRoleGrid = buildRoleGrid()" in md_all
+
+    # --method buildRoleGrid 필터링
+    res_meth = grid.resolve("Sys05_Tab_PersonRole", {"src": src_dir, "method": "buildRoleGrid"})
+    assert len(res_meth["grids"]) == 1
+    md_meth = grid.render(res_meth, fmt="md")
+    assert "userRoleYn" in md_meth
+    assert "orgKorName" not in md_meth
+
+    # -o json 검증
+    json_out = grid.render(res_all, fmt="json")
+    parsed_json = json.loads(json_out)
+    assert isinstance(parsed_json, list)
+    assert len(parsed_json) == 2
+
+
