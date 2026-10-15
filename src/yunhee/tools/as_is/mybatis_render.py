@@ -15,8 +15,23 @@ from typing import Any
 from yunhee import config
 
 STATEMENT_TAGS = ("select", "insert", "update", "delete", "sql")
-TOKEN_RE = re.compile(r"<!\[CDATA\[(.*?)\]\]>|<!--.*?-->|<(/?)(\w+)([^>]*?)(/?)>|([^<]+)", re.DOTALL)
-ATTR_RE = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
+TOKEN_RE = re.compile(
+    r"""<!\[CDATA\[(.*?)\]\]>"""
+    r"""|<!--.*?-->"""
+    r"""|<(/?)(\w+)((?:\s*|'[^']*'|"[^"]*"|[^>'"])*?)(/?)>"""
+    r"""|([^<]+)""",
+    re.DOTALL,
+)
+ATTR_RE = re.compile(r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')')
+
+
+def _parse_attrs(attrs_str: str) -> dict[str, str]:
+    res = {}
+    for m in ATTR_RE.finditer(attrs_str):
+        name = m.group(1)
+        val = m.group(2) if m.group(2) is not None else (m.group(3) or "")
+        res[name] = unescape(val)
+    return res
 
 
 class Node:
@@ -52,7 +67,7 @@ def parse_xml(text: str) -> Node:
                 if len(stack) > 1:
                     stack.pop()
             else:
-                node = Node(tag, dict(ATTR_RE.findall(attrs)), [])
+                node = Node(tag, _parse_attrs(attrs), [])
                 stack[-1].children.append(node)
                 if not selfclose:
                     stack.append(node)
@@ -107,8 +122,19 @@ def mask_sql_preserve(text: str) -> str:
                     i = i + 9
                     continue
                 else:
-                    j = text.find(">", i)
-                    j = n if j < 0 else j + 1
+                    j = i + 1
+                    in_q = None
+                    while j < n:
+                        c = text[j]
+                        if in_q:
+                            if c == in_q:
+                                in_q = None
+                        elif c in ("'", '"'):
+                            in_q = c
+                        elif c == ">":
+                            j += 1
+                            break
+                        j += 1
                 for k in range(i, j):
                     if chars[k] != "\n":
                         chars[k] = " "
@@ -210,11 +236,12 @@ def eval_test_condition(test: str, params: dict[str, Any]) -> bool:
     - x != null / x == null
     - x != '' / x == ''
     - x == 'val' / x != 'val'
+    - x > 1 / x >= 0 등 숫자 대소비교
     - x.size() > 0 / x.size() == 0 등
     - and / or 복합식
     - 알 수 없는 식은 경고 출력 후 False
     """
-    test = test.strip()
+    test = unescape(test).strip()
     if not test:
         return True
 
@@ -329,6 +356,54 @@ def _eval_single_condition(expr: str, params: dict[str, Any]) -> bool:
             return length == limit
         if op == "!=":
             return length != limit
+
+    # x op number: personId > 1, count >= 0, status == 1 등
+    m_num = re.match(r"^(\w+)\s*([><!=]=?)\s*(-?\d+(?:\.\d+)?)$", expr)
+    if m_num:
+        var, op, limit_str = m_num.group(1), m_num.group(2), m_num.group(3)
+        if var not in params or params[var] is None or params[var] == "":
+            return False
+        try:
+            val_num = float(params[var])
+            limit = float(limit_str)
+            if op == ">":
+                return val_num > limit
+            if op == ">=":
+                return val_num >= limit
+            if op == "<":
+                return val_num < limit
+            if op == "<=":
+                return val_num <= limit
+            if op in ("==", "="):
+                return val_num == limit
+            if op == "!=":
+                return val_num != limit
+        except (ValueError, TypeError):
+            return False
+
+    # number op x: 0 < personId 등
+    m_num_rev = re.match(r"^(-?\d+(?:\.\d+)?)\s*([><!=]=?)\s*(\w+)$", expr)
+    if m_num_rev:
+        limit_str, op, var = m_num_rev.group(1), m_num_rev.group(2), m_num_rev.group(3)
+        if var not in params or params[var] is None or params[var] == "":
+            return False
+        try:
+            val_num = float(params[var])
+            limit = float(limit_str)
+            if op == ">":
+                return limit > val_num
+            if op == ">=":
+                return limit >= val_num
+            if op == "<":
+                return limit < val_num
+            if op == "<=":
+                return limit <= val_num
+            if op in ("==", "="):
+                return limit == val_num
+            if op == "!=":
+                return limit != val_num
+        except (ValueError, TypeError):
+            return False
 
     # 단일 변수: isSeparateAddTitle 등
     m_single = re.match(r"^(\w+)$", expr)

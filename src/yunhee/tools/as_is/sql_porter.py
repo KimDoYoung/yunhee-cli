@@ -32,7 +32,7 @@ def _strip_sql_noise(body: str) -> str:
 
 def statement_tag(body: str, original: str) -> str:
     """본문 첫 키워드로 MyBatis 태그를 정한다. INSERT/UPDATE/DELETE/CALL(→ update), 그 밖은 원본 태그."""
-    text = re.sub(r"<[^>]+>", " ", _strip_sql_noise(body))
+    text = re.sub(r"</?[a-zA-Z0-9_]+(?:'[^']*'|\"[^\"]*\"|[^>'])*>", " ", _strip_sql_noise(body))
     m = re.match(r"\s*\(*\s*(\w+)", text)
     kw = m.group(1).upper() if m else ""
     if kw == "WITH":

@@ -21,9 +21,6 @@ SCHEMA_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
-TOKEN_RE = re.compile(r"<!\[CDATA\[(.*?)\]\]>|<!--.*?-->|<(/?)(\w+)([^>]*?)(/?)>|([^<]+)", re.DOTALL)
-ATTR_RE = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
-
 
 from yunhee.tools.as_is.mybatis_render import (
     STATEMENT_TAGS,

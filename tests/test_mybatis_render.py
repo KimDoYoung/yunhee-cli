@@ -117,3 +117,69 @@ def test_render_cross_namespace_and_include(tmp_path: Path):
     )
     assert "<if test=" in sql_struct
     assert "company_id = #{companyId}" in sql_struct
+
+
+def test_greater_than_in_if_tag_and_eval_condition():
+    """<if test="personId > 1">의 > 가 태그 끝으로 오인되지 않고 정상 파싱 및 평가되는지 검증."""
+    from yunhee.tools.as_is.mybatis_render import (
+        mask_sql_preserve,
+        parse_xml,
+        render_from_xml,
+    )
+
+    # 1. 숫자 대소비교 eval_test_condition 검증
+    assert eval_test_condition("personId > 1", {"personId": "29035"}) is True
+    assert eval_test_condition("personId > 1", {"personId": "0"}) is False
+    assert eval_test_condition("personId > 1", {"personId": "1"}) is False
+    assert eval_test_condition("personId >= 1", {"personId": "1"}) is True
+    assert eval_test_condition("personId < 10", {"personId": "5"}) is True
+    assert eval_test_condition("personId <= 10", {"personId": "10"}) is True
+    assert eval_test_condition("personId == 10", {"personId": "10"}) is True
+    assert eval_test_condition("personId != 10", {"personId": "5"}) is True
+    assert eval_test_condition("personId &gt; 1", {"personId": "29035"}) is True
+    assert eval_test_condition("personId &lt; 10", {"personId": "5"}) is True
+    assert eval_test_condition("personId > 1", {}) is False
+
+    # 2. parse_xml 파싱 시 > 가 태그 닫기로 오인되지 않는지 검증
+    xml = """<mapper namespace="emp">
+    <select id="selectByPersonId">
+        SELECT emp_id, emp_nm FROM emp00
+        WHERE 1=1
+        <if test="personId > 1">
+            AND person_id = #{personId}
+        </if>
+    </select>
+</mapper>"""
+    root = parse_xml(xml)
+    mapper = root.children[0]
+    sel = next(c for c in mapper.children if getattr(c, "tag", None) == "select")
+    if_node = next(c for c in sel.children if getattr(c, "tag", None) == "if")
+
+    assert if_node.attrs.get("test") == "personId > 1"
+    # 자식 텍스트에 태그 잔여물(' 1">')이 없어야 함
+    assert not any("1\">" in str(child) for child in if_node.children)
+
+    # 3. explain 모드 렌더링: ' 1">' 없이 정상 렌더링
+    sql_explain, _ = render_from_xml(xml, "emp.selectByPersonId", mode="explain")
+    assert '1">' not in sql_explain
+    assert "AND person_id = NULL" in sql_explain
+
+    # 4. params 모드 렌더링: 조건 충족 시 포함, 미충족 시 제외
+    sql_true, _ = render_from_xml(xml, "emp.selectByPersonId", params={"personId": "29035"}, mode="params")
+    assert '1">' not in sql_true
+    assert "AND person_id = '29035'" in sql_true
+
+    sql_false, _ = render_from_xml(xml, "emp.selectByPersonId", params={"personId": "0"}, mode="params")
+    assert '1">' not in sql_false
+    assert "AND person_id" not in sql_false
+
+    # 5. structure 모드: 원형 보존
+    sql_struct, _ = render_from_xml(xml, "emp.selectByPersonId", mode="structure")
+    assert '1">' not in sql_struct.replace('<if test="personId > 1">', "")
+    assert '<if test="personId > 1">' in sql_struct
+
+    # 6. mask_sql_preserve 검증
+    masked = mask_sql_preserve(xml)
+    assert '1">' not in masked
+    assert "SELECT emp_id" in masked
+

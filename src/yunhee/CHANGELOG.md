@@ -2,6 +2,14 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.3.5] - 2026-10-15
+MyBatis XML 조건식 태그 파싱 오류 수정 및 수치 비교 연산자 지원.
+- mybatis_render: `<if test="personId > 1">` 등 따옴표 내부의 `>` 또는 `<` 문자를 태그 끝으로 오인하지 않도록 XML 토크나이저(`TOKEN_RE`) 및 `mask_sql_preserve`의 따옴표 보호 처리
+- mybatis_render: 태그 속성 파싱 시 `&gt;`, `&lt;`, `&amp;` 등 XML 엔티티 자동 unescape 지원
+- mybatis_render: `eval_test_condition`에 수치 비교 연산자(`>`, `>=`, `<`, `<=`, `==`, `!=`) 및 역방향 비교 지원 추가
+- sql_porter & src_indexer: 태그 제거 정규식을 따옴표 보호 정규식으로 보강하여 XML 속성 내 특수문자 누출 방지
+- analysis sql & compare: AS-IS SQL 렌더링 시 태그 잔여 문자열(` 1">`) 누출 및 SQL 깨짐 방지
+
 ## [0.3.4] - 2026-10-15
 수정사항 029 (sql-check 주석 범위 분리, XML 태그 OGNL 대소문자 보존, diff 요약 길이 제한) 반영.
 - sql-check: statement 앞 주석 범위를 바로 앞 요소(`</select>`, `</sql>`, `<mapper>` 등)의 끝부터로 한정하여 `<sql>` 조각 및 이전 statement 본문 주석의 오인 전파 방지

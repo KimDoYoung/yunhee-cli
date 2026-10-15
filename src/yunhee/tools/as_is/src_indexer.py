@@ -760,7 +760,7 @@ def parse_mappers(
             end = text.find(f"</{m.group(1)}>", m.end())
             body = text[m.end(): end if end > 0 else len(text)]
             st = Statement(ns_str, m.group(2), kind, rel, line_of(text, m.start()), domain)
-            sql = re.sub(r"<[^>]+>", " ", body)
+            sql = re.sub(r"</?[a-zA-Z0-9_]+(?:'[^']*'|\"[^\"]*\"|[^>'])*>", " ", body)
             st.ctes = {c.lower() for c in CTE_RE.findall(sql)}
             st.tables = {
                 t.lower() for t in TABLE_KEYWORD_RE.findall(sql)
