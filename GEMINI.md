@@ -203,3 +203,14 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
   - `yunhee` 자체 리소스(설정, 로컬 SQLite DB, 스키마 스냅샷 등)는 `config.YUNHEE_DIR` 기준.
   - 마이그레이션 작업 대상 소스 파일이나 타겟 출력물은 반드시 `config.WORK_DIR` 기준.
   - ASIS 레거시 소스는 `config.ASIS_SRC_DIR` 기준.
+
+---
+
+## 작업 완료 알림 (ntfy)
+
+- 사용자의 요청에 따른 작업(수정사항 구현, 빌드/테스트, 대량 분석 등)이 끝나면 **항상** 아래 `curl` 명령을 실행하여 ntfy 알림을 전송한다:
+  ```bash
+  curl -s -d "agy message: <작업내용 요약> 작업 끝 남" ntfy.sh/asseterp-framework-gwtgxt-2-sbreact-2026
+  ```
+- 에이전트(Antigravity 등)는 작업을 마친 후 사용자에게 최종 답변을 출력하기 직전에 이 명령을 실행해야 한다.
+
