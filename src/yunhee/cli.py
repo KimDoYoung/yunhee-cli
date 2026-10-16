@@ -526,11 +526,16 @@ def api(
 def sql_cmd(
     query: Annotated[str | None, typer.Argument(help="실행할 SQL 쿼리")] = None,
     file: Annotated[Path | None, typer.Option("--file", "-f", help="실행할 SQL 파일 경로")] = None,
+    builtin: Annotated[str | None, typer.Option("--builtin", help="내장 SQL 이름 실행 (예: menus)")] = None,
     rollback: Annotated[bool, typer.Option("--rollback", help="쓰기를 허용하되 반드시 트랜잭션 종료 시 ROLLBACK")] = False,
-    limit: Annotated[int, typer.Option("--limit", "-n", help="출력할 최대 행 수 (기본: 5)")] = 5,
+    limit: Annotated[int | None, typer.Option("--limit", "-n", help="출력할 최대 행 수 (table 기본 5, tsv/csv/json 기본 제한 없음)")] = None,
     timeout: Annotated[float, typer.Option("--timeout", help="statement_timeout 타임아웃(초) (기본: 10)")] = 10.0,
     var: Annotated[list[str] | None, typer.Option("--var", help="변수 설정 key=val 또는 key=\"select ...\" (반복 가능)")] = None,
     db: Annotated[str | None, typer.Option("--db", help="대상 데이터베이스 환경변수 이름 또는 연결 URL (기본: LOCAL_DB)")] = None,
+    output: Annotated[str, typer.Option("--output", "-o", help="출력 형식: table(기본) | tsv | csv | json")] = "table",
+    no_header: Annotated[bool, typer.Option("--no-header", help="tsv·csv 출력 시 헤더 줄 생략")] = False,
+    null: Annotated[str, typer.Option("--null", help="tsv·csv에서 NULL 값을 표기할 문자열 (기본: 빈 칸)")] = "",
+    out: Annotated[Path | None, typer.Option("--out", help="결과를 파일에 저장하고 화면에는 요약 한 줄만 출력")] = None,
 ):
     """PostgreSQL 읽기 전용 쿼리 실행 또는 --rollback 시험
 
@@ -549,17 +554,27 @@ def sql_cmd(
     res = sql_runner.run_sql(
         query=query,
         file_path=file,
+        builtin=builtin,
         rollback=rollback,
         limit=limit,
         timeout=timeout,
         vars_dict=vars_dict or None,
         db_name=db,
+        output_fmt=output,
+        no_header=no_header,
+        null_str=null,
+        out_file=out,
     )
     if not res.ok:
+        exit_code = (res.data or {}).get("exit_code", 1) if isinstance(res.data, dict) else 1
         typer.echo(f"오류: {res.error}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=exit_code)
+
+    for w in (res.data or {}).get("warnings", []):
+        typer.echo(w, err=True)
 
     print(res.data.get("summary", ""))
+
 
 
 @app.command(name="port-sql")
@@ -841,6 +856,10 @@ def index_src_cmd(
         Path | None,
         typer.Option("--menus", help="메뉴 TSV 파일 (미지정 시 {target}/../menus.tsv 탐색)"),
     ] = None,
+    menus_from_db: Annotated[
+        str | None,
+        typer.Option("--menus-from-db", help="--menus 파일이 없을 때 DB의 sys06_menu에서 바로 읽어 {target}/../menus.tsv 생성"),
+    ] = None,
     db_index: Annotated[
         Path | None,
         typer.Option("--db-index", help="DB 색인 폴더 (미지정 시 {target}/../db 탐색)"),
@@ -871,6 +890,20 @@ def index_src_cmd(
         cand = out_dir.parent / "menus.tsv"
         if cand.is_file():
             menus_path = cand
+        elif menus_from_db:
+            from yunhee.tools import sql_runner
+
+            gen_res = sql_runner.run_sql(
+                builtin="menus",
+                db_name=menus_from_db,
+                output_fmt="tsv",
+                no_header=True,
+                out_file=cand,
+            )
+            if not gen_res.ok:
+                typer.secho(f"[ERROR] --menus-from-db 실행 실패: {gen_res.error}", fg=typer.colors.RED)
+                raise typer.Exit(1)
+            menus_path = cand
 
     db_dir = db_index
     if db_dir is None:
@@ -892,21 +925,26 @@ def index_src_cmd(
     typer.secho(f"✅ AS-IS 소스 색인 생성 완료: {d['target_dir']}", fg=typer.colors.GREEN, bold=True)
     typer.echo(f"  - 원본 소스: {root} ({d['app_package']})")
     src_info = d.get("source_info") or {}
+    s_total = d.get("screens_count", 0)
+    s_menu = d.get("screens_menu", s_total)
+    s_frame = d.get("screens_frame", d.get("frame_screens_count", 0))
+    screen_summary_str = f"화면 {s_total:,}개(메뉴 {s_menu:,} + 프레임 {s_frame:,})"
     if src_info.get("vcs") == "git":
         ct_short = str(src_info.get("commit_time", ""))[:16].replace("T", " ")
         clean_label = "dirty" if src_info.get("dirty") else "clean"
         typer.echo(
             f"  - 소스 {src_info.get('commit_short')} ({src_info.get('branch')}, {ct_short}) {clean_label}"
-            f" · 화면 {d['screens_count']:,}개 · 의존 파일 {d.get('files_count', 0):,}개 기록"
+            f" · {screen_summary_str} · 의존 파일 {d.get('files_count', 0):,}개 기록"
         )
         if src_info.get("dirty"):
             typer.secho("  ⚠ 미커밋 변경이 색인에 포함됨 — 기준 커밋만으로 재현 불가", fg=typer.colors.YELLOW)
     else:
         typer.echo(
             f"  - 소스 (비-git, {src_info.get('commit_time', '')})"
-            f" · 화면 {d['screens_count']:,}개 · 의존 파일 {d.get('files_count', 0):,}개 기록"
+            f" · {screen_summary_str} · 의존 파일 {d.get('files_count', 0):,}개 기록"
         )
-    typer.echo(f"  - 클라이언트 클래스: {d['client_classes_count']}개, 메뉴 화면: {d['screens_count']}개, 프레임: {d['frame_screens_count']}개, 컴포넌트: {d['components_count']}개")
+    menu_detail = f"{s_menu}개" if d.get("has_menus") else "연결 안 됨(--menus 없음)"
+    typer.echo(f"  - 클라이언트 클래스: {d['client_classes_count']}개, 메뉴 화면: {menu_detail}, 프레임: {d['frame_screens_count']}개, 컴포넌트: {d['components_count']}개")
     typer.echo(f"  - 서비스 메서드: {d['service_methods_count']}개, 매퍼 SQL: {d['statements_count']}개, 도메인: {d['domains_count']}개")
     if d["missing_service_keys_count"] or d["missing_sql_ids_count"]:
         typer.echo(f"  - 미해결 호출: 서비스 키 {d['missing_service_keys_count']}개, 매퍼 SQL ID {d['missing_sql_ids_count']}개 → unresolved.md")
@@ -972,6 +1010,46 @@ def drift_cmd(
         bool,
         typer.Option("--record", help="화면의 현재 색인 기준을 완성 기준선(baseline)으로 기록"),
     ] = False,
+    record_from: Annotated[
+        Path | None,
+        typer.Option("--record-from", help="마크다운 표 파일에서 상태별로 일괄 baseline 기록"),
+    ] = None,
+    record_all: Annotated[
+        bool,
+        typer.Option("--record-all", help=".yunhee.toml [drift] 설정 기반으로 일괄 baseline 기록"),
+    ] = False,
+    status: Annotated[
+        str | None,
+        typer.Option("--status", help="일괄 기록할 상태 목록 (쉼표 구분, 기본: 완료,확인)"),
+    ] = None,
+    id_col: Annotated[
+        str,
+        typer.Option("--id-col", help="표의 ID 열 헤더 이름 (기본: ID)"),
+    ] = "ID",
+    class_col: Annotated[
+        str,
+        typer.Option("--class-col", help="표의 클래스 열 헤더 이름 (기본: 클래스)"),
+    ] = "클래스",
+    status_col: Annotated[
+        str,
+        typer.Option("--status-col", help="표의 상태 열 헤더 이름 (기본: 상태)"),
+    ] = "상태",
+    note_dir: Annotated[
+        Path | None,
+        typer.Option("--note-dir", help="일괄 기록 시 작업기록 폴더 (기본: docs/work)"),
+    ] = None,
+    note_suffix: Annotated[
+        str | None,
+        typer.Option("--note-suffix", help="일괄 기록 시 작업기록 파일 접미사 (기본: -작업기록.md)"),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="쓰지 않고 대상 목록과 건너뜀 사유만 표시"),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="해시가 달라진 기존 baseline도 강제로 덮어쓰기"),
+    ] = False,
     unit_id: Annotated[
         str | None,
         typer.Option("--id", help="작업 단위 식별자 (예: A21)"),
@@ -986,7 +1064,12 @@ def drift_cmd(
     ] = False,
 ):
     """색인·기준선(baseline) 대비 AS-IS 화면·파일 변경 감지"""
-    from yunhee.tools.as_is.drift import record_baseline, run_drift, show_baseline_info
+    from yunhee.tools.as_is.drift import (
+        record_baseline,
+        record_baseline_from_table,
+        run_drift,
+        show_baseline_info,
+    )
 
     idx_dir = src_index if src_index is not None else find_as_is_dir("src")
     src_dir = src if src is not None else ASIS_SRC_DIR
@@ -1000,6 +1083,30 @@ def drift_cmd(
         typer.echo(msg)
         return
 
+    if record_from is not None or record_all:
+        status_list = [s.strip() for s in status.split(",") if s.strip()] if status else None
+        code, msg = record_baseline_from_table(
+            table_file=record_from,
+            src_root=src_dir,
+            src_index=idx_dir,
+            statuses=status_list,
+            id_col=id_col,
+            class_col=class_col,
+            status_col=status_col,
+            note_dir=note_dir,
+            note_suffix=note_suffix,
+            dry_run=dry_run,
+            force=force,
+            work_dir=WORK_DIR,
+        )
+        if code != 0 and msg.startswith("오류:"):
+            typer.secho(f"[ERROR] {msg}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=code)
+        typer.echo(msg)
+        if code != 0:
+            raise typer.Exit(code=code)
+        return
+
     if record:
         code, msg = record_baseline(
             screen_names=screen_list,
@@ -1007,6 +1114,7 @@ def drift_cmd(
             src_index=idx_dir,
             task_id=unit_id,
             note_file=note_file,
+            force=force,
             work_dir=WORK_DIR,
         )
         if code != 0:
@@ -1039,6 +1147,7 @@ def drift_cmd(
     typer.echo(out_text)
     if code != 0:
         raise typer.Exit(code=code)
+
 
 
 @app.command(name="sql-check")

@@ -40,8 +40,8 @@ ASIS_SRC_DIR = Path(os.getenv("YUNHEE_ASIS_SRC_DIR", "/home/kdy987/oms-data/src/
 import tomllib
 
 
-def _find_yunhee_toml() -> tuple[Path | None, dict]:
-    cur = Path.cwd().resolve()
+def _find_yunhee_toml(start_dir: Path | None = None) -> tuple[Path | None, dict]:
+    cur = (start_dir or Path.cwd()).resolve()
     for d in [cur, *cur.parents]:
         f = d / ".yunhee.toml"
         if f.is_file():
@@ -50,6 +50,7 @@ def _find_yunhee_toml() -> tuple[Path | None, dict]:
             except Exception:  # noqa: BLE001
                 return f, {}
     return None, {}
+
 
 
 TOML_FILE, TOML_CONFIG = _find_yunhee_toml()

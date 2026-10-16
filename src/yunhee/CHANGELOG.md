@@ -2,6 +2,13 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.3.9] - 2026-10-16
+수정사항 033 (`yunhee sql` 출력 형식·파일 저장·내장 SQL, `drift --record-from` 일괄 기록, `index-src`·`drift` 화면 수 요약 표기) 반영.
+- `yunhee sql`: `-o/--output table|tsv|csv|json`, `--no-header`, `--null`, `--out <파일>`(원자적 저장 및 1줄 요약), 마크다운 표 `|` 이스케이프 지원 (033-1)
+- `yunhee drift`: `--record-from <표 파일>` / `--record-all` 일괄 baseline 기록, `--status`·`--dry-run`·`--force` 지원, 해시 변경 시 덮어쓰기 방지 가드 (033-2)
+- `yunhee index-src` & `drift`: 총 화면 수와 구성(`화면 N개(메뉴 M + 프레임 K)`) 통일 표기, `--menus` 미지정 시 `연결 안 됨(--menus 없음)` 안내, `_source.json`에 `screens_menu`·`screens_frame` 분리 저장 (033-3)
+- `yunhee sql --builtin menus` 및 `index-src --menus-from-db`: `psql` 없이 메뉴 TSV 생성 지원 및 색인 `README.md` 안내 갱신 (033-4)
+
 ## [0.3.8] - 2026-10-16
 수정사항 032 (AS-IS 소스 변경(drift) 감지 및 화면 완성 기준선 기록) 반영.
 - `index-src` 소스 기준(커밋·파일 해시·역색인 `_files.json`) 기록 및 직전 색인 `_prev/` 보존, `analysis screen --section source` 지원 (032-1, 032-4)

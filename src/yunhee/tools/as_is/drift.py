@@ -475,17 +475,119 @@ def compute_prev_index_diff(
     }
 
 
+def resolve_drift_config(work_dir: Path | None = None) -> dict[str, Any]:
+    """TOBE 저장소의 .yunhee.toml [drift] 설정을 읽어 기본값과 합쳐 반환한다."""
+    wd = (work_dir or Path.cwd()).resolve()
+    toml_file, toml_cfg = config._find_yunhee_toml(wd)
+    drift_cfg = toml_cfg.get("drift", {}) if isinstance(toml_cfg, dict) else {}
+    base_root = toml_file.parent if toml_file else wd
+
+    raw_status = drift_cfg.get("record_status", ["완료", "확인"])
+    if isinstance(raw_status, str):
+        status_list = [s.strip() for s in raw_status.split(",") if s.strip()]
+    elif isinstance(raw_status, list):
+        status_list = [str(s).strip() for s in raw_status if str(s).strip()]
+    else:
+        status_list = ["완료", "확인"]
+
+    return {
+        "base_root": base_root,
+        "baseline": drift_cfg.get("baseline"),
+        "done_from": drift_cfg.get("done_from", "docs/01-변환목록.md"),
+        "record_status": status_list,
+        "note_dir": drift_cfg.get("note_dir", "docs/work"),
+        "note_suffix": drift_cfg.get("note_suffix", "-작업기록.md"),
+    }
+
+
 def resolve_baseline_path(work_dir: Path | None = None) -> Path:
     """TOBE 저장소의 baseline.json 경로를 결정한다 (.yunhee.toml [drift] baseline 우선, 기본 .yunhee/baseline.json)."""
     wd = (work_dir or Path.cwd()).resolve()
-    toml_file, toml_cfg = config._find_yunhee_toml()
-    drift_cfg = toml_cfg.get("drift", {}) if isinstance(toml_cfg, dict) else {}
-    custom_rel = drift_cfg.get("baseline")
+    d_cfg = resolve_drift_config(wd)
+    custom_rel = d_cfg.get("baseline")
     if custom_rel:
-        base_root = toml_file.parent if toml_file else wd
         p = Path(custom_rel)
-        return p if p.is_absolute() else (base_root / p)
+        return p if p.is_absolute() else (d_cfg["base_root"] / p)
     return wd / ".yunhee" / "baseline.json"
+
+
+def _clean_md_cell_text(val: str) -> str:
+    """마크다운 셀에서 링크·백틱·강조 기호를 벗기고 공백을 정리한다."""
+    s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", val)
+    return re.sub(r"[`*_~]", "", s).strip()
+
+
+def _clean_class_cell(raw_cls: str) -> str:
+    """표의 클래스 칸에서 마크다운 링크·백틱·부가 설명을 벗겨 순수 클래스명을 추출한다."""
+    s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", raw_cls).strip()
+    m_bt = re.search(r"`([A-Za-z_][A-Za-z0-9_./]*)`", s)
+    if m_bt:
+        cand = m_bt.group(1)
+    else:
+        cand = re.sub(r"[`*_~]", "", s).strip()
+        if cand:
+            cand = cand.split()[0].rstrip(",;)")
+    if "/" in cand or cand.endswith(".java"):
+        cand = Path(cand).stem
+    return cand
+
+
+def parse_conversion_table(
+    md_text: str,
+    id_col: str = "ID",
+    class_col: str = "클래스",
+    status_col: str = "상태",
+) -> list[dict[str, str]]:
+    """마크다운 문서 안의 표들을 스캔해 헤더 이름으로 ID·클래스·상태 열을 찾아 행 목록을 반환한다."""
+    lines = md_text.splitlines()
+    results: list[dict[str, str]] = []
+    i = 0
+    n = len(lines)
+
+    target_id_h = id_col.strip().lower()
+    target_cls_h = class_col.strip().lower()
+    target_st_h = status_col.strip().lower()
+
+    def _split_row(line: str) -> list[str]:
+        return [c.strip() for c in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
+
+    def _is_sep_row(line: str) -> bool:
+        s = line.strip()
+        if not s.startswith("|"):
+            return False
+        cells = _split_row(s)
+        return bool(cells) and all(bool(re.match(r"^:?-+:?$", c)) for c in cells)
+
+    while i < n:
+        line = lines[i].strip()
+        if line.startswith("|") and i + 1 < n and _is_sep_row(lines[i + 1]):
+            headers = [_clean_md_cell_text(c).lower() for c in _split_row(line)]
+            id_idx = headers.index(target_id_h) if target_id_h in headers else -1
+            cls_idx = headers.index(target_cls_h) if target_cls_h in headers else -1
+            st_idx = headers.index(target_st_h) if target_st_h in headers else -1
+
+            i += 2
+            if id_idx >= 0 and cls_idx >= 0 and st_idx >= 0:
+                max_idx = max(id_idx, cls_idx, st_idx)
+                while i < n:
+                    r_line = lines[i].strip()
+                    if not r_line.startswith("|"):
+                        break
+                    if _is_sep_row(r_line):
+                        i += 1
+                        continue
+                    cells = _split_row(r_line)
+                    if len(cells) > max_idx:
+                        r_id = _clean_md_cell_text(cells[id_idx])
+                        r_cls = _clean_class_cell(cells[cls_idx])
+                        r_st = _clean_md_cell_text(cells[st_idx])
+                        if r_id or r_cls:
+                            results.append({"id": r_id, "class": r_cls, "status": r_st})
+                    i += 1
+                continue
+        i += 1
+
+    return results
 
 
 def resolve_done_screens(work_dir: Path | None = None, baseline_data: dict[str, Any] | None = None) -> set[str]:
@@ -495,21 +597,26 @@ def resolve_done_screens(work_dir: Path | None = None, baseline_data: dict[str, 
     if baseline_data:
         done_set |= set(baseline_data.keys())
 
-    toml_file, toml_cfg = config._find_yunhee_toml()
-    drift_cfg = toml_cfg.get("drift", {}) if isinstance(toml_cfg, dict) else {}
-    done_from = drift_cfg.get("done_from")
+    d_cfg = resolve_drift_config(wd)
+    done_from = d_cfg.get("done_from")
     if done_from:
-        base_root = toml_file.parent if toml_file else wd
         df_path = Path(done_from)
         if not df_path.is_absolute():
-            df_path = base_root / df_path
+            cand = d_cfg["base_root"] / df_path
+            df_path = cand if cand.is_file() else (wd / df_path)
         if df_path.is_file():
             text = df_path.read_text(encoding="utf-8", errors="replace")
-            for line in text.splitlines():
-                # 완료 표시가 있거나 표/목록에 적힌 화면 클래스명 추출
-                if any(tok in line for tok in ("완료", "[x]", "[X]", "✅", "DONE", "done")) or "|" in line:
-                    for m in re.finditer(r"\b([A-Z][a-z0-9]+_[A-Za-z0-9_]+)\b", line):
-                        done_set.add(m.group(1))
+            status_set = set(d_cfg.get("record_status") or ["완료", "확인"])
+            parsed = parse_conversion_table(text)
+            if parsed:
+                for r in parsed:
+                    if r["status"] in status_set and r["class"]:
+                        done_set.add(r["class"])
+            else:
+                for line in text.splitlines():
+                    if any(tok in line for tok in ("완료", "확인", "[x]", "[X]", "✅", "DONE", "done")) or "|" in line:
+                        for m in re.finditer(r"\b([A-Z][a-z0-9]+_[A-Za-z0-9_]+)\b", line):
+                            done_set.add(m.group(1))
     return done_set
 
 
@@ -567,39 +674,51 @@ def load_index_screens(src_index: Path) -> tuple[dict[str, dict[str, Any]], dict
     return screens, files_map, source_meta
 
 
+def _check_index_freshness(
+    src_root: Path | None,
+    src_index: Path | None,
+) -> tuple[int, str, dict[str, dict[str, Any]], dict[str, Any]]:
+    """record 계열 명령을 위한 색인 유효성 및 최신성 검사."""
+    if not src_index or not src_index.is_dir():
+        return 2, f"오류: 색인 폴더를 찾을 수 없습니다: {src_index} — `index-src` 먼저 실행하세요.", {}, {}
+
+    screens, _, source_meta = load_index_screens(src_index)
+    if not source_meta:
+        return 2, "오류: 색인이 오래됨 (_source.json 없음) — `index-src` 먼저 실행하세요.", {}, {}
+
+    if source_meta.get("dirty"):
+        return 2, "오류: 색인이 dirty 상태입니다 (미커밋 변경 포함) — 커밋 후 `index-src` 먼저 실행하세요.", {}, {}
+
+    if src_root and src_root.is_dir() and is_git_repo(src_root):
+        curr_info = collect_source_info(src_root)
+        if curr_info.get("dirty"):
+            return 2, "오류: 소스에 미커밋 변경(dirty)이 있습니다 — 커밋 후 `index-src` 먼저 실행하세요.", {}, {}
+        if curr_info.get("commit") != source_meta.get("commit"):
+            msg = (
+                f"오류: 색인이 오래됨 (소스 HEAD {curr_info.get('commit_short')} != 색인 {source_meta.get('commit_short')}) "
+                f"— `index-src` 먼저 실행하세요."
+            )
+            return 2, msg, {}, {}
+
+    return 0, "", screens, source_meta
+
+
 def record_baseline(
     screen_names: list[str],
     src_root: Path,
     src_index: Path,
     task_id: str | None = None,
     note_file: Path | None = None,
+    force: bool = False,
     work_dir: Path | None = None,
 ) -> tuple[int, str]:
     """화면의 현재 색인 기준을 baseline.json에 기록하고, 선택적으로 --note-file 머리에 AS-IS 기준 줄을 갱신한다.
 
     반환: (exit_code, output_message)
     """
-    if not src_index or not src_index.is_dir():
-        return 2, f"오류: 색인 폴더를 찾을 수 없습니다: {src_index} — `index-src` 먼저 실행하세요."
-
-    screens, _, source_meta = load_index_screens(src_index)
-    if not source_meta:
-        return 2, "오류: 색인이 오래됨 (_source.json 없음) — `index-src` 먼저 실행하세요."
-
-    # 3-3: 색인이 최신인지 (소스 HEAD와 _source.json commit 일치, dirty: false) 확인
-    if source_meta.get("dirty"):
-        return 2, "오류: 색인이 dirty 상태입니다 (미커밋 변경 포함) — 커밋 후 `index-src` 먼저 실행하세요."
-
-    if src_root and src_root.is_dir() and is_git_repo(src_root):
-        curr_info = collect_source_info(src_root)
-        if curr_info.get("dirty"):
-            return 2, "오류: 소스에 미커밋 변경(dirty)이 있습니다 — 커밋 후 `index-src` 먼저 실행하세요."
-        if curr_info.get("commit") != source_meta.get("commit"):
-            msg = (
-                f"오류: 색인이 오래됨 (소스 HEAD {curr_info.get('commit_short')} != 색인 {source_meta.get('commit_short')}) "
-                f"— `index-src` 먼저 실행하세요."
-            )
-            return 2, msg
+    code, err_msg, screens, source_meta = _check_index_freshness(src_root, src_index)
+    if code != 0:
+        return code, err_msg
 
     targets = list(screen_names)
     if not targets and task_id:
@@ -632,7 +751,13 @@ def record_baseline(
     commit_date = source_meta.get("commit_date") or now_iso[:10]
     repo_name = source_meta.get("repo_name") or (src_root.name if src_root else "AS-IS")
 
+    try:
+        rel_bl = baseline_path.resolve().relative_to(wd).as_posix()
+    except ValueError:
+        rel_bl = str(baseline_path)
+
     recorded_msgs: list[str] = []
+    unchanged_msgs: list[str] = []
     total_files_last = 0
 
     for t_name in targets:
@@ -653,6 +778,15 @@ def record_baseline(
         s_files = dict(sc_info["source_files"])
         total_files_last = len(s_files)
         prev_entry = baseline_data.get(matched_key)
+        if isinstance(prev_entry, dict) and not force:
+            if prev_entry.get("files") == s_files:
+                unchanged_msgs.append(matched_key)
+                continue
+            return (
+                2,
+                f"오류: {matched_key} — 기준 변경: 원본이 바뀜 — drift로 먼저 확인 (덮어쓰려면 --force)",
+            )
+
         history: list[dict[str, Any]] = []
         if isinstance(prev_entry, dict):
             history = list(prev_entry.get("history") or [])
@@ -684,23 +818,221 @@ def record_baseline(
         baseline_data[matched_key] = new_entry
         recorded_msgs.append(f"{matched_key} @ {commit_short} (의존 {len(s_files)}개)")
 
-    baseline_path.parent.mkdir(parents=True, exist_ok=True)
-    baseline_path.write_text(json.dumps(baseline_data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    note_suffix = ""
     if note_file:
-        try:
-            rel_bl = baseline_path.resolve().relative_to(wd).as_posix()
-        except ValueError:
-            rel_bl = str(baseline_path)
         asis_line = (
             f"AS-IS 기준: {repo_name} {commit} ({branch}, {commit_date}) "
             f"· 의존 파일 {total_files_last}개 해시는 {rel_bl}"
         )
         _update_note_file_header(note_file, asis_line)
-        note_suffix = " · 작업기록 머리에 'AS-IS 기준:' 줄 추가"
 
+    if not recorded_msgs and unchanged_msgs:
+        return 0, f"변경 없음 {len(unchanged_msgs)}개 ({', '.join(unchanged_msgs)})"
+
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_text(json.dumps(baseline_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    note_suffix = " · 작업기록 머리에 'AS-IS 기준:' 줄 추가" if note_file else ""
     return 0, f"baseline 기록: {', '.join(recorded_msgs)}{note_suffix}"
+
+
+def record_baseline_from_table(
+    table_file: Path | None,
+    src_root: Path,
+    src_index: Path,
+    statuses: list[str] | None = None,
+    id_col: str = "ID",
+    class_col: str = "클래스",
+    status_col: str = "상태",
+    note_dir: Path | str | None = None,
+    note_suffix: str | None = None,
+    dry_run: bool = False,
+    force: bool = False,
+    work_dir: Path | None = None,
+) -> tuple[int, str]:
+    """마크다운 변환목록 표에서 대상 행을 읽어 색인을 한 번만 로드한 뒤 일괄로 baseline을 기록한다."""
+    wd = (work_dir or Path.cwd()).resolve()
+    d_cfg = resolve_drift_config(wd)
+
+    eff_table = table_file if table_file is not None else Path(d_cfg["done_from"])
+    if not eff_table.is_absolute() and not eff_table.is_file():
+        cand_wd = wd / eff_table
+        cand_root = d_cfg["base_root"] / eff_table
+        eff_table = cand_wd if cand_wd.is_file() else cand_root
+
+    if not eff_table.is_file():
+        return 2, f"오류: 변환목록 표 파일을 찾을 수 없습니다: {table_file or d_cfg['done_from']}"
+
+    code, err_msg, screens, source_meta = _check_index_freshness(src_root, src_index)
+    if code != 0:
+        return code, err_msg
+
+    rows = parse_conversion_table(
+        eff_table.read_text(encoding="utf-8", errors="replace"),
+        id_col=id_col,
+        class_col=class_col,
+        status_col=status_col,
+    )
+    if not rows:
+        return 2, f"오류: '{eff_table}'에서 ({id_col}, {class_col}, {status_col}) 열을 가진 표를 찾을 수 없습니다."
+
+    eff_statuses = statuses if statuses is not None else d_cfg["record_status"]
+    status_set = {s.strip() for s in eff_statuses if s.strip()}
+
+    raw_nd = note_dir if note_dir is not None else d_cfg["note_dir"]
+    nd_path = Path(raw_nd) if raw_nd else None
+    if nd_path and not nd_path.is_absolute():
+        nd_path = wd / nd_path
+    eff_suffix = note_suffix if note_suffix is not None else d_cfg["note_suffix"]
+
+    baseline_path = resolve_baseline_path(wd)
+    baseline_data: dict[str, Any] = {}
+    if baseline_path.is_file():
+        try:
+            baseline_data = json.loads(baseline_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            baseline_data = {}
+
+    now_iso = datetime.now(tz=KST).isoformat(timespec="seconds")
+    user = getpass.getuser()
+    commit = source_meta.get("commit") or "none"
+    commit_short = source_meta.get("commit_short") or (commit[:7] if commit != "none" else "none")
+    branch = source_meta.get("branch") or "-"
+    commit_date = source_meta.get("commit_date") or now_iso[:10]
+    repo_name = source_meta.get("repo_name") or (src_root.name if src_root else "AS-IS")
+
+    try:
+        rel_bl = baseline_path.resolve().relative_to(wd).as_posix()
+    except ValueError:
+        rel_bl = str(baseline_path)
+
+    target_rows = [r for r in rows if r["status"] in status_set]
+    status_filtered = [r for r in rows if r["status"] not in status_set]
+
+    valid_targets: list[tuple[str, str]] = []
+    other_skips: list[str] = []
+    warnings_out: list[str] = []
+    recorded_count = 0
+    note_updated_count = 0
+    unchanged_count = 0
+    has_hash_conflict = False
+
+    for r in target_rows:
+        t_id = r["id"]
+        t_cls = r["class"]
+        matched_key = t_cls
+        if matched_key not in screens:
+            for k in screens:
+                if k.lower() == t_cls.lower():
+                    matched_key = k
+                    break
+        if not matched_key or matched_key not in screens:
+            other_skips.append(f"{t_id}({t_cls or '-'}): 색인에 없음")
+            continue
+
+        sc_info = screens[matched_key]
+        if not sc_info.get("has_frontmatter") or sc_info.get("source_files") is None:
+            other_skips.append(f"{t_id}({matched_key}): 기준 정보 없음")
+            continue
+
+        s_files = dict(sc_info["source_files"])
+        prev_entry = baseline_data.get(matched_key)
+
+        if dry_run:
+            if isinstance(prev_entry, dict) and not force and prev_entry.get("files") != s_files:
+                other_skips.append(f"{t_id}({matched_key}): 기준 변경: 원본이 바뀜 — drift로 먼저 확인")
+            else:
+                valid_targets.append((t_id, matched_key))
+            continue
+
+        asis_line = (
+            f"AS-IS 기준: {repo_name} {commit} ({branch}, {commit_date}) "
+            f"· 의존 파일 {len(s_files)}개 해시는 {rel_bl}"
+        )
+
+        if isinstance(prev_entry, dict) and not force:
+            if prev_entry.get("files") == s_files:
+                unchanged_count += 1
+                if nd_path and t_id:
+                    nf = nd_path / f"{t_id}{eff_suffix}"
+                    if nf.is_file():
+                        _update_note_file_header(nf, asis_line)
+                continue
+            warn_item = f"{t_id}({matched_key}): 기준 변경: 원본이 바뀜 — drift로 먼저 확인"
+            other_skips.append(warn_item)
+            warnings_out.append(f"⚠ {warn_item}")
+            has_hash_conflict = True
+            continue
+
+        history: list[dict[str, Any]] = []
+        if isinstance(prev_entry, dict):
+            history = list(prev_entry.get("history") or [])
+            history.append({
+                "commit": prev_entry.get("commit"),
+                "commit_short": prev_entry.get("commit_short"),
+                "recorded_at": prev_entry.get("recorded_at"),
+                "recorded_by": prev_entry.get("recorded_by"),
+                "files": prev_entry.get("files"),
+                "note": prev_entry.get("note"),
+            })
+
+        nf_path: Path | None = (nd_path / f"{t_id}{eff_suffix}") if (nd_path and t_id) else None
+        new_entry: dict[str, Any] = {
+            "commit": commit,
+            "commit_short": commit_short,
+            "branch": branch,
+            "commit_date": commit_date,
+            "repo_name": repo_name,
+            "files": s_files,
+            "shared_links": sc_info.get("shared_links") or [],
+            "recorded_at": now_iso,
+            "recorded_by": user,
+            "note": str(nf_path) if nf_path else (prev_entry.get("note") if isinstance(prev_entry, dict) else None),
+            "history": history,
+        }
+        if t_id:
+            new_entry["id"] = t_id
+
+        baseline_data[matched_key] = new_entry
+        recorded_count += 1
+        if nf_path:
+            _update_note_file_header(nf_path, asis_line)
+            note_updated_count += 1
+
+    if dry_run:
+        skip_items = list(other_skips)
+        if status_filtered:
+            st_part = ", ".join(f"{r['id']}: 상태 {r['status']}" for r in status_filtered) + " — 상태 필터"
+            skip_items.append(st_part)
+        total_skips = len(other_skips) + len(status_filtered)
+        skip_detail = f" ({', '.join(skip_items)})" if skip_items else ""
+        head = f"대상 {len(valid_targets)}개 · 건너뜀 {total_skips}개{skip_detail}"
+        if valid_targets:
+            t_preview = ", ".join(f"{tid}({cls})" for tid, cls in valid_targets[:20])
+            more = f" 외 {len(valid_targets) - 20}개" if len(valid_targets) > 20 else ""
+            return 0, f"{head}\n대상 목록: {t_preview}{more}"
+        return 0, head
+
+    if recorded_count > 0:
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_path.write_text(json.dumps(baseline_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if recorded_count == 0 and unchanged_count > 0 and not other_skips:
+        return 0, f"변경 없음 {unchanged_count}개"
+
+    parts = [f"기록 {recorded_count}개"]
+    if note_updated_count > 0:
+        parts.append(f"작업기록 {note_updated_count}개 갱신")
+    if unchanged_count > 0:
+        parts.append(f"변경 없음 {unchanged_count}개")
+    skip_str = f"건너뜀 {len(other_skips)}개"
+    if other_skips:
+        skip_str += f" ({', '.join(other_skips)})"
+    parts.append(skip_str)
+
+    out_lines = [*warnings_out, " · ".join(parts)]
+    exit_code = 2 if has_hash_conflict else 0
+    return exit_code, "\n".join(out_lines)
+
 
 
 def _update_note_file_header(note_file: Path, asis_line: str) -> None:
@@ -1337,6 +1669,12 @@ def run_drift(
         return exit_code, diff_text, warnings
 
     # 기본 table 출력
+    s_menu = source_meta.get("screens_menu")
+    s_frame = source_meta.get("screens_frame")
+    if s_menu is None or s_frame is None:
+        s_frame = sum(1 for v in only_screen_units.values() if "_frame" in v["md_file"].parts)
+        s_menu = len(only_screen_units) - s_frame
+
     table_text = _render_table_output(
         screen_results=screen_results,
         shared_changes_global=shared_changes_global,
@@ -1346,6 +1684,8 @@ def run_drift(
         done_only=done_only,
         base_commits_seen=base_commits_seen,
         single_query=len(target_names) == 1 and not all_screens,
+        screens_menu=s_menu if all_screens and not done_only else None,
+        screens_frame=s_frame if all_screens and not done_only else None,
     )
     return exit_code, table_text, warnings
 
@@ -1359,6 +1699,8 @@ def _render_table_output(
     done_only: bool,
     base_commits_seen: set[str],
     single_query: bool = False,
+    screens_menu: int | None = None,
+    screens_frame: int | None = None,
 ) -> str:
     """기본 1화면 1줄 요약 테이블 출력을 렌더링한다."""
     changed_list = [s for s in screen_results if s["status"] in ("변경", "삭제")]
@@ -1402,8 +1744,13 @@ def _render_table_output(
             f"({base} {b_short} → HEAD {head_short})"
         )
 
+    if screens_menu is not None and screens_frame is not None and total_cnt == (screens_menu + screens_frame):
+        count_label = f"{scope_label} {total_cnt}개(메뉴 {screens_menu} · 프레임 {screens_frame})"
+    else:
+        count_label = f"{scope_label} {total_cnt}개"
+
     lines.append(
-        f"기준 대비 변경 {len(changed_list)}개 / {scope_label} {total_cnt}개 "
+        f"기준 대비 변경 {len(changed_list)}개 / {count_label} "
         f"({' · '.join(extra_counts)}) — {head_info}"
     )
 

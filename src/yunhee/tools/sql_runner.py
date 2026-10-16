@@ -1,7 +1,12 @@
 """PostgreSQL 읽기 전용 조회 및 롤백 실행 도구."""
 
+import csv
+import io
+import json
 import os
 import re
+import tempfile
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +15,10 @@ from psycopg.rows import dict_row
 
 from yunhee import config
 from yunhee.tools.base import ToolResult
+
+SUPPORTED_OUTPUT_FORMATS = ("table", "tsv", "csv", "json")
+BUILTIN_SQL_DIR = Path(__file__).resolve().parent / "sql"
+
 
 # 두 모드 모두 막는 문장 (첫 키워드 기준). COMMIT/END/PREPARE TRANSACTION은 실제 저장, DDL은 롤백 대상이 아니라고 본다.
 BLOCKED_ALWAYS = {
@@ -179,6 +188,118 @@ def proc_has_tx_control(cur: Any, stmt: str) -> str | None:
     return None
 
 
+def list_builtin_sqls() -> list[str]:
+    """내장 SQL 파일 이름(확장자 제외) 목록을 반환한다."""
+    if not BUILTIN_SQL_DIR.is_dir():
+        return []
+    return sorted(p.stem for p in BUILTIN_SQL_DIR.glob("*.sql"))
+
+
+def get_builtin_sql(name: str) -> str | None:
+    """내장 SQL 파일 내용을 읽어 반환한다. 없으면 None."""
+    if not name or "/" in name or "\\" in name or ".." in name:
+        return None
+    f = BUILTIN_SQL_DIR / f"{name}.sql"
+    if not f.is_file():
+        return None
+    return f.read_text(encoding="utf-8", errors="replace")
+
+
+def _escape_tsv_cell(val: Any, null_str: str = "") -> str:
+    """PostgreSQL COPY ... TEXT 규칙에 따라 탭·줄바꿈·백슬래시를 이스케이프한다."""
+    if val is None:
+        return null_str
+    return (
+        str(val)
+        .replace("\\", "\\\\")
+        .replace("\t", "\\t")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    )
+
+
+def format_tsv(
+    cols: list[str],
+    rows: list[dict[str, Any]],
+    no_header: bool = False,
+    null_str: str = "",
+) -> str:
+    """TSV 문자열을 생성한다."""
+    lines: list[str] = []
+    if not no_header and cols:
+        lines.append("\t".join(_escape_tsv_cell(c, "") for c in cols))
+    for r in rows:
+        lines.append("\t".join(_escape_tsv_cell(r.get(c), null_str) for c in cols))
+    return "\n".join(lines)
+
+
+def format_csv(
+    cols: list[str],
+    rows: list[dict[str, Any]],
+    no_header: bool = False,
+    null_str: str = "",
+) -> str:
+    """RFC 4180 CSV 문자열(UTF-8, BOM 없음)을 생성한다."""
+    buf = io.StringIO()
+    writer = csv.writer(
+        buf,
+        delimiter=",",
+        quotechar='"',
+        quoting=csv.QUOTE_MINIMAL,
+        doublequote=True,
+        lineterminator="\n",
+    )
+    if not no_header and cols:
+        writer.writerow(cols)
+    for r in rows:
+        writer.writerow([null_str if r.get(c) is None else str(r.get(c)) for c in cols])
+    return buf.getvalue().rstrip("\n")
+
+
+def _to_json_val(val: Any) -> Any:
+    """숫자·불리언·NULL은 JSON 원형 타입으로, Decimal은 int/float로 변환한다."""
+    if val is None or isinstance(val, (bool, int, float, str)):
+        return val
+    if isinstance(val, Decimal):
+        return int(val) if val == int(val) else float(val)
+    if isinstance(val, (list, tuple)):
+        return [_to_json_val(x) for x in val]
+    if isinstance(val, dict):
+        return {str(k): _to_json_val(v) for k, v in val.items()}
+    return str(val)
+
+
+def format_json(cols: list[str], rows: list[dict[str, Any]]) -> str:
+    """객체 배열 JSON 문자열을 생성한다."""
+    payload = [{c: _to_json_val(r.get(c)) for c in cols} for r in rows]
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _escape_md_cell(val: Any) -> str:
+    """마크다운 표 셀 안의 파이프(|)를 \\|로 이스케이프한다."""
+    return str(val).replace("|", "\\|")
+
+
+def _write_atomic(out_path: Path, content: str) -> None:
+    """임시 파일에 먼저 쓴 뒤 원자적으로 대상 파일로 이동해 부분 파일을 남기지 않는다."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".yunhee_sql_", dir=str(out_path.parent))
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            if content and not content.endswith("\n"):
+                f.write("\n")
+        os.replace(tmp_path, out_path)
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
+
+
 def get_connection_string(db_name: str | None = None) -> str | None:
     """DB 연결 문자열을 환경변수 또는 config에서 가져온다."""
     db_url = None
@@ -192,21 +313,44 @@ def get_connection_string(db_name: str | None = None) -> str | None:
 def run_sql(
     query: str | None = None,
     file_path: Path | None = None,
+    builtin: str | None = None,
     rollback: bool = False,
-    limit: int = 5,
+    limit: int | None = None,
     timeout: float = 10.0,
     vars_dict: dict[str, Any] | None = None,
     db_name: str | None = None,
+    output_fmt: str = "table",
+    no_header: bool = False,
+    null_str: str = "",
+    out_file: Path | str | None = None,
 ) -> ToolResult:
     """PostgreSQL 쿼리를 읽기 전용 또는 롤백 모드로 안전하게 실행한다."""
-    if not query and not file_path:
-        return ToolResult(ok=False, error="실행할 SQL 쿼리 문자열이나 파일(-f)을 지정해야 합니다.")
+    if output_fmt not in SUPPORTED_OUTPUT_FORMATS:
+        return ToolResult(
+            ok=False,
+            error=f"지원하지 않는 출력 형식입니다: '{output_fmt}' (지원 형식: {', '.join(SUPPORTED_OUTPUT_FORMATS)})",
+            data={"exit_code": 2},
+        )
 
-    raw_script = query or ""
-    if file_path:
-        if not file_path.is_file():
-            return ToolResult(ok=False, error=f"SQL 파일을 찾을 수 없습니다: {file_path}")
-        raw_script = file_path.read_text(encoding="utf-8", errors="replace")
+    if builtin is not None:
+        b_sql = get_builtin_sql(builtin)
+        if b_sql is None:
+            avail = ", ".join(list_builtin_sqls()) or "(없음)"
+            return ToolResult(
+                ok=False,
+                error=f"알 수 없는 내장 SQL입니다: '{builtin}' (사용 가능한 내장 SQL: {avail})",
+                data={"exit_code": 2},
+            )
+        raw_script = b_sql
+    else:
+        if not query and not file_path:
+            return ToolResult(ok=False, error="실행할 SQL 쿼리 문자열이나 파일(-f), 또는 --builtin을 지정해야 합니다.")
+
+        raw_script = query or ""
+        if file_path:
+            if not file_path.is_file():
+                return ToolResult(ok=False, error=f"SQL 파일을 찾을 수 없습니다: {file_path}")
+            raw_script = file_path.read_text(encoding="utf-8", errors="replace")
 
     raw_script = raw_script.strip()
     if not raw_script:
@@ -228,6 +372,8 @@ def run_sql(
         err = guard_statement(stmt, rollback)
         if err:
             return ToolResult(ok=False, error=err)
+
+    eff_limit: int | None = limit if limit is not None else (5 if output_fmt == "table" else None)
 
     variables: dict[str, Any] = dict(vars_dict or {})
 
@@ -305,13 +451,13 @@ def run_sql(
                 elif upper == "SELECT" or cur.description:
                     rows = cur.fetchall()
                     total_rows = len(rows)
-                    preview_rows = rows[:limit]
+                    preview_rows = rows[:eff_limit] if eff_limit is not None else rows
                     cols = [desc.name for desc in cur.description] if cur.description else []
                     last_table_data = {
                         "total_rows": total_rows,
                         "columns": cols,
                         "rows": preview_rows,
-                        "limit": limit,
+                        "limit": eff_limit,
                     }
                 else:
                     output_lines.append(f"{upper} ok")
@@ -329,25 +475,69 @@ def run_sql(
         except Exception:  # noqa: BLE001, S110
             pass
 
-    # 결과 표 렌더링
+    warnings: list[str] = []
+
+    if output_fmt in ("tsv", "csv", "json"):
+        tot = last_table_data["total_rows"] if last_table_data else 0
+        cols = last_table_data["columns"] if last_table_data else []
+        p_rows = last_table_data["rows"] if last_table_data else []
+
+        if output_fmt == "tsv":
+            formatted_data = format_tsv(cols, p_rows, no_header=no_header, null_str=null_str)
+        elif output_fmt == "csv":
+            formatted_data = format_csv(cols, p_rows, no_header=no_header, null_str=null_str)
+        else:
+            formatted_data = format_json(cols, p_rows)
+
+        if eff_limit is not None and tot > len(p_rows):
+            warnings.append(f"⚠ {tot}행 중 {len(p_rows)}행만 출력")
+
+        if out_file is not None:
+            out_path = Path(out_file)
+            try:
+                _write_atomic(out_path, formatted_data)
+            except Exception as exc:  # noqa: BLE001
+                return ToolResult(ok=False, error=f"출력 파일 저장 실패: {exc}")
+            summary_str = f"rows={len(p_rows)} → {out_file}"
+        else:
+            summary_str = formatted_data
+
+        return ToolResult(
+            ok=True,
+            data={
+                "summary": summary_str,
+                "formatted": formatted_data,
+                "table": last_table_data,
+                "warnings": warnings,
+                "rollback": rollback,
+            },
+            truncated=bool(eff_limit is not None and tot > len(p_rows)),
+        )
+
+    # 기본 table(마크다운) 렌더링
     table_str = ""
     if last_table_data:
         tot = last_table_data["total_rows"]
         cols = last_table_data["columns"]
         p_rows = last_table_data["rows"]
 
-        if len(stmts) == 1 and tot == 1 and len(cols) == 1:
+        if (
+            len(stmts) == 1
+            and tot == 1
+            and len(cols) == 1
+            and "|" not in str(p_rows[0][cols[0]])
+        ):
             # rows=1 count=12 형태의 단발성 요약
             col_name = cols[0]
             val = p_rows[0][col_name]
             table_str = f"rows=1  {col_name}={val}"
         else:
-            # 마크다운 표 형태
-            hdr = "| " + " | ".join(cols) + " |"
+            # 마크다운 표 형태 (값/헤더 안의 |는 \|로 이스케이프)
+            hdr = "| " + " | ".join(_escape_md_cell(c) for c in cols) + " |"
             sep = "| " + " | ".join(["---"] * len(cols)) + " |"
             r_lines = [hdr, sep]
             for r in p_rows:
-                r_lines.append("| " + " | ".join(str(r.get(c, "")) for c in cols) + " |")
+                r_lines.append("| " + " | ".join(_escape_md_cell(r.get(c, "")) for c in cols) + " |")
             if tot > len(p_rows):
                 r_lines.append(f"(총 {tot}행 중 {len(p_rows)}행만 표시)")
             table_str = f"rows={tot}\n" + "\n".join(r_lines)
@@ -362,10 +552,21 @@ def run_sql(
     if rollback:
         result_parts.append("남은 변경 없음")
 
+    full_summary = "\n".join(result_parts)
+    if out_file is not None:
+        out_path = Path(out_file)
+        try:
+            _write_atomic(out_path, full_summary)
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(ok=False, error=f"출력 파일 저장 실패: {exc}")
+        tot_cnt = last_table_data["total_rows"] if last_table_data else 0
+        full_summary = f"rows={tot_cnt} → {out_file}"
+
     return ToolResult(
         ok=True,
         data={
-            "summary": "\n".join(result_parts),
+            "summary": full_summary,
             "table": last_table_data,
+            "warnings": warnings,
         },
     )

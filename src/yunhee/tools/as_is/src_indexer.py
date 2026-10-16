@@ -1533,7 +1533,13 @@ def write_readme(
         "4. 실제 코드는 소스 경로의 해당 파일·줄만 연다.", "",
         "## 통계", "",
         (
-            f"- 클라이언트 클래스 {n_client}개, 메뉴 화면 {len(idx.screen_names) - len(idx.frame_names)}개, 프레임 {len(idx.frame_names)}개([_frame](_frame/README.md)), 컴포넌트 {len(idx.component_names)}개, "
+            f"- 클라이언트 클래스 {n_client}개, "
+            + (
+                f"메뉴 화면 {len(idx.screen_names) - len(idx.frame_names)}개"
+                if idx.menus
+                else f"메뉴 화면: 연결 안 됨(--menus 없음, MenuOpener {len(idx.screen_names) - len(idx.frame_names)}개)"
+            )
+            + f", 프레임 {len(idx.frame_names)}개([_frame](_frame/README.md)), 컴포넌트 {len(idx.component_names)}개, "
             f"서버 서비스 메서드 {len(idx.service_methods)}개, 매퍼 SQL {len(idx.statements)}개"
         ),
         (
@@ -1551,15 +1557,7 @@ def write_readme(
     lines += [
         "", "## 메뉴 TSV 만들기", "",
         "```bash",
-        "psql -h localhost -U kdy987 -d asseterpdb -AtF $'\\t' -c \"",
-        "WITH RECURSIVE t AS (",
-        "  SELECT sys06_menu_id id, sys06_menu_nm::text path, sys06_seq::text sort FROM sys06_menu WHERE sys06_parent_id = 0",
-        "  UNION ALL",
-        "  SELECT m.sys06_menu_id, t.path || ' > ' || m.sys06_menu_nm, t.sort || '.' || coalesce(m.sys06_seq,'')",
-        "  FROM sys06_menu m JOIN t ON m.sys06_parent_id = t.id)",
-        "SELECT coalesce(m.sys06_menu_no,''), t.path, m.sys06_class_nm, coalesce(m.sys06_use_yn,'')",
-        "FROM t JOIN sys06_menu m ON m.sys06_menu_id = t.id",
-        "WHERE coalesce(m.sys06_class_nm,'') <> '' ORDER BY t.sort\" > docs/as-is/menus.tsv",
+        "yunhee sql --builtin menus -o tsv --out docs/as-is/menus.tsv --no-header",
         "```",
     ]
     write(out, "README.md", lines)
@@ -1586,8 +1584,13 @@ def write_source_and_files_json(idx: "Index", out: Path) -> tuple[Path, Path, in
     files_json = out / "_files.json"
     files_json.write_text(json.dumps(files_dict, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    n_frame = len(idx.frame_names)
+    n_menu = len(idx.screen_names) - n_frame
     s_info = {k: v for k, v in (idx.source_info or {}).items() if k != "tree_blobs"}
+    s_info["screens_menu"] = n_menu
+    s_info["screens_frame"] = n_frame
     s_info["screens_count"] = len(idx.screen_names)
+    s_info["has_menus"] = bool(idx.menus)
     s_info["files_count"] = len(files_dict)
     source_json = out / "_source.json"
     source_json.write_text(json.dumps(s_info, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1792,15 +1795,20 @@ def index_src(
     }
     prev_diff = compute_prev_index_diff(target_dir, curr_screens_for_diff)
 
-    n_screens = len(idx.screen_names) - len(idx.frame_names)
+    n_frame = len(idx.frame_names)
+    n_menu = len(idx.screen_names) - n_frame
+    n_total = len(idx.screen_names)
     return ToolResult(
         ok=True,
         data={
             "target_dir": str(target_dir),
             "app_package": str(app.relative_to(src_root)),
             "client_classes_count": sum(len(v) for v in client.values()),
-            "screens_count": n_screens,
-            "frame_screens_count": len(idx.frame_names),
+            "screens_count": n_total,
+            "screens_menu": n_menu,
+            "screens_frame": n_frame,
+            "frame_screens_count": n_frame,
+            "has_menus": bool(idx.menus),
             "components_count": len(idx.component_names),
             "service_methods_count": len(idx.service_methods),
             "statements_count": len(statements),
@@ -1816,3 +1824,4 @@ def index_src(
             "mismatch_warning": mismatch_warning,
         },
     )
+

@@ -176,7 +176,7 @@ def test_032_1_index_src_metadata_and_frontmatter(tmp_path: Path):
         ["index-src", str(repo), "-t", str(target), "--menus", str(menus), "--no-events"],
     )
     assert res.exit_code == 0, res.output
-    assert "clean · 화면 2개" in res.output
+    assert "clean · 화면 3개(메뉴 2 + 프레임 1)" in res.output
 
     # 1. _source.json 확인
     source_json = json.loads((target / "_source.json").read_text(encoding="utf-8"))
@@ -192,7 +192,7 @@ def test_032_1_index_src_metadata_and_frontmatter(tmp_path: Path):
     readme_text = (target / "README.md").read_text(encoding="utf-8")
     assert f"소스 커밋: {source_json['commit']} (ioc," in readme_text
     assert "색인 생성:" in readme_text
-    assert "yunhee 0.3.8" in readme_text
+    assert "yunhee 0.3." in readme_text
 
     # 3. 화면 .md frontmatter 확인
     sys27_md = target / "sys" / "screens" / "Sys27_Tab_LoginManage.md"
@@ -292,7 +292,7 @@ def test_032_2_drift_detection_all_states(tmp_path: Path):
         ["drift", "--all", "--src", str(repo), "--src-index", str(target), "--fail-on-drift"],
     )
     assert res_clean.exit_code == 0, res_clean.output
-    assert "기준 대비 변경 0개 / 화면 3개 (동일 3 · 기준 없음 0)" in res_clean.output
+    assert "기준 대비 변경 0개 / 화면 3개(메뉴 2 · 프레임 1) (동일 3 · 기준 없음 0)" in res_clean.output
 
     # 2. 전용 파일 1줄 수정 후 drift 확인
     sys27_java = next(repo.rglob("Sys27_Tab_LoginManage.java"))
@@ -470,13 +470,14 @@ def test_032_3_baseline_record_and_note_file(tmp_path: Path, monkeypatch):
     assert res_done_drift.exit_code == 0, res_done_drift.output
     assert "기준 대비 변경 1개 / 완료 화면 1개" in res_done_drift.output
 
-    # 4. 재색인 후 다시 --record 실행 시 history에 이전 기록 보관 및 note_file 중복 없이 갱신
+    # 4. 재색인 후 다시 --record --force 실행 시 history에 이전 기록 보관 및 note_file 중복 없이 갱신
     runner.invoke(cli.app, ["index-src", str(repo), "-t", str(target), "--menus", str(menus), "--no-events"])
     res_rec2 = runner.invoke(
         cli.app,
         [
             "drift",
             "--record",
+            "--force",
             "Sys27_Tab_LoginManage",
             "--note-file",
             str(note_file),
@@ -529,7 +530,7 @@ def test_032_4_prev_index_preservation(tmp_path: Path):
         ["drift", "--all", "--base", "prev-index", "--src", str(repo), "--src-index", str(target)],
     )
     assert res_prev_drift.exit_code == 0, res_prev_drift.output
-    assert "기준 대비 변경 1개 / 화면 3개" in res_prev_drift.output
+    assert "기준 대비 변경 1개 / 화면 3개(메뉴 2 · 프레임 1)" in res_prev_drift.output
     assert "Sys27_Tab_LoginManage" in res_prev_drift.output
 
 
@@ -570,12 +571,12 @@ def test_032_5_multi_pc_commit_mismatch_warnings(tmp_path: Path, monkeypatch):
 
 
 def test_032_6_version_changelog_agent_guide():
-    """032-6: 버전 0.3.8, changelog, agent-guide, drift --help 검증."""
+    """032-6: 버전, changelog, agent-guide, drift --help 검증."""
     res_ver = runner.invoke(cli.app, ["--version"])
     assert res_ver.exit_code == 0
-    assert "0.3.8" in res_ver.output
+    assert "0.3." in res_ver.output
 
-    res_cl = runner.invoke(cli.app, ["changelog"])
+    res_cl = runner.invoke(cli.app, ["changelog", "0.3.8"])
     assert res_cl.exit_code == 0
     assert "## [0.3.8]" in res_cl.output
     assert "yunhee drift" in res_cl.output
@@ -590,3 +591,4 @@ def test_032_6_version_changelog_agent_guide():
     assert res_help.exit_code == 0
     assert "--record" in res_help.output
     assert "--fail-on-drift" in res_help.output
+

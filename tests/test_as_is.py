@@ -174,7 +174,8 @@ public class Sys04_Role {
     assert res.ok is True
     data = res.data
     assert data["app_package"] == "application/src/main/java/myApp"
-    assert data["screens_count"] == 1
+    assert data["screens_menu"] == 1
+    assert data["screens_count"] == data["screens_menu"] + data["screens_frame"]
     assert data["service_methods_count"] == 1
     assert data["statements_count"] == 1
 
