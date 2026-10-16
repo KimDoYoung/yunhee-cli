@@ -443,4 +443,5 @@ def _render_json(
         },
         ensure_ascii=False,
         indent=2,
+        default=str,
     )

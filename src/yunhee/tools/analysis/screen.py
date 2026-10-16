@@ -232,6 +232,7 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
                 },
                 ensure_ascii=False,
                 indent=2,
+                default=str,
             )
 
         lines = [f"### 화면 `{screen_name}` 클래스 목록 ({len(display_stats)}개)"]

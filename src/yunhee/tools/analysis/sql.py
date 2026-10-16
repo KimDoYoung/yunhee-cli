@@ -221,7 +221,7 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         return json.dumps(
             {
                 "id": st.key,
-                "file": st.rel,
+                "file": str(st.rel),
                 "line": st.line,
                 "kind": st.kind,
                 "params": found_params,
@@ -231,6 +231,7 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
             },
             ensure_ascii=False,
             indent=2,
+            default=str,
         )
 
     lines = [f"### `{st.key}` ({st.rel}:{st.line})"]

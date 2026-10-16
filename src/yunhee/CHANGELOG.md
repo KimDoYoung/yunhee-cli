@@ -2,6 +2,10 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.4.1] - 2026-10-17
+수정사항 035 (`analysis sql -o json` 렌더링 실패) 반영.
+- `analysis sql -o json`: `file`을 문자열(상대 경로)로 변환해 `Object of type PosixPath is not JSON serializable` 오류 수정. `sql`·`screen --list`·`ui`의 `-o json`에 `default=str` 안전장치 추가 (035-1)
+
 ## [0.4.0] - 2026-10-17
 수정사항 034 (`index-src` 바깥 git 저장소 오인, `analysis screen --list` 열 의미, `-o json`) 반영.
 - `index-src`: 소스 폴더가 git 저장소의 루트가 아니면(`.git` 없는 하위 폴더) 바깥 저장소를 무시하고 `vcs: none`(파일 sha256)으로 기록하며 경고 출력. 하위 폴더를 소스로 쓰려면 `--vcs-root <저장소 루트>` 지정, `_source.json`에 `vcs_root`/`outer_repo` 기록 (034-1)

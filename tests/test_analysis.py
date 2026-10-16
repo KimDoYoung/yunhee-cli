@@ -570,3 +570,26 @@ def test_030_sql_count_aggregate():
 
 
 
+
+
+def test_035_sql_json_path_serializable():
+    """035-1: analysis sql -o json 은 Path(rel)를 문자열로 직렬화하고 md와 값이 같다."""
+    import json
+    from types import SimpleNamespace
+
+    from yunhee.tools.analysis import sql
+
+    raw = '<select id="selectByText">SELECT a FROM t1 WHERE x = #{companyId} AND y = #{personId} ORDER BY a</select>'
+    st = SimpleNamespace(
+        key="m.selectByText", ns="m", sid="selectByText", kind="select",
+        raw=raw, rel=Path("mapper/m.xml"), line=64,
+    )
+    obj = {"key": st.key, "statement": st, "params": {}, "src_root": Path("."), "statements": {st.key: st}}
+
+    d = json.loads(sql.render(obj, fmt="json"))
+    assert set(d) >= {"id", "file", "line", "params", "tables", "functions", "order_by"}
+    assert d["file"] == "mapper/m.xml" and isinstance(d["file"], str)
+    assert d["line"] == 64
+    assert d["params"] == ["companyId", "personId"]
+    md = sql.render(obj, fmt="md")
+    assert "companyId, personId" in md and "mapper/m.xml:64" in md
