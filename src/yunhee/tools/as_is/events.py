@@ -82,11 +82,17 @@ class ButtonInfo:
     button_type: str  # search, register, delete, save, etc. (미정의 시 unknown)
     handler: str  # onClick 핸들러 식별자 (예: retrieve, insert, () => edit(null))
     line: int = 0  # 소스 코드 내 줄 번호
+    candidate_type: str = ""  # unknown일 때 후보 type (예: upload, view, close)
+    candidate_label: str = ""  # 후보의 등록 라벨 (예: 파일업로드, 첨부파일관리)
+    unknown_reason: str = ""  # 미등록 문구, 제목 인식 실패 — 생성 코드 L...
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "label": self.label,
             "type": self.button_type,
+            "candidate_type": self.candidate_type,
+            "candidate_label": self.candidate_label,
+            "unknown_reason": self.unknown_reason,
             "onClick": self.handler,
             "jsx": self.jsx,
             "line": self.line,
@@ -94,6 +100,14 @@ class ButtonInfo:
 
     @property
     def jsx(self) -> str:
+        if self.button_type == "unknown":
+            if self.candidate_type:
+                cand_info = f"{self.candidate_type} ({self.candidate_label})" if self.candidate_label else self.candidate_type
+                return f'<Button type="unknown" /* 후보: {cand_info} */ onClick={{{self.handler}}}>{self.label}</Button>'
+            if not self.label:
+                reason = self.unknown_reason or f"제목 인식 실패 — 생성 코드 L{self.line}"
+                return f'<Button type="unknown ({reason})" onClick={{{self.handler}}}>{self.label}</Button>'
+            return f'<Button type="unknown (미등록 문구)" onClick={{{self.handler}}}>{self.label}</Button>'
         return f'<Button type="{self.button_type}" onClick={{{self.handler}}}>{self.label}</Button>'
 
 
@@ -1249,16 +1263,66 @@ def extract_events(text: str, file_name: str = "") -> list[EventInfo]:
     return ev_list
 
 
+BUTTON_SYNONYM_CANDIDATES: dict[str, tuple[str, str]] = {
+    "닫기": ("close", "닫기"),
+    "파일등록": ("upload", "파일업로드"),
+    "파일관리": ("view", "첨부파일관리"),
+}
+
+GENERIC_BUTTON_LABELS = {"전체", "공통", "선택", "기타", "일반", "관리", "설정"}
+
+
+def find_button_candidate(label: str, var: str, btn_map: dict[str, str]) -> tuple[str, str] | None:
+    """unknown 버튼에 대해 가장 가까운 등록 type과 등록 라벨 후보를 찾는다."""
+    lbl = label.strip()
+    if not lbl:
+        return None
+
+    # 1. 기정의된 대표 동의어 매핑
+    if lbl in BUTTON_SYNONYM_CANDIDATES:
+        return BUTTON_SYNONYM_CANDIDATES[lbl]
+
+    # 일반/범용 문구는 후보 추천 제외
+    if lbl in GENERIC_BUTTON_LABELS:
+        return None
+
+    # 2. 부분 일치 검색 (단, 일치하는 후보들의 type이 단일한 경우)
+    matches: list[tuple[str, str]] = []
+    for reg_lbl, b_type in btn_map.items():
+        if lbl in reg_lbl or reg_lbl in lbl:
+            matches.append((b_type, reg_lbl))
+
+    if matches:
+        types = {t for t, _ in matches}
+        if len(types) == 1:
+            best = min(matches, key=lambda x: abs(len(x[1]) - len(lbl)))
+            return best[0], best[1]
+
+    # 3. 변수명 힌트 (예: uploadFileButton -> upload)
+    var_lower = var.lower()
+    for kw, (cand_t, cand_lbl) in [
+        ("upload", ("upload", "파일업로드")),
+        ("close", ("close", "닫기")),
+        ("view", ("view", "첨부파일관리")),
+    ]:
+        if kw in var_lower:
+            return cand_t, cand_lbl
+
+    return None
+
+
 def extract_buttons(
     text: str,
     events: list[EventInfo] | None = None,
     file_path: Path | str = "",
     button_types_path: Path | str | None = None,
+    btn_map: dict[str, str] | None = None,
 ) -> list[ButtonInfo]:
     """AS-IS GXT 소스에서 사용된 버튼들을 추출하고 TOBE Button 규격(type, onClick, label)으로 매핑한다."""
     p = Path(file_path) if file_path else Path("Unknown.java")
     code, bare = strip_java(text)
-    btn_map = load_button_types(button_types_path) if button_types_path else BUTTON_TYPE_MAP
+    if btn_map is None:
+        btn_map = load_button_types(button_types_path) if button_types_path else BUTTON_TYPE_MAP
 
     if events is None:
         events, _ = extract_events_and_methods(text, file_path=p)
@@ -1402,12 +1466,27 @@ def extract_buttons(
         lbl = b["label"]
         handler = b["handler"] or "undefined"
         b_type = btn_map.get(lbl, "unknown")
+        cand_type = ""
+        cand_lbl = ""
+        unk_reason = ""
+        if b_type == "unknown":
+            cand = find_button_candidate(lbl, var, btn_map)
+            if cand:
+                cand_type, cand_lbl = cand
+            elif not lbl:
+                unk_reason = f"제목 인식 실패 — 생성 코드 L{b['line']}"
+            else:
+                unk_reason = "button-types 미등록 문구"
+
         result.append(
             ButtonInfo(
                 label=lbl,
                 button_type=b_type,
                 handler=handler,
                 line=b["line"],
+                candidate_type=cand_type,
+                candidate_label=cand_lbl,
+                unknown_reason=unk_reason,
             )
         )
 

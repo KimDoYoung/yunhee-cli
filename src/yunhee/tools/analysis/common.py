@@ -130,3 +130,63 @@ def count_tobe_grids(text: str) -> int:
     matches = re.findall(r"<(?:SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid)\b", s)
     return len(matches)
 
+
+def count_tobe_buttons(
+    text: str,
+    comp_config: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
+) -> int:
+    """TOBE TSX 텍스트에서 주석을 제외하고 버튼 수를 센다.
+
+    1. <Button ...> 태그 출현 횟수 (extra prop 내부의 <Button> 포함).
+    2. comp_config 또는 .yunhee.toml [tobe.components]에 정의된 공통 컴포넌트 버튼 수 가산.
+    3. 기본 규칙: <SearchBar ...>가 onSearch 속성을 가지면 조회 버튼 1개 가산.
+       onReset만 있는 경우는 가산하지 않음 (+0).
+    """
+    # 블록 주석 제거
+    s = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    # 한 줄 주석 제거
+    s = re.sub(r"//.*$", "", s, flags=re.MULTILINE)
+
+    # 1. 일반 <Button> 태그
+    btn_count = len(re.findall(r"<Button\b", s))
+
+    if comp_config is None and config is not None:
+        comp_config = config.get("tobe", {}).get("components", {})
+    if comp_config is None:
+        from yunhee import config as app_cfg
+
+        comp_config = app_cfg.TOML_CONFIG.get("tobe", {}).get("components", {})
+
+    # 2. 컴포넌트별 설정 처리
+    # 예: SearchBar = ["search"] 또는 CustomComp = 2
+    searchbar_handled = False
+    for comp_name, btn_spec in comp_config.items():
+        if isinstance(btn_spec, list):
+            n_btns = len(btn_spec)
+        elif isinstance(btn_spec, int):
+            n_btns = btn_spec
+        else:
+            n_btns = 0
+
+        pattern = rf"<{comp_name}\b([\s\S]*?)(?:/>|>)"
+        matches = list(re.finditer(pattern, s))
+        if comp_name == "SearchBar":
+            searchbar_handled = True
+            for m in matches:
+                attrs = m.group(1)
+                if "onSearch" in attrs:
+                    btn_count += n_btns
+        else:
+            btn_count += len(matches) * n_btns
+
+    # 3. SearchBar 기본 처리 (설정에 SearchBar가 없는 경우)
+    if not searchbar_handled:
+        is_from_search = ("components/search" in s) or ("import " not in s)
+        for m in re.finditer(r"<SearchBar\b([\s\S]*?)(?:/>|>)", s):
+            attrs = m.group(1)
+            if "onSearch" in attrs and is_from_search:
+                btn_count += 1
+
+    return btn_count
+

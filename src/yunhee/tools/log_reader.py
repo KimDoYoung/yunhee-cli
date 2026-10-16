@@ -153,13 +153,13 @@ def _load_mapper_param_cache() -> dict[tuple[str, str], list[str] | None]:
     return param_cache
 
 
-def get_mapper_param_names(logger_str: str) -> list[str] | None:
+def get_mapper_param_names(logger_str: str, req_path: str = "") -> list[str] | None:
     """logger 문자열에서 statement의 파라미터 이름 목록을 조회한다."""
     cache = _load_mapper_param_cache()
     if not cache:
         return None
 
-    stmt_name = recover_mapper_name(logger_str)
+    stmt_name = recover_mapper_name(logger_str, req_path=req_path)
     parts = stmt_name.split(".")
     if len(parts) >= 2:
         simple_cls = parts[-2]
@@ -171,14 +171,18 @@ def get_mapper_param_names(logger_str: str) -> list[str] | None:
     if len(log_parts) >= 2:
         sid = log_parts[-1]
         cls_cand = log_parts[-2]
-        for (c_name, s_id), p_list in cache.items():
-            if s_id == sid and (c_name == cls_cand or c_name.startswith(cls_cand)):
-                return p_list
+        matches = [
+            p_list
+            for (c_name, s_id), p_list in cache.items()
+            if s_id == sid and (c_name == cls_cand or (len(cls_cand) > 1 and c_name.startswith(cls_cand)))
+        ]
+        if len(matches) == 1:
+            return matches[0]
 
     return None
 
 
-def recover_mapper_name(logger_str: str) -> str:
+def recover_mapper_name(logger_str: str, req_path: str = "") -> str:
     """logger (예: k.c.k.a.b.e.m.E.selectOthers)에서 매퍼 이름(EmpOthersMapper.selectOthers) 복원."""
     parts = logger_str.split(".")
     if len(parts) < 2:
@@ -191,6 +195,22 @@ def recover_mapper_name(logger_str: str) -> str:
     matched = [c[0] for c in candidates if c[0].startswith(cls_initial)]
     if len(matched) == 1:
         return f"{matched[0]}.{stmt_id}"
+
+    if len(matched) > 1 and req_path:
+        path_tokens = [tok.lower() for tok in re.split(r"[/_\-.]", req_path) if tok and tok not in ("api", "v1", "v2")]
+        scores: list[tuple[int, str]] = []
+        for cand_name in matched:
+            c_lower = cand_name.lower()
+            score = 0
+            for tok in path_tokens:
+                if tok in c_lower:
+                    score += len(tok)
+            scores.append((score, cand_name))
+
+        scores.sort(key=lambda x: x[0], reverse=True)
+        if scores and scores[0][0] > 0 and (len(scores) == 1 or scores[0][0] > scores[1][0]):
+            return f"{scores[0][1]}.{stmt_id}"
+
     return logger_str
 
 
@@ -991,10 +1011,12 @@ def get_trace_summary(
     # 접근 로그 탐색
     access_rec = next((r for r in records if r.logger == "kr.co.kfs.asseterp.access"), None)
     req_line = ""
+    req_path = ""
     if access_rec:
         m_acc = re.match(r"^(\w+)\s+(\S+)\s+(\d{3})\s+(\d+)ms$", access_rec.msg)
         if m_acc:
             meth, path, st_code, el_ms = m_acc.groups()
+            req_path = path
             context = config.LOG_CONTEXT
             if context and path.startswith(context):
                 path = path[len(context):]
@@ -1039,7 +1061,7 @@ def get_trace_summary(
             clean_items.append(c)
 
         if logger_str:
-            p_names = get_mapper_param_names(logger_str)
+            p_names = get_mapper_param_names(logger_str, req_path=req_path)
             if p_names is not None and len(p_names) == len(clean_items):
                 clean_items = [f"{n}={v}" for n, v in zip(p_names, clean_items)]
 
@@ -1050,7 +1072,7 @@ def get_trace_summary(
     rendered_sqls: list[tuple[str, str, str]] = []
     consec_count = 1
     for i, g in enumerate(sql_groups):
-        stmt_name = recover_mapper_name(g["logger"])
+        stmt_name = recover_mapper_name(g["logger"], req_path=req_path)
         param_str = parse_params(g["params"], g["logger"])
         p_desc = f"({param_str})" if param_str else "()"
         res_str = f"→ {g['result']}" if g["result"] else ""

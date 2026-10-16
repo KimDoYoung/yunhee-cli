@@ -534,6 +534,19 @@ def parse_client(app: Path) -> dict[str, list[ClientClass]]:
                 cls.services += [(v, line) for v in sorted(vals)]
             else:
                 cls.unresolved.append((arg, line))
+        for m in re.finditer(r"(?<![\w.])\w+\.retrieve\s*\(", no_comment):
+            arg = call_argument(no_comment, m.end() - 1)
+            line = line_of(no_comment, m.start())
+            if not arg:
+                continue
+            vals = eval_string(arg, [no_comment])
+            if vals:
+                for v in sorted(vals):
+                    parts = v.split(".")
+                    if len(parts) >= 3 and parts[0] in server_domains:
+                        cls.services.append((v, line))
+            else:
+                cls.unresolved.append((arg, line))
         found = {v for v, _ in cls.services}
         for m in SERVICE_KEY_LITERAL_RE.finditer(no_comment):
             key = m.group(0)[1:-1]
@@ -967,7 +980,7 @@ class Index:
     def sql_link(self, sid: str, up: str) -> str:
         st = self.statements.get(sid)
         if not st:
-            return f"`{sid}`(없음)"
+            return f"`{sid}`(없음) ⚠ 매퍼에 SQL 없음 — 원본에서도 실패"
         link = f"[`{sid}`]({up}{self.sql_path(st.ns)})"
         return link + " (→ `f_create_seq()`)" if sid == SEQ_SQL_ID else link
 

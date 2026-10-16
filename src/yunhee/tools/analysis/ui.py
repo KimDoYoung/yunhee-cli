@@ -6,6 +6,7 @@ from typing import Any
 
 from yunhee.tools.analysis.common import (
     count_as_is_grids,
+    count_tobe_buttons,
     count_tobe_grids,
     resolve_as_is_paths,
 )
@@ -108,11 +109,13 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     for c in classes:
         c_text = c["text"]
         btn_cnt = len(re.findall(r"-\s*<Button\b|\d+\.\s+<Button\b", c_text))
-        ev_cnt = len(re.findall(r"\[E\d+\]", c_text))
+        ev_matches = re.findall(r"\[E(\d+)\]", c_text)
+        ev_ids = {int(x) for x in ev_matches}
         grid_cnt, grid_warn = count_as_is_grids(c_text)
         as_is_stats[c["name"]] = {
             "buttons": btn_cnt,
-            "events": ev_cnt,
+            "events": len(ev_ids),
+            "event_ids": ev_ids,
             "grids": grid_cnt,
             "grid_warn": grid_warn,
         }
@@ -167,12 +170,14 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
 
         comp_text = comp_file.read_text(encoding="utf-8", errors="replace")
         btn_cnt = len(re.findall(r"-\s*<Button\b|\d+\.\s+<Button\b", comp_text))
-        ev_cnt = len(re.findall(r"\[E\d+\]", comp_text))
+        ev_matches = re.findall(r"\[E(\d+)\]", comp_text)
+        ev_ids = {int(x) for x in ev_matches}
         grid_cnt, grid_warn = count_as_is_grids(comp_text)
 
         as_is_stats[comp_name] = {
             "buttons": btn_cnt,
-            "events": ev_cnt,
+            "events": len(ev_ids),
+            "event_ids": ev_ids,
             "grids": grid_cnt,
             "grid_warn": grid_warn,
             "is_linked": True,
@@ -196,29 +201,45 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
                     except OSError:
                         continue
                     f_name = f.stem
-                    t_btn = len(re.findall(r"<Button\b", f_text))
+                    t_btn = count_tobe_buttons(f_text)
                     impl_ev, skip_ev = _tobe_event_ids(f_text)
                     t_grid = count_tobe_grids(f_text)
                     tobe_stats[f_name] = {
                         "buttons": t_btn,
                         "events": len(impl_ev),
                         "events_skipped": len(skip_ev),
+                        "impl_event_ids": impl_ev,
+                        "skipped_event_ids": skip_ev,
                         "grids": t_grid,
                     }
             elif tobe_target.is_file():
                 try:
                     f_text = tobe_target.read_text(encoding="utf-8", errors="replace")
-                    t_btn = len(re.findall(r"<Button\b", f_text))
+                    t_btn = count_tobe_buttons(f_text)
                     impl_ev, skip_ev = _tobe_event_ids(f_text)
                     t_grid = count_tobe_grids(f_text)
                     tobe_stats[tobe_target.stem] = {
                         "buttons": t_btn,
                         "events": len(impl_ev),
                         "events_skipped": len(skip_ev),
+                        "impl_event_ids": impl_ev,
+                        "skipped_event_ids": skip_ev,
                         "grids": t_grid,
                     }
                 except OSError:
                     pass
+
+    # --no-e0 옵션 적용
+    no_e0 = bool(opts.get("no_e0", False))
+    if no_e0:
+        for st in as_is_stats.values():
+            st["event_ids"].discard(0)
+            st["events"] = len(st["event_ids"])
+        for st in tobe_stats.values():
+            st["impl_event_ids"].discard(0)
+            st["skipped_event_ids"].discard(0)
+            st["events"] = len(st["impl_event_ids"])
+            st["events_skipped"] = len(st["skipped_event_ids"])
 
     return {
         "screen": screen_file.stem,
@@ -226,6 +247,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         "tobe": tobe_stats,
         "done": opts.get("done", ""),
         "later": opts.get("later", ""),
+        "no_e0": no_e0,
     }
 
 
@@ -265,11 +287,47 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         lines.append("|:---|:---:|:---:|:---:|")
         for c in all_cls_names:
             ai = as_is[c]
-            tb = tobe.get(c, {"buttons": 0, "events": 0, "events_skipped": 0, "grids": 0})
-            skip_cnt = tb.get("events_skipped", 0)
-            ev_str = f"{ai['events']}/{tb['events']}"
-            if skip_cnt > 0:
-                ev_str += f" (생략 {skip_cnt})"
+            tb = tobe.get(
+                c,
+                {
+                    "buttons": 0,
+                    "events": 0,
+                    "events_skipped": 0,
+                    "grids": 0,
+                    "impl_event_ids": set(),
+                    "skipped_event_ids": set(),
+                },
+            )
+            ai_ev_ids = set(ai.get("event_ids", set()))
+            tb_impl_ids = set(tb.get("impl_event_ids", set()))
+            tb_skip_ids = set(tb.get("skipped_event_ids", set()))
+            ai_events = ai.get("events", len(ai_ev_ids))
+            tb_events = tb.get("events", len(tb_impl_ids))
+
+            no_e0 = bool((opts and opts.get("no_e0")) or obj.get("no_e0", False))
+            if no_e0:
+                if 0 in ai_ev_ids:
+                    ai_ev_ids.discard(0)
+                    ai_events = len(ai_ev_ids)
+                if 0 in tb_impl_ids:
+                    tb_impl_ids.discard(0)
+                    tb_events = len(tb_impl_ids)
+                if 0 in tb_skip_ids:
+                    tb_skip_ids.discard(0)
+
+            missing_ids = sorted(ai_ev_ids - tb_impl_ids)
+            ev_str = f"{ai_events}/{tb_events}"
+            if missing_ids:
+                missing_parts = []
+                for eid in missing_ids:
+                    if eid in tb_skip_ids:
+                        missing_parts.append(f"E{eid}(생략)")
+                    else:
+                        missing_parts.append(f"E{eid}(미구현)")
+                ev_str += f" · 없음: {', '.join(missing_parts)}"
+            elif tb.get("events_skipped", 0) > 0:
+                ev_str += f" (생략 {tb['events_skipped']})"
+
             ai_g_str = f"{ai['grids']}⚠" if ai.get("grid_warn") else f"{ai['grids']}"
             lines.append(
                 f"| {c} | {ai['buttons']}/{tb['buttons']} | {ev_str} | {ai_g_str}/{tb['grids']} |"

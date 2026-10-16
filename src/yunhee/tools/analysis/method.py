@@ -190,10 +190,16 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
                 "body": body,
                 "is_server": "server" in f.parts,
                 "caller_event": caller_event,
+                "src_root": src_root,
             })
 
     if not candidates:
         raise ValueError(f"{cls_name} 에서 메서드 '{meth_name}'을 찾을 수 없습니다.")
+
+    if called_from := opts.get("called_from"):
+        selected = _resolve_overload_by_caller(candidates, called_from, app, src_root)
+        if selected:
+            return selected
 
     if len(candidates) > 1 and idx_choice is None:
         cand_descs = [f"{c['rel']}:{c['start']} {c['sig']}" for c in candidates]
@@ -207,7 +213,153 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     return candidates[0]
 
 
-def _summarize_body(body: str, start_line: int, is_server: bool, file_text: str = "") -> list[str]:
+def _resolve_overload_by_caller(
+    candidates: list[dict[str, Any]],
+    called_from: str,
+    app: Path,
+    src_root: Path,
+) -> dict[str, Any] | None:
+    caller_clean = called_from.strip().removesuffix(".java")
+    caller_files = list(app.rglob(f"{caller_clean}.java"))
+    if not caller_files:
+        caller_files = [f for f in src_root.rglob(f"{caller_clean}.java") if "target" not in f.parts]
+    if not caller_files:
+        return None
+
+    caller_text = caller_files[0].read_text(encoding="utf-8", errors="replace")
+    meth_name = candidates[0]["method"]
+
+    call_m = re.search(rf"\b\w+\.{re.escape(meth_name)}\s*\(", caller_text)
+    if not call_m:
+        call_m = re.search(rf"\b{re.escape(meth_name)}\s*\(", caller_text)
+    if not call_m:
+        return None
+
+    open_p = caller_text.find("(", call_m.start())
+    close_p = paren_end(caller_text, open_p)
+    raw_args = caller_text[open_p + 1 : close_p]
+    args = split_args(raw_args)
+
+    def infer_type(arg: str) -> str:
+        a = arg.strip()
+        if "Callback" in a or "callback" in a:
+            return "cb"
+        if "new Date" in a or "Date" in a or "date" in a:
+            return "Date"
+        if a in ("true", "false") or "Boolean" in a:
+            return "Boolean"
+        if "Long." in a or re.match(r"^\d+L$", a) or (a.endswith("Id") and not a.startswith("new")):
+            return "Long"
+        if a.startswith('"') or "Text" in a or "String" in a or "jobName" in a:
+            return "String"
+        if "Integer." in a or re.match(r"^\d+$", a):
+            return "Integer"
+        return "Object"
+
+    inferred_types = [infer_type(a) for a in args]
+
+    def get_cand_types(cand: dict[str, Any]) -> list[str]:
+        sig = cand["sig"]
+        inside = sig.split("(", 1)[1].rstrip(")").strip()
+        if not inside:
+            return []
+        parts = [p.strip() for p in inside.split(",") if p.strip()]
+        types = []
+        for p in parts:
+            t = p.split()[0]
+            if "Callback" in t:
+                types.append("cb")
+            else:
+                types.append(t)
+        return types
+
+    matched_cand = None
+    for cand in candidates:
+        cand_types = get_cand_types(cand)
+        if len(cand_types) != len(inferred_types):
+            continue
+        score = sum(1 for it, ct in zip(inferred_types, cand_types) if it == ct or (it == "cb" and ct == "cb"))
+        if score == len(cand_types):
+            matched_cand = cand
+            break
+
+    if not matched_cand:
+        matched_by_len = [c for c in candidates if len(get_cand_types(c)) == len(inferred_types)]
+        if len(matched_by_len) == 1:
+            matched_cand = matched_by_len[0]
+
+    if not matched_cand:
+        return None
+
+    # 위임 체인 탐색
+    chain = [matched_cand]
+    curr = matched_cand
+    for _ in range(5):
+        body = curr["body"]
+        brace_idx = body.find("{")
+        if brace_idx == -1:
+            break
+        body_after = body[brace_idx + 1 :]
+        m_deleg = re.search(rf"\b{re.escape(meth_name)}\s*\(", body_after)
+        if not m_deleg:
+            break
+        d_open = body_after.find("(", m_deleg.start())
+        d_close = paren_end(body_after, d_open)
+        d_raw_args = body_after[d_open + 1 : d_close]
+        d_args = split_args(d_raw_args)
+        d_arg_count = len(d_args)
+        next_cands = [c for c in candidates if c != curr and len(get_cand_types(c)) == d_arg_count]
+        if next_cands:
+            curr = next_cands[0]
+            chain.append(curr)
+        else:
+            break
+
+    file_text = matched_cand.get("file_text", "")
+    btn_defs = dict(re.findall(r'(\w+Button)\s*=\s*new\s+\w+\s*\(\s*["\']([^"\']+)["\']', file_text))
+
+    buttons_found = []
+    preferred_order = ["확인", "전체", "공통", "취소"]
+    raw_buttons = []
+    for c in chain:
+        for m_btn in re.finditer(r'(?:this\.)?addButton\s*\(\s*(\w+)\s*\)', c["body"]):
+            b_var = m_btn.group(1)
+            b_lbl = btn_defs.get(b_var, b_var.replace("Button", ""))
+            if b_lbl not in raw_buttons:
+                raw_buttons.append(b_lbl)
+
+    # 정렬: preferred_order 우선, 나머지 뒤로
+    buttons_found = [b for b in preferred_order if b in raw_buttons] + [b for b in raw_buttons if b not in preferred_order]
+
+    grid_mode = "SINGLE" if "SelectionMode.SINGLE" in file_text else ""
+    if "SelectionMode.MULTI" in file_text:
+        grid_mode = "MULTI"
+
+    chain_parts = []
+    for c in chain:
+        c_types = get_cand_types(c)
+        short_types = ", ".join(c_types)
+        chain_parts.append(f"{meth_name}({short_types}) L{c['start']}")
+
+    chain_str = " → ".join(chain_parts)
+    extra_info = []
+    if buttons_found:
+        extra_info.append(f"단추 {'·'.join(buttons_found)}")
+    if grid_mode:
+        extra_info.append(f"그리드 {grid_mode}")
+
+    extra_str = f" : {', '.join(extra_info)}" if extra_info else ""
+    matched_cand["chain_summary"] = f"{chain_str}{extra_str}"
+    return matched_cand
+
+
+def _summarize_body(
+    body: str,
+    start_line: int,
+    is_server: bool,
+    file_text: str = "",
+    src_root: Path | None = None,
+) -> list[str]:
     """메서드 본문을 파싱하여 중요 작업 흐름을 요약한다."""
     items = []
     lines = body.splitlines()
@@ -418,14 +570,31 @@ def _summarize_body(body: str, start_line: int, is_server: bool, file_text: str 
             if m_sql_expr:
                 prefix_var = m_sql_expr.group(1)
                 sql_id = m_sql_expr.group(2)
+                target_sql_key = ""
                 if prefix_var:
                     if prefix_var in class_constants:
                         full_sql = f"{class_constants[prefix_var]}.{sql_id.lstrip('.')}"
-                        add_item(f"sqlSession: {full_sql} (L{line_num})")
+                        target_sql_key = full_sql
+                        item_desc = f"sqlSession: {full_sql} (L{line_num})"
                     else:
-                        add_item(f"sqlSession: {prefix_var} + '{sql_id}' (L{line_num})")
+                        target_sql_key = sql_id.lstrip(".")
+                        item_desc = f"sqlSession: {prefix_var} + '{sql_id}' (L{line_num})"
                 else:
-                    add_item(f"sqlSession: {sql_id} (L{line_num})")
+                    target_sql_key = sql_id
+                    item_desc = f"sqlSession: {sql_id} (L{line_num})"
+
+                warn_missing = ""
+                if src_root:
+                    try:
+                        from yunhee.tools.as_is.mybatis_render import get_all_statements
+
+                        stmts = get_all_statements(src_root)
+                        if target_sql_key and target_sql_key not in stmts and not any(k.endswith(f".{target_sql_key}") for k in stmts):
+                            warn_missing = " ⚠ 매퍼에 SQL 없음 — 원본에서도 실패"
+                    except Exception:  # noqa: BLE001, S110
+                        pass
+
+                add_item(f"{item_desc}{warn_missing}")
                 continue
 
             if "commit()" in s:
@@ -475,9 +644,18 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     meth_name = obj["method"]
     is_server = obj["is_server"]
 
-    summary_items = _summarize_body(body, start_line, is_server, file_text=obj.get("file_text", ""))
+    summary_items = _summarize_body(
+        body,
+        start_line,
+        is_server,
+        file_text=obj.get("file_text", ""),
+        src_root=obj.get("src_root"),
+    )
 
     out = [f"{cls_name}.{meth_name}()  {rel_file}:{start_line}-{end_line}{header_event}"]
+    if obj.get("chain_summary"):
+        out.insert(0, f"→ {obj['chain_summary']}\n")
+
     if summary_items:
         for it in summary_items:
             out.append(f"- {it}")

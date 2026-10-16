@@ -2,6 +2,18 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.3.7] - 2026-10-16
+수정사항 031 (analysis ui SearchBar 버튼 집계 및 E-id 차이 목록, 동적 SQL 이름·미정의 SQL 경고, 버튼 type 미등록 구분, overload 선택 체인 요약, 클래스 필드 초기값, outline 타입 필드) 반영.
+- analysis ui: TOBE `<SearchBar>` 컴포넌트(`<SearchBar onSearch=...>`)를 조회 버튼 1개로 집계, `onReset`은 무시, `extra={<Button .../>}` 내부 버튼 집계, `.yunhee.toml`의 `[tobe.components]` 설정 오버라이드 지원 (031-1)
+- analysis ui: AS-IS에만 있는 E-id 목록(`없음: E6(생략), E11(미구현)`) 한 줄 표시, TOBE 주석 `// [E6 생략]` 사유 인식, 생성자 초기화 제외 `--no-e0` 옵션 지원 (031-2)
+- analysis screen: `service.retrieve("..." + sql)` 동적 SQL 이름 변수 분기(`if`/`else`)를 추적하여 후보 SQL 행들을 `(동적 이름)` 및 조건식과 함께 서비스 표에 모두 표시 (031-3)
+- analysis screen & method: 매퍼에 없는 SQL 호출 시 `(없음) ⚠ 매퍼에 SQL 없음 — 원본에서도 실패` 경고 표기 및 화면 요약 상단에 `⚠ 미정의 SQL 호출 N개` 배너 표시 (031-4)
+- as-is events: 버튼 type 판별 실패 시 `unknown (미등록 문구)` / `unknown (제목 인식 실패 — 생성 코드 L...)` 원인 구분 및 가장 가까운 type 후보 추천(`/* 후보: upload (파일업로드) */`), `extract_buttons`의 `btn_map` 오버라이드 지원 (031-5)
+- analysis method: `--called-from <호출 클래스>` 옵션 추가로 호출부 인자 타입 기반 overload 자동 선택 및 위임 체인(`open L124 → open L165`), 버튼·그리드 설정 요약 (031-6)
+- analysis screen: `--section fields` 지원으로 상태 필드 이름·타입·초기값 및 사용처(읽는 곳/쓰는 곳 줄 번호) 추출 (031-7)
+- outline: `--members` / `-m`, `--symbol` / `-s` 옵션 추가로 TypeScript interface/type의 필드 목록 및 주석 추출, API 함수 반환 타입(`name(args): ReturnType`) 표기 (031-8)
+- log_reader & api_client: 약어 namespace(`...m.S`) 매퍼 식별 시 요청 URL 토큰 기반 명확화 및 중복 파라미터 매핑 개선, 404 No static resource 응답 시 `/api` 접두 힌트 제공 (031-9)
+
 ## [0.3.6] - 2026-10-15
 수정사항 030 (port-sql 서브쿼리 FROM 오류 해결, port-save 회사 컬럼명 보정, analysis grid 아이콘 셀 오판 방지, compare 0건/컴포넌트 탐색 개선, analysis sql 단일 집계값 출력) 반영.
 - port-sql: 괄호/서브쿼리/OVER/CASE 깊이 0 기준 SELECT 열 분리(`split_depth0_commas`) 및 최상위 `FROM` 절 원문 보존으로 상관 서브쿼리·서브쿼리 JOIN이 있는 복합 SQL의 열 누락 및 중복 `FROM {table}` 문법 오류 해결

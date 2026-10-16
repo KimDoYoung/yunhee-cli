@@ -461,16 +461,61 @@ def _clean_ts_params(param_str: str) -> str:
     return ", ".join(cleaned)
 
 
-def _outline_typescript(content: str) -> list[str]:
+def _outline_typescript(content: str, members: bool = False, symbol: str | None = None) -> list[str]:
     no_comment, bare = strip_code(content, is_ts=True)
-    results: list[tuple[int, str]] = []
+    results: list[tuple[int, str, str]] = []
+
+    show_members = members or bool(symbol)
 
     # 1. export interface / type / class / enum
     type_pat = re.compile(r"\bexport\s+(?:default\s+)?(interface|type|class|enum)\s+([^\W\d]\w*)")
     for m in type_pat.finditer(bare):
         kind, name = m.group(1), m.group(2)
         l_num = line_of(bare, m.start())
-        results.append((l_num, f"export {kind} {name}"))
+        results.append((l_num, f"export {kind} {name}", name))
+
+        if show_members and kind in ("interface", "type"):
+            open_brace = bare.find("{", m.end())
+            if open_brace != -1:
+                close_brace = paren_end(bare, open_brace, "{", "}")
+                body_raw = content[open_brace + 1 : close_brace]
+                body_lines = body_raw.splitlines()
+                cur_offset = open_brace + 1
+                last_comment = ""
+                last_comment_line = 0
+
+                for bline in body_lines:
+                    line_no = line_of(content, cur_offset)
+                    cur_offset += len(bline) + 1
+                    s_line = bline.strip()
+                    if not s_line:
+                        continue
+                    if s_line.startswith("//"):
+                        last_comment = s_line
+                        last_comment_line = line_no
+                        continue
+                    if s_line.startswith("/**") and "*/" in s_line:
+                        c_text = s_line[3 : s_line.find("*/")].strip().lstrip("*").strip()
+                        last_comment = f"// {c_text}" if c_text else ""
+                        last_comment_line = line_no
+                        continue
+
+                    # Property: foo?: string | null; or foo: string;
+                    m_prop = re.match(r"^([a-zA-Z_$][a-zA-Z0-9_$]*\??)\s*:\s*([^;,\n]+)", s_line)
+                    if m_prop:
+                        p_name = m_prop.group(1)
+                        p_type = re.sub(r"\s+", " ", m_prop.group(2)).strip()
+                        if last_comment and last_comment_line == line_no - 1:
+                            results.append((last_comment_line, f"  {last_comment}", name))
+                        results.append((line_no, f"  {p_name}: {p_type}", name))
+                        last_comment = ""
+                    else:
+                        m_mth = re.match(r"^([a-zA-Z_$][a-zA-Z0-9_$]*\??\s*\([^)]*\)\s*(?::\s*[^;,\n]+)?)", s_line)
+                        if m_mth:
+                            if last_comment and last_comment_line == line_no - 1:
+                                results.append((last_comment_line, f"  {last_comment}", name))
+                            results.append((line_no, f"  {m_mth.group(1)}", name))
+                            last_comment = ""
 
     # 2. export (async) function name<...>(...)
     func_pat = re.compile(r"\bexport\s+(?:default\s+)?(?:async\s+)?function\s+([^\W\d]\w*)")
@@ -484,17 +529,29 @@ def _outline_typescript(content: str) -> list[str]:
             angle_open = bare.find("<", cursor)
             angle_close = paren_end(bare, angle_open, "<", ">")
             if angle_close < len(bare):
-                generic_str = re.sub(r"\s+", " ", no_comment[angle_open:angle_close + 1]).strip()
+                generic_str = re.sub(r"\s+", " ", no_comment[angle_open : angle_close + 1]).strip()
                 cursor = angle_close + 1
 
         rest_after_generic = bare[cursor:].lstrip()
         if rest_after_generic.startswith("("):
             open_p = bare.find("(", cursor)
             close_p = paren_end(bare, open_p, "(", ")")
-            raw_params = no_comment[open_p + 1:close_p]
+            raw_params = no_comment[open_p + 1 : close_p]
             clean_params = _clean_ts_params(raw_params)
             l_num = line_of(bare, m.start())
-            results.append((l_num, f"export function {name}{generic_str}({clean_params})"))
+
+            rest_after_paren = bare[close_p + 1 : close_p + 100].lstrip()
+            ret_type = ""
+            if rest_after_paren.startswith(":"):
+                brace_idx = rest_after_paren.find("{")
+                semi_idx = rest_after_paren.find(";")
+                end_cands = [x for x in (brace_idx, semi_idx) if x != -1]
+                end_idx = min(end_cands) if end_cands else len(rest_after_paren)
+                colon_pos = close_p + 1 + bare[close_p + 1 :].find(":")
+                ret_type = re.sub(r"\s+", " ", no_comment[colon_pos + 1 : colon_pos + end_idx]).strip()
+
+            ret_str = f": {ret_type}" if ret_type else ""
+            results.append((l_num, f"export function {name}{generic_str}({clean_params}){ret_str}", name))
 
     # 3. export const Name: Type = ... (예: React.FC 컴포넌트)
     const_typed_pat = re.compile(
@@ -504,7 +561,7 @@ def _outline_typescript(content: str) -> list[str]:
         name = m.group(1)
         type_annot = re.sub(r"\s+", " ", m.group(2)).strip()
         l_num = line_of(bare, m.start())
-        results.append((l_num, f"export const {name}: {type_annot}"))
+        results.append((l_num, f"export const {name}: {type_annot}", name))
 
     # 4. export const Name = (async)? <T,>?(params) => ... (화살표 함수, 제네릭 포함)
     const_arrow_pat = re.compile(
@@ -519,20 +576,20 @@ def _outline_typescript(content: str) -> list[str]:
             angle_open = bare.find("<", cursor)
             angle_close = paren_end(bare, angle_open, "<", ">")
             if angle_close < len(bare):
-                generic_str = re.sub(r"\s+", " ", no_comment[angle_open:angle_close + 1]).strip()
+                generic_str = re.sub(r"\s+", " ", no_comment[angle_open : angle_close + 1]).strip()
                 cursor = angle_close + 1
 
         rest_after_generic = bare[cursor:].lstrip()
         if rest_after_generic.startswith("("):
             open_p = bare.find("(", cursor)
             close_p = paren_end(bare, open_p, "(", ")")
-            after = bare[close_p + 1:close_p + 50].lstrip()
+            after = bare[close_p + 1 : close_p + 50].lstrip()
             if "=>" in after:
-                raw_params = no_comment[open_p + 1:close_p]
+                raw_params = no_comment[open_p + 1 : close_p]
                 clean_params = _clean_ts_params(raw_params)
                 l_num = line_of(bare, m.start())
                 gen_part = f"{generic_str}" if generic_str else ""
-                results.append((l_num, f"export const {name} = {gen_part}({clean_params}) =>"))
+                results.append((l_num, f"export const {name} = {gen_part}({clean_params}) =>", name))
 
     # 5. export const sysApi = { ... } (API 객체 리터럴 모듈)
     api_obj_pat = re.compile(
@@ -543,9 +600,9 @@ def _outline_typescript(content: str) -> list[str]:
         open_brace = m.end() - 1
         close_brace = paren_end(bare, open_brace, "{", "}")
         l_num = line_of(bare, m.start())
-        results.append((l_num, f"export const {obj_name} = {{"))
+        results.append((l_num, f"export const {obj_name} = {{", obj_name))
 
-        inside_bare = bare[open_brace + 1:close_brace]
+        inside_bare = bare[open_brace + 1 : close_brace]
 
         # prop_name: (async) (params) =>
         prop_pat = re.compile(r"\b([^\W\d]\w*)\s*:\s*(?:async\s*)?\(")
@@ -553,16 +610,38 @@ def _outline_typescript(content: str) -> list[str]:
             p_name = pm.group(1)
             p_open = open_brace + 1 + pm.end() - 1
             p_close = paren_end(bare, p_open, "(", ")")
-            p_raw = no_comment[p_open + 1:p_close]
+            p_raw = no_comment[p_open + 1 : p_close]
             p_clean = _clean_ts_params(p_raw)
             p_line = line_of(bare, open_brace + 1 + pm.start(1))
-            results.append((p_line, f"  {p_name}: ({p_clean})"))
+
+            rest_after = bare[p_close + 1 : p_close + 100].lstrip()
+            ret_type = ""
+            if rest_after.startswith(":"):
+                arrow_idx = rest_after.find("=>")
+                brace_idx = rest_after.find("{")
+                end_cands = [x for x in (arrow_idx, brace_idx) if x != -1]
+                end_idx = min(end_cands) if end_cands else len(rest_after)
+                colon_pos = p_close + 1 + bare[p_close + 1 :].find(":")
+                ret_type = re.sub(r"\s+", " ", no_comment[colon_pos + 1 : p_close + 1 + end_idx]).strip()
+
+            if ret_type:
+                results.append((p_line, f"  {p_name}({p_clean}): {ret_type}", f"{obj_name}.{p_name}"))
+            else:
+                results.append((p_line, f"  {p_name}: ({p_clean})", f"{obj_name}.{p_name}"))
+
+    # 필터링 (--symbol)
+    if symbol:
+        sym_lower = symbol.lower()
+        results = [
+            r for r in results
+            if r[2].lower() == sym_lower or sym_lower in r[2].lower().split(".")
+        ]
 
     # 줄 번호 순 정렬
     results.sort(key=lambda x: x[0])
     seen = set()
     out = []
-    for l_num, text in results:
+    for l_num, text, _ in results:
         formatted = f"L{l_num:4d}: {text}"
         if formatted not in seen:
             seen.add(formatted)
@@ -612,7 +691,7 @@ def _outline_python(content: str) -> list[str]:
     return results
 
 
-def outline_file(file_path: Path) -> list[str]:
+def outline_file(file_path: Path, members: bool = False, symbol: str | None = None) -> list[str]:
     if not file_path.is_file():
         return []
     try:
@@ -622,17 +701,34 @@ def outline_file(file_path: Path) -> list[str]:
 
     ext = file_path.suffix.lower()
     if ext == ".java":
-        return _outline_java(content)
+        lines = _outline_java(content)
+        if symbol:
+            sym_l = symbol.lower()
+            return [l for l in lines if sym_l in l.lower()]
+        return lines
     elif ext == ".xml":
-        return _outline_mybatis_xml(content)
+        lines = _outline_mybatis_xml(content)
+        if symbol:
+            sym_l = symbol.lower()
+            return [l for l in lines if sym_l in l.lower()]
+        return lines
     elif ext in (".ts", ".tsx", ".js", ".jsx"):
-        return _outline_typescript(content)
+        return _outline_typescript(content, members=members, symbol=symbol)
     elif ext == ".py":
-        return _outline_python(content)
+        lines = _outline_python(content)
+        if symbol:
+            sym_l = symbol.lower()
+            return [l for l in lines if sym_l in l.lower()]
+        return lines
     return []
 
 
-def outline_path(path: Path | str, char_limit: int = MAX_OUTLINE_CHARS) -> ToolResult:
+def outline_path(
+    path: Path | str,
+    char_limit: int = MAX_OUTLINE_CHARS,
+    members: bool = False,
+    symbol: str | None = None,
+) -> ToolResult:
     target = Path(path).resolve()
     if not target.exists():
         return ToolResult(ok=False, error=f"경로가 존재하지 않습니다: {target}")
@@ -642,7 +738,7 @@ def outline_path(path: Path | str, char_limit: int = MAX_OUTLINE_CHARS) -> ToolR
     truncated = False
 
     if target.is_file():
-        lines = outline_file(target)
+        lines = outline_file(target, members=members, symbol=symbol)
         if not lines:
             text = f"// {target.name} (추출 가능한 시그니처 없음)"
         else:
@@ -663,7 +759,7 @@ def outline_path(path: Path | str, char_limit: int = MAX_OUTLINE_CHARS) -> ToolR
         return ToolResult(ok=True, data=f"// {target} 디렉터리에 분석 가능한 소스 파일이 없습니다.")
 
     for f in files:
-        outline_lines = outline_file(f)
+        outline_lines = outline_file(f, members=members, symbol=symbol)
         if not outline_lines:
             continue
 
@@ -678,3 +774,4 @@ def outline_path(path: Path | str, char_limit: int = MAX_OUTLINE_CHARS) -> ToolR
 
     data = "\n".join(sections)
     return ToolResult(ok=True, data=data, truncated=truncated)
+

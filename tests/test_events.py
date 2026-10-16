@@ -379,14 +379,14 @@ public class ButtonScreen {
     assert buttons[3].label == "사용자정의버튼"
     assert buttons[3].button_type == "unknown"
     assert buttons[3].handler == "doCustomAction"
-    assert buttons[3].jsx == '<Button type="unknown" onClick={doCustomAction}>사용자정의버튼</Button>'
+    assert buttons[3].jsx == '<Button type="unknown (미등록 문구)" onClick={doCustomAction}>사용자정의버튼</Button>'
 
     md = render_events_markdown("ButtonScreen.java", [], [], buttons=buttons)
     assert "## 사용된 버튼들" in md
     assert '1. <Button type="search" onClick={retrieve}>조회</Button>' in md
     assert '2. <Button type="register" onClick={insert}>등록</Button>' in md
     assert '3. <Button type="delete" onClick={delete}>삭제</Button>' in md
-    assert '4. <Button type="unknown" onClick={doCustomAction}>사용자정의버튼</Button>' in md
+    assert '4. <Button type="unknown (미등록 문구)" onClick={doCustomAction}>사용자정의버튼</Button>' in md
 
 
 def test_extract_buttons_searchbar():

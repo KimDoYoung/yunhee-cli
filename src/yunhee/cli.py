@@ -380,6 +380,8 @@ def list_runs_cmd(
 def outline(
     paths: Annotated[list[str], typer.Argument(help="분석할 파일 또는 디렉터리 경로 (하나 이상)")],
     limit: Annotated[int, typer.Option("--limit", help="최대 글자 수 제한")] = 30000,
+    members: Annotated[bool, typer.Option("--members", "-m", help="interface/type의 필드(멤버) 목록 표시")] = False,
+    symbol: Annotated[str | None, typer.Option("--symbol", "-s", help="특정 symbol(interface/type/함수 등)만 추출")] = None,
 ):
     """소스 파일(Java, XML, TS/TSX, Python) 또는 디렉터리의 클래스·메서드·시그니처와 줄 번호를 추출 (LLM 호출 없음)
 
@@ -395,7 +397,7 @@ def outline(
         if remaining_limit <= 0:
             combined_outputs.append("// ... [글자 수 예산 초과로 이하 생략]")
             break
-        res = outline_path(p, char_limit=remaining_limit)
+        res = outline_path(p, char_limit=remaining_limit, members=members, symbol=symbol)
         if not res.ok:
             typer.echo(f"오류: {res.error}", err=True)
             raise typer.Exit(code=1)
@@ -1207,6 +1209,14 @@ def analysis_cmd(
         bool,
         typer.Option("--no-linked", help="연결 컴포넌트를 합계 및 목록에서 제외"),
     ] = False,
+    no_e0: Annotated[
+        bool,
+        typer.Option("--no-e0", help="E0(화면 열림/생성자)을 이벤트 집계에서 제외"),
+    ] = False,
+    called_from: Annotated[
+        str | None,
+        typer.Option("--called-from", help="호출 클래스 기준 오버로드 선택"),
+    ] = None,
 ):
     """AS-IS 및 TOBE 통합 정적 분석 도구 (method, sql, model, grid, screen, ui, tobe, run)
 
@@ -1298,6 +1308,8 @@ def analysis_cmd(
         "keys": keys,
         "tests": tests,
         "no_linked": no_linked,
+        "no_e0": no_e0,
+        "called_from": called_from,
     }
 
     try:

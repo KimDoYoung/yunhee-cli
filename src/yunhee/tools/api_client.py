@@ -164,6 +164,7 @@ def summarize_response(
     company_code: str | None = None,
     trace_id: str | None = None,
     mask: bool = True,
+    path: str = "",
 ) -> str:
     """응답을 토큰 절약형 1~4줄 요약으로 가공한다."""
     def _finalize(s: str) -> str:
@@ -180,6 +181,8 @@ def summarize_response(
         lines.append(tag)
 
     lines.append(f"HTTP {status_code} ({duration_sec})")
+    if status_code == 404 and "No static resource" in text and path and not path.startswith("/api"):
+        lines.append("💡 '/api' 접두가 필요한가요?")
 
     try:
         data = json.loads(text)
@@ -359,6 +362,7 @@ def request_api(
         company_code=company_code,
         trace_id=trace_id,
         mask=mask,
+        path=path,
     )
     return ToolResult(
         ok=resp.is_success,
