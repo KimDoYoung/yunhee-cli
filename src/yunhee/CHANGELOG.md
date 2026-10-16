@@ -2,6 +2,13 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.3.8] - 2026-10-16
+수정사항 032 (AS-IS 소스 변경(drift) 감지 및 화면 완성 기준선 기록) 반영.
+- `index-src` 소스 기준(커밋·파일 해시·역색인 `_files.json`) 기록 및 직전 색인 `_prev/` 보존, `analysis screen --section source` 지원 (032-1, 032-4)
+- `yunhee drift`: 색인/완성 기준선 대비 AS-IS 화면·파일 변경 감지 (`table`/`diff`/`full`/`json`, `--new`, `--fail-on-drift`) (032-2)
+- `yunhee drift --record`: 화면 완성 시점의 AS-IS 기준선 기록 (`.yunhee/baseline.json`, `--note-file`, `--show-baseline`) (032-3)
+- 다중 PC 작업 시 소스 커밋·브랜치 불일치 경고 (`index-src`, `drift`, `config`) (032-5)
+
 ## [0.3.7] - 2026-10-16
 수정사항 031 (analysis ui SearchBar 버튼 집계 및 E-id 차이 목록, 동적 SQL 이름·미정의 SQL 경고, 버튼 type 미등록 구분, overload 선택 체인 요약, 클래스 필드 초기값, outline 타입 필드) 반영.
 - analysis ui: TOBE `<SearchBar>` 컴포넌트(`<SearchBar onSearch=...>`)를 조회 버튼 1개로 집계, `onReset`은 무시, `extra={<Button .../>}` 내부 버튼 집계, `.yunhee.toml`의 `[tobe.components]` 설정 오버라이드 지원 (031-1)

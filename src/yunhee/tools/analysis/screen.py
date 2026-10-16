@@ -36,8 +36,11 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     if not matched_files:
         raise ValueError(f"색인 화면 파일을 찾을 수 없습니다: {target_name}.md")
 
+    from yunhee.tools.as_is.drift import parse_frontmatter
+
     screen_file = matched_files[0]
-    text = screen_file.read_text(encoding="utf-8", errors="replace")
+    raw_text = screen_file.read_text(encoding="utf-8", errors="replace")
+    frontmatter, text = parse_frontmatter(raw_text)
 
     # 1. 파일 내 클래스별 섹션 분리
     classes: list[dict[str, Any]] = []
@@ -127,7 +130,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             comp_domain = comp_file.parent.parent.name
 
         is_same_domain = (comp_domain == screen_domain)
-        comp_text = comp_file.read_text(encoding="utf-8", errors="replace")
+        _, comp_text = parse_frontmatter(comp_file.read_text(encoding="utf-8", errors="replace"))
         lines_cnt = comp_text.count("\n") + 1
         btn_cnt = len(re.findall(r"-\s*<Button\b|\d+\.\s+<Button\b", comp_text))
         ev_cnt = len(re.findall(r"\[E\d+\]", comp_text))
@@ -153,6 +156,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         "file": screen_file,
         "screen": main_cls,
         "full_text": text,
+        "frontmatter": frontmatter,
         "class_stats": class_stats,
         "src_root": src_root,
     }
@@ -160,13 +164,15 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
 
 def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = None) -> str:
     """결과를 포맷에 맞게 렌더링한다."""
+    from yunhee.tools.as_is.drift import format_screen_source_section, parse_frontmatter
+
     if opts is None:
         opts = {}
 
     list_opt = opts.get("list", False) or opts.get("list_classes", False)
     screen_name = obj["screen"]
     stats = obj["class_stats"]
-    full_text = obj["full_text"]
+    _, full_text = parse_frontmatter(obj["full_text"])
     no_linked = opts.get("no_linked", False)
 
     # 1. --list / --list-classes
@@ -203,7 +209,7 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
             if s["name"].lower() in c_names or s.get("raw_name", "").lower() in c_names
         ]
         if matched_stats:
-            target_texts = [s["text"] for s in matched_stats]
+            target_texts = [parse_frontmatter(s["text"])[1] for s in matched_stats]
     if not target_texts:
         target_texts = [full_text]
 
@@ -212,6 +218,15 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
 
     if sec_filter:
         sec_filter = sec_filter.lower()
+
+        if sec_filter in ("source", "sources"):
+            fm = obj.get("frontmatter")
+            if fm is None and "file" in obj and obj["file"]:
+                try:
+                    fm, _ = parse_frontmatter(obj["file"].read_text(encoding="utf-8", errors="replace"))
+                except Exception:  # noqa: BLE001
+                    fm = None
+            return format_screen_source_section(screen_name, fm)
 
         if sec_filter in ("fields", "field"):
             _, java_text = _find_java_source(target_cls, obj, combined, full_text)

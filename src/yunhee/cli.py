@@ -28,7 +28,7 @@ from yunhee.tools.as_is.events import (
 from yunhee.tools.as_is.sql_checker import check_sql
 from yunhee.tools.as_is.src_indexer import index_src
 
-app = typer.Typer(rich_markup_mode="rich")
+app = typer.Typer(rich_markup_mode="rich", add_completion=False)
 
 
 def _version_callback(value: bool) -> None:
@@ -45,31 +45,30 @@ def main(
         False, "--version", callback=_version_callback, is_eager=True, help="버전 출력"
     ),
 ):
-    """[bold cyan]yunhee[/bold cyan]: 상용 AI 코딩 에이전트(Claude CLI, Antigravity CLI 등)의 토큰 절약을 위한 독립 로컬 Agent CLI.
+    """[bold cyan]yunhee[/bold cyan]: AI 에이전트 토큰 절약용 로컬 CLI (무인자 실행: REPL `=chat-cmd`)
 
-[bold yellow]🤖 AI Coding Agent 권장 워크플로우 (Token-Saving Protocol)[/bold yellow]
-  1. [bold green]TOBE 위치 파악[/bold green]: 파일 전체 읽기 금지! [cyan]yunhee outline <경로>[/cyan] 로 시그니처와 줄 번호만 확인
-  2. [bold green]DB 스키마 조회[/bold green]: DDL 검색 대신 [cyan]yunhee table <TablePattern>[/cyan] 로 필요한 DBML만 추출
-  3. [bold green]빌드/테스트[/bold green]: 셸 직실행 금지! [cyan]yunhee run "<Command>"[/cyan] 로 1줄 성공 / 에러 압축 리포트 수신
-  4. [bold green]API 검증[/bold green]: [cyan]yunhee api GET <경로> --as admin[/cyan] 으로 자동 로그인 스모크 테스트 (행 수/키 목록)
-  5. [bold green]설정 확인[/bold green]: [cyan]yunhee config[/cyan] 로 Source/Target 폴더 및 DB 설정 확인
-  6. [bold green]에이전트 지침서[/bold green]: [cyan]yunhee agent-guide[/cyan] 명령으로 AI 행동 지침서 마크다운 전문 출력
-  7. [bold green]변경 이력[/bold green]: [cyan]yunhee changelog --since <이전버전>[/cyan] 으로 yunhee 업데이트 내용만 확인
-
-서브커맨드 없이 실행하면 대화형 REPL로 진입합니다.
+[bold yellow]🤖 AI Agent 권장 워크플로우 (상세: `yunhee agent-guide`)[/bold yellow]
+  1. [bold green]코드 파악[/bold green]: [cyan]yunhee outline <경로>[/cyan] (시그니처·줄 번호 추출, 전체 읽기 금지)
+  2. [bold green]DB 스키마[/bold green]: [cyan]yunhee table <패턴>[/cyan] (필요한 테이블 DBML만 추출)
+  3. [bold green]빌드/테스트[/bold green]: [cyan]yunhee run "<명령>"[/cyan] (1줄 성공/에러 요약, 셸 직실행 금지)
+  4. [bold green]API/로그[/bold green]: [cyan]yunhee api GET <경로> [--log][/cyan] · [cyan]yunhee log trace|req|errors|tail[/cyan]
+  5. [bold green]AS-IS 분석[/bold green]: [cyan]yunhee analysis screen|ui|method|sql|grid <대상>[/cyan]
+  6. [bold green]원본 변경[/bold green]: [cyan]yunhee drift --all --base baseline[/cyan] · [cyan]drift --record <화면>[/cyan]
+  7. [bold green]설정/이력[/bold green]: [cyan]yunhee config[/cyan] · [cyan]yunhee changelog --since <버전>[/cyan]
 """
     if ctx.invoked_subcommand is None:
         from yunhee.ui.repl import run_repl
         run_repl(model=model)
 
 
-@app.command()
+@app.command(hidden=True)
 def chat_cmd(model: str = OLLAMA_MODEL):
     """대화형 REPL 시작 (명시적으로)"""
     from yunhee.ui.repl import run_repl
     run_repl(model=model)
 
-@app.command()
+
+@app.command(hidden=True)
 def hello():
     """스캐폴드 동작 확인용"""
     print("yunhee-cli ready")
@@ -77,13 +76,13 @@ def hello():
 
 @app.command()
 def ask(prompt: str, model: str = OLLAMA_MODEL):
-    """로컬 LLM(qwen2.5-coder 등)에게 질문"""
+    """로컬 LLM(qwen2.5-coder) 단발 질의"""
     print(chat(prompt, model=model))
 
 
 @app.command()
 def vec(text: str):
-    """bge-m3 임베딩 확인용"""
+    """bge-m3 임베딩 벡터 확인"""
     vector = embed(text)
     print(f"dim={len(vector)}")
     print(vector[:5], "...")
@@ -91,7 +90,7 @@ def vec(text: str):
 
 @app.command()
 def index(text: str):
-    """텍스트를 chromadb에 저장"""
+    """텍스트를 ChromaDB에 저장"""
     from yunhee.store.vectorstore import add_texts
     add_texts([text])
     print("indexed.")
@@ -99,7 +98,7 @@ def index(text: str):
 
 @app.command()
 def search(query_text: str, n: int = 3):
-    """저장된 텍스트 중 유사한 것 검색"""
+    """ChromaDB 유사 텍스트 검색"""
     from yunhee.store.vectorstore import search as vector_search
     results = vector_search(query_text, n_results=n)
     docs = results["documents"][0]
@@ -107,13 +106,19 @@ def search(query_text: str, n: int = 3):
     for doc, dist in zip(docs, dists):
         print(f"[{dist:.4f}] {doc}")
 
+
 @app.command(name="config")
 def config_cmd():
-    """현재 yunhee가 바라보는 설정(Source 경로, Target 경로, DB 접속 정보 등)을 확인"""
+    """현재 설정(Source/Target 경로, 브랜치, DB, API) 확인"""
     from rich.console import Console
     from rich.table import Table
 
     from yunhee import config
+    from yunhee.tools.as_is.drift import check_commit_mismatch_warning
+
+    mismatch_warn = check_commit_mismatch_warning(config.ASIS_SRC_DIR, find_as_is_dir("src"))
+    if mismatch_warn:
+        typer.secho(mismatch_warn, fg=typer.colors.YELLOW)
 
     table = Table(title="yunhee 설정 정보")
     table.add_column("항목", style="cyan", no_wrap=True)
@@ -123,6 +128,7 @@ def config_cmd():
     cfg = config.summary()
     table.add_row("Target (Work Dir)", cfg["work-dir"], "현재 터미널 작업 디렉터리 (cd로 이동하여 변경)")
     table.add_row("Source (ASIS)", cfg["asis-src"], ".env.local의 YUNHEE_ASIS_SRC_DIR")
+    table.add_row("소스 브랜치", cfg["asis-branch"], "원격 추적 브랜치(origin/<branch>) 대비 상태 (읽기 전용)")
     table.add_row("Local DB", cfg["local-db"], ".env.local의 LOCAL_DB")
     table.add_row("Test DB", cfg["test-db"], ".env.local의 TEST_DB")
     table.add_row("Schema Snapshot", cfg["schema-env"], ".env.local의 YUNHEE_SCHEMA_ENV")
@@ -136,9 +142,9 @@ def config_cmd():
     table.add_row("API Company", cfg["test-company"], ".env.local의 YUNHEE_TEST_COMPANY")
     table.add_row("API Tenant Host", cfg["api-tenant-host"], ".env.local의 YUNHEE_API_TENANT_HOST")
 
-    console = Console()
+    console = Console(width=200)
     console.print(table)
-
+    typer.echo(f"소스 브랜치: {cfg['asis-branch']}")
 
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -154,7 +160,7 @@ def _make_dbml(
         typer.Option("--schema", help="대상 스키마 (여러 번 지정 가능, 기본: 시스템 스키마 제외 전체)"),
     ] = None,
 ):
-    """환경변수(LOCAL_DB 등)의 PostgreSQL에 읽기 전용으로 접속해 스키마를 DBML+SQL 마크다운으로 저장 (make-dbml == dbml, 완전히 동일)"""
+    """(=dbml) DB 스키마를 DBML 마크다운·스냅샷으로 저장"""
     from yunhee.dbml import counts, render_markdown
     from yunhee.tools.pg_schema import fetch_schema
     from yunhee.tools.schema_snapshot import save_snapshot
@@ -184,7 +190,7 @@ def _make_dbml(
 
 
 app.command(name="make-dbml")(_make_dbml)
-app.command(name="dbml")(_make_dbml)
+app.command(name="dbml", hidden=True)(_make_dbml)
 
 
 @app.command()
@@ -193,7 +199,7 @@ def table(
     page: Annotated[str | None, typer.Option("--page", help="ASIS 페이지 코드 — mapper가 참조하는 테이블 전부")] = None,
     db: Annotated[str, typer.Option("--db", help="스키마 스냅샷 (make-dbml의 환경변수 이름)")] = SCHEMA_ENV,
 ):
-    """스키마 스냅샷에서 지정한 테이블만 DBML로 출력 (DB 접속·LLM 호출 없음)
+    """스키마 스냅샷에서 지정 테이블 DBML 출력
 
 [bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
   전체 DDL 파일을 검색하거나 DB에 임의 조회하지 마세요. 필요한 테이블 DBML만 이 명령으로 추출해 사용하세요.
@@ -244,7 +250,7 @@ def _run_exec(
     no_llm: Annotated[bool, typer.Option("--no-llm", help="실패 시 로컬 Qwen 요약을 건너뜀")] = False,
     raw: Annotated[bool, typer.Option("--raw", help="요약 없이 원시 출력을 그대로 출력")] = False,
 ):
-    """외부 명령어(빌드, 테스트, 스크립트 등)를 실행하고 원시 로그는 .yunhee/runs에 격리 저장하며 Qwen 에러 압축 리포트 출력 (run == exec)
+    """(=exec) 외부 명령 실행·로그 격리 및 에러 압축 리포트
 
 [bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
   mvn, gradle, npm, pytest 등을 직접 실행하지 마세요. 수천 줄의 빌드 로그 대신 이 명령으로 Qwen의 10~20줄 핵심 에러 요약만 받아 디버깅하세요.
@@ -306,12 +312,12 @@ def _run_exec(
 
 
 app.command(name="run")(_run_exec)
-app.command(name="exec")(_run_exec)
+app.command(name="exec", hidden=True)(_run_exec)
 
 
 @app.command(name="last-run")
 def last_run():
-    """가장 최근에 실행한 외부 명령어 결과와 요약을 확인"""
+    """직전 실행 결과·요약 확인 (전체 이력 표: `yunhee runs`)"""
     from yunhee.store import run_tracker
 
     project_root = project.find_project_root()
@@ -333,7 +339,7 @@ def last_run():
         print(f"Created: {last['created_at']}")
 
 
-@app.command(name="runs")
+@app.command(name="runs", hidden=True)
 def list_runs_cmd(
     limit: Annotated[int, typer.Option("--limit", "-n", help="표시할 최근 실행 수")] = 10,
 ):
@@ -383,7 +389,7 @@ def outline(
     members: Annotated[bool, typer.Option("--members", "-m", help="interface/type의 필드(멤버) 목록 표시")] = False,
     symbol: Annotated[str | None, typer.Option("--symbol", "-s", help="특정 symbol(interface/type/함수 등)만 추출")] = None,
 ):
-    """소스 파일(Java, XML, TS/TSX, Python) 또는 디렉터리의 클래스·메서드·시그니처와 줄 번호를 추출 (LLM 호출 없음)
+    """소스 파일·디렉터리의 클래스·메서드 시그니처와 줄 번호 추출
 
 [bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
   TOBE 기존 코드(Service, Controller, Mapper XML 등) 전체를 읽지 마세요. 이 명령으로 메서드 위치와 줄 번호를 파악한 뒤 필요한 줄만 핀포인트로 읽으세요.
@@ -430,7 +436,7 @@ def api(
     log: Annotated[bool, typer.Option("--log", help="호출 후 서버 로그(trace) 요약 출력")] = False,
     no_mask: Annotated[bool, typer.Option("--no-mask", help="개인정보 마스킹 해제")] = False,
 ):
-    """테스트 계정으로 자동 로그인하여 API를 호출하고 응답 요약(상태코드, 행수, 필드목록)을 확인 (LLM 호출 없음)
+    """자동 로그인 기반 API 호출 및 응답(상태·행수·필드) 요약
 
 [bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
   수천 줄의 원시 응답 JSON 대신 이 명령으로 행 수(rows=N)와 키 목록만 2~3줄로 확인하여 토큰을 절약하세요.
@@ -526,7 +532,7 @@ def sql_cmd(
     var: Annotated[list[str] | None, typer.Option("--var", help="변수 설정 key=val 또는 key=\"select ...\" (반복 가능)")] = None,
     db: Annotated[str | None, typer.Option("--db", help="대상 데이터베이스 환경변수 이름 또는 연결 URL (기본: LOCAL_DB)")] = None,
 ):
-    """PostgreSQL 읽기 전용 쿼리 실행 또는 롤백 시험 (LLM 호출 없음)
+    """PostgreSQL 읽기 전용 쿼리 실행 또는 --rollback 시험
 
 [bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
   psql 대신 이 명령으로 중복 검사나 행 수를 확인하고, 저장 SQL 시험 시 --rollback 옵션을 사용하세요.
@@ -565,7 +571,7 @@ def port_sql_cmd(
     db: Annotated[str, typer.Option("--db", help="스키마 환경 (기본 LOCAL_DB)")] = SCHEMA_ENV,
     package: Annotated[str | None, typer.Option("--package", help="DTO 패키지 (예: kr.co.kfs.asseterp.biz.sys.dto) — resultType FQN에 사용")] = None,
 ) -> None:
-    """AS-IS SQL을 TOBE 매퍼 조각과 레코드 DTO로 변환 (--cols 순서 = 출력 순서)"""
+    """AS-IS SQL을 TOBE 매퍼 조각과 Record DTO로 변환"""
     from yunhee.tools.as_is.sql_porter import port_sql
 
     col_list = [c.strip() for c in cols.split(",") if c.strip()] if cols else None
@@ -593,7 +599,7 @@ def port_save_cmd(
     company_via: Annotated[str | None, typer.Option("--company-via", help="회사 조건 서브쿼리 경로 (예: emp01_person.emp01_person_id=emp03_person_id)")] = None,
     src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
 ) -> None:
-    """UpdateDataModel 대신 사용할 명시 INSERT, UPDATE, DELETE 및 부수 효과 SQL 생성"""
+    """테이블 스키마 기반 명시적 INSERT/UPDATE/DELETE 및 부수효과 생성"""
     from yunhee.tools.as_is.sql_porter import port_save
 
     col_list = [c.strip() for c in cols.split(",") if c.strip()]
@@ -684,7 +690,7 @@ def changelog_cmd(
     since: Annotated[str | None, typer.Option("--since", help="이 버전 이후(미포함) 변경사항 전부")] = None,
     show_all: Annotated[bool, typer.Option("--all", help="전체 변경 이력")] = False,
 ):
-    """버전별 변경 내용을 출력 (LLM 호출 없음)"""
+    """버전별 변경 이력 출력"""
     from yunhee import changelog
 
     entries = changelog.select(
@@ -703,7 +709,7 @@ def changelog_cmd(
 
 @app.command(name="agent-guide")
 def agent_guide():
-    """상용 AI 에이전트(Claude, Antigravity)가 따라야 할 토큰 절약 지침서(Markdown)를 출력"""
+    """AI 에이전트용 토큰 절약 행동 지침서(Markdown) 출력"""
     guide = """# YUNHEE AI AGENT PROTOCOL (토큰 절약 행동 수칙)
 
 당신은 이 프로젝트를 작업하는 상용 AI 코딩 어시스턴트(Claude, Antigravity, Gemini 등)입니다.
@@ -749,9 +755,10 @@ def agent_guide():
 ## 5. AS-IS 정적 분석 및 폼 레이아웃 파악 (토큰 90% 절약)
 - ❌ 절대 금지: 복잡한 GXT 폼 탭의 컴포넌트 크기, 라벨, 배치, 읽기 전용 속성을 파악하려고 수백 줄의 자바 소스를 직접 열지 마세요.
 - ✅ 권장 명령:
-  - `yunhee analysis screen <화면> --list`: 클래스 목록 및 줄/버튼/이벤트/그리드 통계 (연결 컴포넌트 포함(`(연결)` 표시), `--no-linked` 지원)
-  - `yunhee analysis screen <화면> --section layout`: 폼 탭은 원본 Java를 열기 전에 이것부터 확인하세요.
-  - `yunhee analysis ui <화면>`: TOBE 이벤트 구현율 및 `(생략 N)` (TOBE에서 생략하기로 결정된 이벤트 수) 확인 (연결 컴포넌트 포함(`(연결)` 표시)).
+    - `yunhee analysis screen <화면> --list`: 클래스 목록 및 줄/버튼/이벤트/그리드 통계 (연결 컴포넌트 포함(`(연결)` 표시), `--no-linked` 지원)
+    - `yunhee analysis screen <화면> --section layout`: 폼 탭은 원본 Java를 열기 전에 이것부터 확인하세요.
+    - `yunhee analysis screen <화면> --section source`: 색인 시점의 소스 커밋과 의존 파일 개수 요약 확인.
+    - `yunhee analysis ui <화면>`: TOBE 이벤트 구현율 및 `(생략 N)` (TOBE에서 생략하기로 결정된 이벤트 수) 확인 (연결 컴포넌트 포함(`(연결)` 표시)).
 
 ## 6. 서버 로그 및 실제 실행 SQL 확인 시 (grep 금지)
 - ❌ 절대 금지: docker logs나 서버 로그 파일을 직접 grep하지 마세요. (호스트 같은 경로는 로컬 테스트 로그이며, 배포본은 docker 컨테이너 t3600-tomcat 안에 있습니다)
@@ -762,8 +769,12 @@ def agent_guide():
   - `yunhee log errors`: 서버 WARN/ERROR 묶음 요약
   - `yunhee log tail`: 최근 전체 흐름을 요청(trace) 단위로 접어서 확인
 
-## 7. 현재 설정 및 경로 확인
-- `yunhee config`: Target 디렉터리, Source 디렉터리, DB URL 등 환경 확인.
+## 7. AS-IS 소스 변경(drift) 감지 및 기준선 관리
+- 화면을 완성하면 `yunhee drift --record <화면> [--id <작업단위>] [--note-file <노트경로>]`, 주 1회·git pull 직후 `yunhee drift --all --base baseline --done-only`로 AS-IS 변경을 점검하세요.
+- 특정 화면 점검: `yunhee drift <화면> [-o table|diff|full|json]`
+
+## 8. 현재 설정 및 경로 확인
+- `yunhee config`: Target 디렉터리, Source 디렉터리, 소스 브랜치 동기화 상태, DB URL 등 환경 확인.
 """
     print(guide.strip())
 
@@ -779,7 +790,7 @@ def index_db_cmd(
         typer.Option("--target", "-t", help="색인 출력 폴더 (기본: {WORK_DIR}/docs/as-is/db)"),
     ] = None,
 ):
-    """AS-IS DB 스키마(DBML markdown)를 도메인/함수별 소형 파일로 분할 색인"""
+    """DBML 마크다운을 도메인·함수별 소형 파일로 분할 색인"""
     if dbml is None:
         candidates = [
             WORK_DIR / ".yunhee" / f"{SCHEMA_ENV}-dbml.md",
@@ -843,7 +854,7 @@ def index_src_cmd(
         typer.Option("--button-types", "-b", help="버튼 타입 매핑 TSV 경로 (events와 동일한 기본 탐색)"),
     ] = None,
 ):
-    """AS-IS 소스(GXT)에서 화면 → 서비스 → SQL → 테이블 호출 경로 및 UI·이벤트 색인 생성"""
+    """AS-IS 소스 호출 경로(화면→서비스→SQL→테이블) 및 UI 색인 생성"""
     root = src_root if src_root is not None else ASIS_SRC_DIR
     if not root or not root.is_dir():
         typer.secho(
@@ -876,8 +887,25 @@ def index_src_cmd(
         raise typer.Exit(1)
 
     d = res.data
+    if d.get("mismatch_warning"):
+        typer.secho(d["mismatch_warning"], fg=typer.colors.YELLOW)
     typer.secho(f"✅ AS-IS 소스 색인 생성 완료: {d['target_dir']}", fg=typer.colors.GREEN, bold=True)
     typer.echo(f"  - 원본 소스: {root} ({d['app_package']})")
+    src_info = d.get("source_info") or {}
+    if src_info.get("vcs") == "git":
+        ct_short = str(src_info.get("commit_time", ""))[:16].replace("T", " ")
+        clean_label = "dirty" if src_info.get("dirty") else "clean"
+        typer.echo(
+            f"  - 소스 {src_info.get('commit_short')} ({src_info.get('branch')}, {ct_short}) {clean_label}"
+            f" · 화면 {d['screens_count']:,}개 · 의존 파일 {d.get('files_count', 0):,}개 기록"
+        )
+        if src_info.get("dirty"):
+            typer.secho("  ⚠ 미커밋 변경이 색인에 포함됨 — 기준 커밋만으로 재현 불가", fg=typer.colors.YELLOW)
+    else:
+        typer.echo(
+            f"  - 소스 (비-git, {src_info.get('commit_time', '')})"
+            f" · 화면 {d['screens_count']:,}개 · 의존 파일 {d.get('files_count', 0):,}개 기록"
+        )
     typer.echo(f"  - 클라이언트 클래스: {d['client_classes_count']}개, 메뉴 화면: {d['screens_count']}개, 프레임: {d['frame_screens_count']}개, 컴포넌트: {d['components_count']}개")
     typer.echo(f"  - 서비스 메서드: {d['service_methods_count']}개, 매퍼 SQL: {d['statements_count']}개, 도메인: {d['domains_count']}개")
     if d["missing_service_keys_count"] or d["missing_sql_ids_count"]:
@@ -886,6 +914,131 @@ def index_src_cmd(
         typer.echo(f"  - events: 클래스 {d['events_classes_count']}개 분석 (화면 파일 UI 절에 포함)")
         for name, err in d["events_errors"]:
             typer.secho(f"    ⚠ {name}: {err}", fg=typer.colors.YELLOW, err=True)
+    if d.get("prev_diff") and d["prev_diff"].get("summary"):
+        typer.echo(f"  - {d['prev_diff']['summary']}")
+
+
+@app.command(name="drift")
+def drift_cmd(
+    screens: Annotated[
+        list[str] | None,
+        typer.Argument(help="검사 또는 기록할 화면 클래스명/약칭 (여러 개 지정 가능)"),
+    ] = None,
+    all_screens: Annotated[
+        bool,
+        typer.Option("--all", help="색인된 전체 화면 검사"),
+    ] = False,
+    src: Annotated[
+        Path | None,
+        typer.Option("--src", help="현재 AS-IS 소스 루트 (기본: YUNHEE_ASIS_SRC_DIR)"),
+    ] = None,
+    src_index: Annotated[
+        Path | None,
+        typer.Option("--src-index", help="색인 폴더 (기본: docs/as-is/src)"),
+    ] = None,
+    base: Annotated[
+        str,
+        typer.Option("--base", help="비교 기준: index(기본) | baseline | prev-index | <커밋 해시>"),
+    ] = "index",
+    done_only: Annotated[
+        bool,
+        typer.Option("--done-only", help="baseline에 등록된(완성된) 화면만 검사"),
+    ] = False,
+    min_lines: Annotated[
+        int,
+        typer.Option("--min-lines", help="변경 줄 수(+와 -의 합)가 N 이상인 화면만 표시"),
+    ] = 1,
+    output: Annotated[
+        str,
+        typer.Option("--output", "-o", help="출력 형식: table(기본) | diff | full | json"),
+    ] = "table",
+    max_lines: Annotated[
+        int,
+        typer.Option("--max-lines", help="diff 출력 최대 줄 수 (기본: 200)"),
+    ] = 200,
+    new_flag: Annotated[
+        bool,
+        typer.Option("--new", help="색인에 없던 신규 화면·파일 후보 탐지"),
+    ] = False,
+    fail_on_drift: Annotated[
+        bool,
+        typer.Option("--fail-on-drift", help="변경이 1건이라도 있으면 종료 코드 1 반환"),
+    ] = False,
+    ignore_space: Annotated[
+        bool,
+        typer.Option("--ignore-space", help="공백/개행(CRLF) 차이 무시 (git diff -w)"),
+    ] = False,
+    record: Annotated[
+        bool,
+        typer.Option("--record", help="화면의 현재 색인 기준을 완성 기준선(baseline)으로 기록"),
+    ] = False,
+    unit_id: Annotated[
+        str | None,
+        typer.Option("--id", help="작업 단위 식별자 (예: A21)"),
+    ] = None,
+    note_file: Annotated[
+        Path | None,
+        typer.Option("--note-file", help="작업 노트 마크다운 파일 상단에 AS-IS 기준 줄 삽입/갱신"),
+    ] = None,
+    show_baseline: Annotated[
+        bool,
+        typer.Option("--show-baseline", help="기록된 완성 기준선과 이력 표시"),
+    ] = False,
+):
+    """색인·기준선(baseline) 대비 AS-IS 화면·파일 변경 감지"""
+    from yunhee.tools.as_is.drift import record_baseline, run_drift, show_baseline_info
+
+    idx_dir = src_index if src_index is not None else find_as_is_dir("src")
+    src_dir = src if src is not None else ASIS_SRC_DIR
+    screen_list = list(screens) if screens else []
+
+    if show_baseline:
+        code, msg = show_baseline_info(screen_names=screen_list, work_dir=WORK_DIR)
+        if code != 0:
+            typer.secho(f"[ERROR] {msg}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=code)
+        typer.echo(msg)
+        return
+
+    if record:
+        code, msg = record_baseline(
+            screen_names=screen_list,
+            src_root=src_dir,
+            src_index=idx_dir,
+            task_id=unit_id,
+            note_file=note_file,
+            work_dir=WORK_DIR,
+        )
+        if code != 0:
+            typer.secho(f"[ERROR] {msg}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=code)
+        typer.echo(msg)
+        return
+
+    code, out_text, warnings = run_drift(
+        screen_args=screen_list,
+        all_screens=all_screens,
+        src_root=src_dir,
+        src_index=idx_dir,
+        base=base,
+        done_only=done_only,
+        min_lines=min_lines,
+        output_fmt=output,
+        max_lines=max_lines,
+        show_new=new_flag,
+        fail_on_drift=fail_on_drift,
+        ignore_space=ignore_space,
+        work_dir=WORK_DIR,
+    )
+    for w in warnings:
+        typer.secho(w, fg=typer.colors.YELLOW, err=True)
+    if code == 2:
+        typer.secho(f"[ERROR] {out_text}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    typer.echo(out_text)
+    if code != 0:
+        raise typer.Exit(code=code)
 
 
 @app.command(name="sql-check")
@@ -927,7 +1080,7 @@ def sql_check_cmd(
         typer.Option("--src-index", help="src-index 출력 폴더 (기본: docs/as-is/src 탐색)"),
     ] = None,
 ):
-    """MyBatis 매퍼 SQL 정합성 검증 (EXPLAIN 검증 및 --old 지정 시 SQL Drift 검증)"""
+    """MyBatis 매퍼 SQL EXPLAIN 정합성 및 SQL Drift 검증"""
     import json
 
     from yunhee.tools.as_is.sql_checker import check_sql_drift, check_tobe_sql
@@ -1028,7 +1181,7 @@ def events_cmd(
         typer.Option("--json", help="JSON 형식으로 출력"),
     ] = False,
 ):
-    """AS-IS GXT 화면의 위젯 이벤트(E0..En)와 메서드 호출/하는 일을 정밀 추출"""
+    """AS-IS GXT 화면 이벤트(E0..En)·메서드·그리드·버튼 추출"""
     file_path: Path | None = None
     p = Path(target)
     if p.is_file():
@@ -1167,7 +1320,7 @@ def analysis_cmd(
     ] = None,
     section: Annotated[
         str | None,
-        typer.Option("--section", help="절 필터링 (services, tables, ui, events, methods, grid, buttons, layout)"),
+        typer.Option("--section", help="절 필터링 (services, tables, ui, events, methods, grid, buttons, layout, source)"),
     ] = None,
     list_classes: Annotated[
         bool,
@@ -1218,7 +1371,7 @@ def analysis_cmd(
         typer.Option("--called-from", help="호출 클래스 기준 오버로드 선택"),
     ] = None,
 ):
-    """AS-IS 및 TOBE 통합 정적 분석 도구 (method, sql, model, grid, screen, ui, tobe, run)
+    """AS-IS·TOBE 통합 분석 (method/sql/model/grid/screen/ui/tobe/run)
 
 [bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
   원본 소스를 직접 sed/grep/cat하지 마세요. 필요한 정보(메서드 본문 요약, 실행 가능 SQL, 그리드 컬럼 스펙 등)를
@@ -1335,7 +1488,7 @@ def analysis_cmd(
 
 
 log_app = typer.Typer(
-    help="서버 로그 분석 및 요청/SQL/에러 요약 도구 (trace, req, errors, tail)",
+    help="서버 로그 분석 및 요청·SQL·에러 요약 (trace, req, errors, tail)",
     no_args_is_help=True,
 )
 app.add_typer(log_app, name="log")

@@ -111,6 +111,8 @@ def redact(url: str | None) -> str:
 
 def summary() -> dict[str, str]:
     """/config 커맨드에서 보여줄 설정값 모음 (.env.local 기반)."""
+    from yunhee.tools.as_is.drift import get_git_branch_sync_status
+
     return {
         "work-dir": str(WORK_DIR),
         "yunhee-dir": str(YUNHEE_DIR),
@@ -125,6 +127,7 @@ def summary() -> dict[str, str]:
         "local-db": redact(LOCAL_DB),
         "schema-env": SCHEMA_ENV,
         "asis-src": str(ASIS_SRC_DIR),
+        "asis-branch": get_git_branch_sync_status(ASIS_SRC_DIR),
         "api-base": (
             f"{API_BASE_URL} (from {TOML_FILE.name})"
             if TOML_FILE and _api_conf.get("base")

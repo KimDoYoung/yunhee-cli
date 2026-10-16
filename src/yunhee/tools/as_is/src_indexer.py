@@ -460,6 +460,7 @@ class ClientClass:
         self.services: list[tuple[str, int]] = []
         self.unresolved: list[tuple[str, int]] = []
         self.refs: set[str] = set()
+        self.model_refs: set[str] = set()
         self._bare: str = ""
 
 
@@ -560,10 +561,15 @@ def parse_client(app: Path) -> dict[str, list[ClientClass]]:
         name for name, items in classes.items()
         if any(c.domain != COMMON_DOMAIN and not c.is_model for c in items)
     }
+    model_names = {
+        name for name, items in classes.items()
+        if any(c.is_model for c in items)
+    }
     for items in classes.values():
         for cls in items:
             tokens = set(re.findall(r"\b[A-Z]\w+\b", cls._bare))
             cls.refs = (tokens & vi_names) - {cls.name}
+            cls.model_refs = (tokens & model_names) - {cls.name}
             cls._bare = ""
     return classes
 
@@ -914,6 +920,10 @@ class Index:
         self.button_types_path: Path | None = None
         self.events_cache: dict[Path, list[str]] = {}
         self.events_errors: list[tuple[str, str]] = []
+        self.src_root: Path = app
+        self.source_info: dict[str, Any] = {}
+        self.unit_source_files: dict[str, dict[str, str]] = {}
+        self.unit_shared_links: dict[str, list[str]] = {}
 
     def client_class(self, name: str) -> ClientClass | None:
         items = self.client.get(name, [])
@@ -946,6 +956,109 @@ class Index:
                 else:
                     stack.append(ref)
         return seen, linked
+
+    def collect_unit_files(self, name: str) -> tuple[dict[str, str], list[str]]:
+        """화면/컴포넌트 단위가 의존하는 원본 파일들의 상대 경로 → 해시 맵과 shared_links를 수집한다."""
+        from yunhee.tools.as_is.drift import compute_source_file_hash
+
+        cls = self.client_class(name)
+        if not cls:
+            return {}, []
+        classes, linked = self.closure(name)
+        dep_paths: set[Path] = set()
+
+        for c in classes:
+            if c.path and c.path.is_file():
+                dep_paths.add(c.path)
+
+        # 같은 도메인(또는 _common) 모델 클래스 전이 탐색
+        model_queue = [m for c in classes for m in sorted(c.model_refs)]
+        seen_models: set[str] = set()
+        while model_queue:
+            m_name = model_queue.pop(0)
+            if m_name in seen_models:
+                continue
+            seen_models.add(m_name)
+            m_cls = self.client_class(m_name)
+            if not m_cls or not m_cls.path or not m_cls.path.is_file():
+                continue
+            if m_cls.domain not in (cls.domain, COMMON_DOMAIN):
+                continue
+            dep_paths.add(m_cls.path)
+            for sub_m in sorted(m_cls.model_refs):
+                if sub_m not in seen_models:
+                    model_queue.append(sub_m)
+
+        def add_statement_files(sid: str, seen_sids: set[str] | None = None) -> None:
+            seen_sids = seen_sids or set()
+            if sid in seen_sids:
+                return
+            seen_sids.add(sid)
+            st = self.statements.get(sid)
+            if not st:
+                return
+            st_file = self.app / st.rel
+            if st_file.is_file():
+                dep_paths.add(st_file)
+            for inc in st.includes:
+                inc_target = self.statements.get(inc) or self.statements.get(f"{st.ns}.{inc}")
+                if inc_target:
+                    add_statement_files(inc_target.key, seen_sids)
+
+        for c in classes:
+            skeys = {skey for skey, _ in c.services}
+            # 동적 서비스 호출(예: "sys.Sys90_AfterService." + sql)의 서버 클래스도 포함
+            for expr, _ in c.unresolved:
+                m_dyn = re.search(r'"([a-z]\w*\.[A-Z]\w*)\."', expr)
+                if m_dyn:
+                    srv_k = m_dyn.group(1)
+                    s_cls_dyn = self.server.get(srv_k)
+                    if s_cls_dyn:
+                        s_p = self.app / s_cls_dyn.rel
+                        if s_p.is_file():
+                            dep_paths.add(s_p)
+                        for m_obj in s_cls_dyn.methods.values():
+                            if m_obj.is_service:
+                                skeys.add(m_obj.key)
+
+            for skey in sorted(skeys):
+                meth = self.service_methods.get(skey)
+                if meth:
+                    srv_file = self.app / meth.cls.rel
+                    if srv_file.is_file():
+                        dep_paths.add(srv_file)
+                    for sid in sorted(all_sql_ids(meth)):
+                        add_statement_files(sid)
+                    for op, tbl in all_udm_calls(meth):
+                        if op == "updateModel":
+                            add_statement_files(f"{tbl}.selectById")
+                            if tbl in self.udm_side_effects:
+                                for it in self.udm_side_effects[tbl]["items"]:
+                                    if it.get("seq"):
+                                        add_statement_files(it["seq"][2])
+                                    if it["call"][0] == "sql":
+                                        add_statement_files(it["call"][2])
+                elif "." in skey:
+                    srv_key = ".".join(skey.split(".")[:-1])
+                    s_cls = self.server.get(srv_key)
+                    if s_cls:
+                        srv_file = self.app / s_cls.rel
+                        if srv_file.is_file():
+                            dep_paths.add(srv_file)
+
+        root_resolved = self.src_root.resolve()
+        source_files: dict[str, str] = {}
+        for p in sorted(dep_paths):
+            try:
+                rel_p = p.resolve().relative_to(root_resolved).as_posix()
+            except ValueError:
+                rel_p = p.as_posix()
+            source_files[rel_p] = compute_source_file_hash(self.src_root, rel_p, self.source_info)
+
+        shared_links = sorted(r for r in linked if r in self.component_names or name != "MenuOpener")
+        self.unit_source_files[name] = source_files
+        self.unit_shared_links[name] = shared_links
+        return source_files, shared_links
 
     def unit_path(self, name: str) -> str:
         cls = self.client_class(name)
@@ -1037,11 +1150,20 @@ def write_unit(
     menus_by_key: dict[str, list[dict[str, str]]],
     keys_by_class: dict[str, list[str]],
 ) -> tuple[int, int]:
+    from yunhee.tools.as_is.drift import render_frontmatter
+
     up = "../../"
     cls = idx.client_class(name)
     if not cls:
         return 0, 0
     classes, linked = idx.closure(name)
+    s_files, shared_links = idx.collect_unit_files(name)
+    fm_lines = render_frontmatter(
+        idx.source_info.get("commit"),
+        idx.source_info.get("indexed_at") or "",
+        s_files,
+        shared_links,
+    )
     is_screen = name in idx.screen_names
     kind = (
         "프레임 (로그인·메인 화면 등, 메뉴로 열지 않음)"
@@ -1050,7 +1172,7 @@ def write_unit(
         if is_screen
         else "컴포넌트 (다른 도메인에서도 쓰는 클래스)"
     )
-    lines = [f"# {name}", "", f"- 종류: {kind}"]
+    lines = [*fm_lines, "", f"# {name}", "", f"- 종류: {kind}"]
     for key in keys_by_class.get(name, []):
         for m in menus_by_key.get(key, []):
             lines.append(f"- 메뉴: {m['path']} (#{m['no']}{'' if m['use'] == 'true' else ', 미사용'})")
@@ -1367,13 +1489,41 @@ def write_readme(
     n_client = sum(len(v) for v in idx.client.values())
     n_unres_client = sum(len(c.unresolved) for v in idx.client.values() for c in v)
     n_unres_server = sum(len(m.unresolved) for c in idx.server.values() for m in c.methods.values())
+    s_info = idx.source_info or {}
+    repo_name = s_info.get("repo_name") or src_root.resolve().name
+    app_rel = idx.app.relative_to(src_root).as_posix()
+    if s_info.get("vcs") == "git":
+        c_state = "dirty" if s_info.get("dirty") else "clean"
+        ct_kst = s_info.get("commit_time_kst") or s_info.get("commit_time")
+        top_commit_line = f"소스 커밋: {s_info.get('commit')} ({s_info.get('branch')}, {ct_kst}, {c_state})"
+        src_line = (
+            f"- 소스: {repo_name} @ {s_info.get('branch')} {s_info.get('commit')} "
+            f"({ct_kst}) {c_state} (`{src_root}`, 파일 경로는 `{app_rel}/` 기준)"
+        )
+    else:
+        top_commit_line = f"소스 커밋: none (git 아님, 최신 mtime: {s_info.get('max_mtime_short') or '-'})"
+        src_line = (
+            f"- 소스: {repo_name} (git 아님, 최신 mtime: {s_info.get('max_mtime_short') or '-'}) "
+            f"(`{src_root}`, 파일 경로는 `{app_rel}/` 기준)"
+        )
+    idx_kst = s_info.get("indexed_at_kst") or f"{s_info.get('indexed_at_short') or '-'} +0900"
+    top_idx_line = f"색인 생성: {idx_kst} · yunhee {s_info.get('yunhee_version') or ''}"
+    idx_line = f"- 색인: {s_info.get('indexed_at_short') or '-'}, yunhee {s_info.get('yunhee_version') or ''}"
+
+    header_meta = [top_commit_line, top_idx_line, "", src_line, idx_line]
+    if s_info.get("dirty"):
+        header_meta.append("- ⚠ 경고: 미커밋 변경이 색인에 포함됨 — 기준 커밋만으로 재현 불가")
+    header_meta += [
+        f"- 메뉴: `{menus_path or '(없음 - MenuOpener 기준)'}`",
+        f"- DB 색인: `{idx.db_rel or '(없음)'}`",
+        "",
+    ]
+
     lines = [
         "# AS-IS 소스 호출 경로 색인", "",
         "`yunhee index-src`가 생성했다. 직접 수정하지 말고 명령어를 다시 실행한다.", "",
         "## 원본", "",
-        f"- 소스: `{src_root}` (파일 경로는 `{idx.app.relative_to(src_root).as_posix()}/` 기준)",
-        f"- 메뉴: `{menus_path or '(없음 - MenuOpener 기준)'}`",
-        f"- DB 색인: `{idx.db_rel or '(없음)'}`", "",
+        *header_meta,
         "## 읽는 방법 (화면 하나 변환할 때)", "",
         "1. [menus.md](menus.md)에서 메뉴로 화면 파일(`{도메인}/screens/{화면}.md`)을 찾는다.",
         "2. 화면 파일에서 함께 쓰는 클래스, 서비스 → 서버 메서드 → SQL ID, 테이블을 본다.",
@@ -1413,6 +1563,35 @@ def write_readme(
         "```",
     ]
     write(out, "README.md", lines)
+
+
+def write_source_and_files_json(idx: "Index", out: Path) -> tuple[Path, Path, int]:
+    """_source.json(소스 기준 메타데이터)과 _files.json(파일경로 → [화면 클래스 ...] 역인덱스)을 생성한다."""
+    import json
+
+    rev: dict[str, set[str]] = defaultdict(set)
+    for s_name in sorted(idx.screen_names):
+        for rel_p in idx.unit_source_files.get(s_name, {}):
+            rev[rel_p].add(s_name)
+        for lk in idx.unit_shared_links.get(s_name, []):
+            for rel_p in idx.unit_source_files.get(lk, {}):
+                rev[rel_p].add(s_name)
+    # 화면에서 참조되지 않은 컴포넌트의 파일도 역인덱스에 보존
+    for c_name in sorted(idx.component_names):
+        for rel_p in idx.unit_source_files.get(c_name, {}):
+            if not rev[rel_p]:
+                rev[rel_p].add(c_name)
+
+    files_dict = {k: sorted(v) for k, v in sorted(rev.items())}
+    files_json = out / "_files.json"
+    files_json.write_text(json.dumps(files_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    s_info = {k: v for k, v in (idx.source_info or {}).items() if k != "tree_blobs"}
+    s_info["screens_count"] = len(idx.screen_names)
+    s_info["files_count"] = len(files_dict)
+    source_json = out / "_source.json"
+    source_json.write_text(json.dumps(s_info, ensure_ascii=False, indent=2), encoding="utf-8")
+    return source_json, files_json, len(files_dict)
 
 
 def write_index_json(idx: "Index", out: Path) -> Path:
@@ -1473,7 +1652,7 @@ def write_index_json(idx: "Index", out: Path) -> Path:
 
 
 def clean_generated(out: Path) -> tuple[bool, str]:
-    """이전 출력 삭제: 안전 표식(README.md)을 확인한 후 .md와 빈 폴더만 지운다."""
+    """이전 출력 삭제: 안전 표식(README.md)을 확인한 후 .md와 빈 폴더만 지운다 (_prev/ 폴더는 보존)."""
     if not out.is_dir():
         return True, ""
     readme = out / "README.md"
@@ -1486,11 +1665,15 @@ def clean_generated(out: Path) -> tuple[bool, str]:
             return False, f"안전 가드: '{out}/README.md'에 AS-IS 소스 색인 생성기 표식이 없습니다. 엉뚱한 폴더 삭제 방지를 위해 중단합니다."
 
     for f in out.rglob("*.md"):
-        f.unlink()
-    idx_json = out / "_index.json"
-    if idx_json.is_file():
-        idx_json.unlink()
+        if "_prev" not in f.parts:
+            f.unlink()
+    for meta_name in ("_index.json", "_source.json", "_files.json"):
+        mf = out / meta_name
+        if mf.is_file():
+            mf.unlink()
     for d in sorted((p for p in out.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+        if "_prev" in d.parts:
+            continue
         if not any(d.iterdir()):
             d.rmdir()
     return True, ""
@@ -1527,6 +1710,13 @@ def index_src(
 
     with_events면 화면·컴포넌트 파일의 UI 절에 클래스별 `yunhee events` 결과(이벤트·메서드·Grid Spec·버튼)를 함께 넣는다.
     """
+    from yunhee.tools.as_is.drift import (
+        check_commit_mismatch_warning,
+        collect_source_info,
+        compute_prev_index_diff,
+        save_prev_generation,
+    )
+
     if not src_root.is_dir():
         return ToolResult(ok=False, error=f"AS-IS 소스 디렉터리를 찾을 수 없습니다: {src_root}")
 
@@ -1542,6 +1732,8 @@ def index_src(
 
     target_dir.mkdir(parents=True, exist_ok=True)
 
+    mismatch_warning = check_commit_mismatch_warning(src_root, target_dir)
+
     tables, functions, columns = load_db_index(db_index_dir)
     db_rel = None
     if tables and db_index_dir:
@@ -1553,6 +1745,8 @@ def index_src(
         # (화면 파일은 출력 폴더 아래 2단계라 링크에 ../../가 더 붙는다)
         if db_rel is None or db_rel.split("/").count("..") > 4:
             db_rel = db_index_dir.resolve().as_posix()
+
+    source_info = collect_source_info(src_root)
 
     client = parse_client(app)
     server = parse_server(app)
@@ -1568,8 +1762,13 @@ def index_src(
         db_rel,
         ns_files=ns_files,
     )
+    idx.src_root = src_root
+    idx.source_info = source_info
     idx.with_events = with_events
     idx.button_types_path = button_types_path
+
+    # 기존 색인 삭제 직전에 이전 세대를 _prev/에 1세대 보관
+    save_prev_generation(target_dir)
 
     clean_ok, clean_err = clean_generated(target_dir)
     if not clean_ok:
@@ -1579,6 +1778,19 @@ def index_src(
     missing = write_unresolved(idx, target_dir)
     write_readme(idx, target_dir, src_root, stats, menus_path, missing)
     write_index_json(idx, target_dir)
+    _, _, tracked_files_count = write_source_and_files_json(idx, target_dir)
+
+    curr_screens_for_diff = {
+        name: {
+            "kind": "screen" if name in idx.screen_names else "component",
+            "source_commit": source_info.get("commit"),
+            "source_files": idx.unit_source_files.get(name, {}),
+            "shared_links": idx.unit_shared_links.get(name, []),
+        }
+        for name in (idx.screen_names | idx.component_names)
+        if name in idx.unit_source_files
+    }
+    prev_diff = compute_prev_index_diff(target_dir, curr_screens_for_diff)
 
     n_screens = len(idx.screen_names) - len(idx.frame_names)
     return ToolResult(
@@ -1597,5 +1809,10 @@ def index_src(
             "missing_sql_ids_count": missing[1],
             "events_classes_count": len(idx.events_cache),
             "events_errors": idx.events_errors,
+            "source_info": {k: v for k, v in source_info.items() if k != "tree_blobs"},
+            "tracked_files_count": tracked_files_count,
+            "files_count": tracked_files_count,
+            "prev_diff": prev_diff,
+            "mismatch_warning": mismatch_warning,
         },
     )
