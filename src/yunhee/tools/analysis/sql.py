@@ -9,7 +9,7 @@ from yunhee.tools.as_is.mybatis_render import render as mr_render
 NAME = "sql"
 DESCRIPTION = "MyBatis 매퍼 statement 분석 및 실행 가능 SQL 펼치기"
 TARGET_HELP = "<ns.id>"
-FORMATS = ("md", "sql", "code")
+FORMATS = ("md", "sql", "code", "json")
 EXAMPLES = [
     "yunhee analysis sql emp00_trans_info.selectByText",
     "yunhee analysis sql emp00_trans_info.selectByText --param companyId=28000 --param transCode=100 -o sql",
@@ -214,6 +214,24 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     # ORDER BY
     order_m = re.search(r"\bORDER\s+BY\s+([^;\n<]+)", body, re.IGNORECASE)
     order_by = order_m.group(1).strip() if order_m else None
+
+    if fmt == "json":
+        import json
+
+        return json.dumps(
+            {
+                "id": st.key,
+                "file": st.rel,
+                "line": st.line,
+                "kind": st.kind,
+                "params": found_params,
+                "tables": table_names,
+                "functions": funcs,
+                "order_by": order_by,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     lines = [f"### `{st.key}` ({st.rel}:{st.line})"]
     if inc_list:

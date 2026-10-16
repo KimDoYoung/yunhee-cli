@@ -2,6 +2,13 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.4.0] - 2026-10-17
+수정사항 034 (`index-src` 바깥 git 저장소 오인, `analysis screen --list` 열 의미, `-o json`) 반영.
+- `index-src`: 소스 폴더가 git 저장소의 루트가 아니면(`.git` 없는 하위 폴더) 바깥 저장소를 무시하고 `vcs: none`(파일 sha256)으로 기록하며 경고 출력. 하위 폴더를 소스로 쓰려면 `--vcs-root <저장소 루트>` 지정, `_source.json`에 `vcs_root`/`outer_repo` 기록 (034-1)
+- `drift`: 색인이 `vcs: none`이면 머리에 `소스 (git 정보 없음 — sha256 비교)` 안내 (034-1)
+- `analysis screen --list`: 열을 `줄(원본)`(원본 Java 파일 줄 수)·`줄(UI절)`(색인 절 줄 수)로 분리하고 열 정의·`※ 합계는 연결·다른 도메인 클래스 제외` 주석 추가 (034-2)
+- `analysis screen --list`·`ui`·`sql`에 `-o json` 추가 (034-3)
+
 ## [0.3.9] - 2026-10-16
 수정사항 033 (`yunhee sql` 출력 형식·파일 저장·내장 SQL, `drift --record-from` 일괄 기록, `index-src`·`drift` 화면 수 요약 표기) 반영.
 - `yunhee sql`: `-o/--output table|tsv|csv|json`, `--no-header`, `--null`, `--out <파일>`(원자적 저장 및 1줄 요약), 마크다운 표 `|` 이스케이프 지원 (033-1)

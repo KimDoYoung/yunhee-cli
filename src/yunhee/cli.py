@@ -872,6 +872,10 @@ def index_src_cmd(
         Path | None,
         typer.Option("--button-types", "-b", help="버튼 타입 매핑 TSV 경로 (events와 동일한 기본 탐색)"),
     ] = None,
+    vcs_root: Annotated[
+        Path | None,
+        typer.Option("--vcs-root", help="소스 루트가 git 저장소의 하위 폴더일 때 그 저장소 루트 경로 (기본: 소스 루트 자신이 저장소 루트일 때만 git 정보 사용)"),
+    ] = None,
 ):
     """AS-IS 소스 호출 경로(화면→서비스→SQL→테이블) 및 UI 색인 생성"""
     root = src_root if src_root is not None else ASIS_SRC_DIR
@@ -913,7 +917,7 @@ def index_src_cmd(
 
     res = index_src(
         root, out_dir, menus_path=menus_path, db_index_dir=db_dir,
-        with_events=events, button_types_path=button_types,
+        with_events=events, button_types_path=button_types, vcs_root=vcs_root,
     )
     if not res.ok:
         typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED)
@@ -922,6 +926,8 @@ def index_src_cmd(
     d = res.data
     if d.get("mismatch_warning"):
         typer.secho(d["mismatch_warning"], fg=typer.colors.YELLOW)
+    if d.get("vcs_warning"):
+        typer.secho(d["vcs_warning"], fg=typer.colors.YELLOW)
     typer.secho(f"✅ AS-IS 소스 색인 생성 완료: {d['target_dir']}", fg=typer.colors.GREEN, bold=True)
     typer.echo(f"  - 원본 소스: {root} ({d['app_package']})")
     src_info = d.get("source_info") or {}
@@ -940,7 +946,7 @@ def index_src_cmd(
             typer.secho("  ⚠ 미커밋 변경이 색인에 포함됨 — 기준 커밋만으로 재현 불가", fg=typer.colors.YELLOW)
     else:
         typer.echo(
-            f"  - 소스 (비-git, {src_info.get('commit_time', '')})"
+            "  - 소스 (비-git)"
             f" · {screen_summary_str} · 의존 파일 {d.get('files_count', 0):,}개 기록"
         )
     menu_detail = f"{s_menu}개" if d.get("has_menus") else "연결 안 됨(--menus 없음)"
@@ -1377,7 +1383,7 @@ def analysis_cmd(
     ] = False,
     output: Annotated[
         str | None,
-        typer.Option("--output", "-o", help="출력 형식 (md, json, code, sql)"),
+        typer.Option("--output", "-o", help="출력 형식 (md, json, code, sql). json: screen --list, ui, sql, grid, model"),
     ] = None,
     limit: Annotated[
         int | None,

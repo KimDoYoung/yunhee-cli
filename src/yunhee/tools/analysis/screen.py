@@ -8,7 +8,7 @@ from yunhee.tools.analysis.common import count_as_is_grids, resolve_as_is_paths
 NAME = "screen"
 DESCRIPTION = "색인 화면 파일에서 필요한 클래스 및 절(section) 추출 (연결 컴포넌트 포함)"
 TARGET_HELP = "<화면클래스>"
-FORMATS = ("md",)
+FORMATS = ("md", "json")
 EXAMPLES = [
     "yunhee analysis screen Emp00_Tab_TransInfo --list",
     "yunhee analysis screen Emp00_Tab_TransInfo --class Emp03_TabPage_Trans --section events",
@@ -178,24 +178,79 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     # 1. --list / --list-classes
     if list_opt:
         display_stats = [s for s in stats if not (no_linked and s.get("is_linked"))]
-        lines = [f"### 화면 `{screen_name}` 클래스 목록 ({len(display_stats)}개)"]
-        lines.append("\n| 클래스 | 줄 수 | 버튼 | 이벤트 | 그리드 |")
-        lines.append("|:---|---:|---:|---:|---:|")
 
         def include_in_total(s: dict[str, Any]) -> bool:
             if not s.get("is_linked"):
                 return True
             return s.get("same_domain", False) and not no_linked
 
-        tot_lines = sum(s["lines"] for s in display_stats if include_in_total(s))
-        tot_btns = sum(s["buttons"] for s in display_stats if include_in_total(s))
-        tot_evs = sum(s["events"] for s in display_stats if include_in_total(s))
-        tot_grids = sum(s["grids"] for s in display_stats if include_in_total(s))
+        def src_lines(s: dict[str, Any]) -> int | None:
+            """클래스 원본 Java 파일의 줄 수 (파일을 못 찾으면 None)."""
+            try:
+                jf, jtext = _find_java_source(s.get("raw_name") or s["name"], obj, s["text"], full_text)
+            except Exception:  # noqa: BLE001
+                return None
+            if not jf:
+                return None
+            return jtext.count("\n") + (0 if jtext.endswith("\n") or not jtext else 1)
+
+        src_map = {id(s): src_lines(s) for s in display_stats}
+        counted = [s for s in display_stats if include_in_total(s)]
+        tot_src = sum(src_map[id(s)] or 0 for s in counted)
+        tot_ui = sum(s["lines"] for s in counted)
+        tot_btns = sum(s["buttons"] for s in counted)
+        tot_evs = sum(s["events"] for s in counted)
+        tot_grids = sum(s["grids"] for s in counted)
+        has_excluded = any(not include_in_total(s) for s in display_stats)
+
+        if fmt == "json":
+            import json
+
+            return json.dumps(
+                {
+                    "screen": screen_name,
+                    "classes": [
+                        {
+                            "name": s.get("raw_name") or s["name"],
+                            "lines": s["lines"],
+                            "lines_src": src_map[id(s)],
+                            "buttons": s["buttons"],
+                            "events": s["events"],
+                            "grids": s["grids"],
+                            "linked": bool(s.get("is_linked")),
+                            "same_domain": bool(s.get("same_domain", True)),
+                        }
+                        for s in display_stats
+                    ],
+                    "total": {
+                        "lines": tot_ui,
+                        "lines_src": tot_src,
+                        "buttons": tot_btns,
+                        "events": tot_evs,
+                        "grids": tot_grids,
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        lines = [f"### 화면 `{screen_name}` 클래스 목록 ({len(display_stats)}개)"]
+        lines.append("\n| 클래스 | 줄(원본) | 줄(UI절) | 버튼 | 이벤트 | 그리드 |")
+        lines.append("|:---|---:|---:|---:|---:|---:|")
         for s in display_stats:
             g_disp = f"{s['grids']}⚠" if s.get("grid_warn") else f"{s['grids']}"
-            lines.append(f"| {s['name']} | {s['lines']} | {s['buttons']} | {s['events']} | {g_disp} |")
-        lines.append(f"| **합계** | **{tot_lines}** | **{tot_btns}** | **{tot_evs}** | **{tot_grids}** |")
+            sl = src_map[id(s)]
+            lines.append(
+                f"| {s['name']} | {sl if sl is not None else '-'} | {s['lines']} | {s['buttons']} | {s['events']} | {g_disp} |"
+            )
+        lines.append(f"| **합계** | **{tot_src}** | **{tot_ui}** | **{tot_btns}** | **{tot_evs}** | **{tot_grids}** |")
+        lines.append("\n줄(원본)=원본 Java 파일 줄 수, 줄(UI절)=색인 마크다운에서 해당 클래스 절의 줄 수")
+        if has_excluded:
+            lines.append("※ 합계는 연결·다른 도메인 클래스 제외")
         return "\n".join(lines)
+
+    if fmt == "json":
+        raise ValueError("screen의 json 출력은 --list 와 함께만 지원합니다")
 
     # 2. 필터링 (--class, --section)
     cls_filter = opts.get("target_class") or opts.get("class")

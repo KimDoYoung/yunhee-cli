@@ -34,22 +34,35 @@ def _run_git(src_root: Path, args: list[str], timeout: float = 15.0) -> tuple[in
         return 1, "", str(exc)
 
 
-def is_git_repo(src_root: Path) -> bool:
-    """src_root가 유효한 git 작업 트리인지 확인한다 (yunhee-cli 자체 저장소로의 우발적 상위 탐색 제외)."""
+def git_toplevel(src_root: Path) -> Path | None:
+    """src_root가 속한 git 저장소의 최상위 경로 (없으면 None)."""
     if not src_root or not src_root.is_dir():
-        return False
+        return None
     rc, out, _ = _run_git(src_root, ["rev-parse", "--show-toplevel"])
     if rc != 0 or not out.strip():
+        return None
+    return Path(out.strip()).resolve()
+
+
+def is_git_repo(src_root: Path, vcs_root: Path | str | None = None) -> bool:
+    """src_root가 git 저장소의 루트인지 확인한다.
+
+    조상 디렉터리의 바깥 저장소는 무시한다. 소스 루트가 저장소의 하위 폴더이면
+    vcs_root로 그 저장소 루트를 명시해야 git 정보를 쓴다.
+    """
+    top = git_toplevel(src_root)
+    if top is None:
         return False
-    top = Path(out.strip()).resolve()
-    yunhee_root = config.YUNHEE_DIR.resolve()
-    if top == yunhee_root and src_root.resolve() != yunhee_root and not (src_root / ".git").exists():
+    allowed = {src_root.resolve()}
+    if vcs_root:
+        allowed.add(Path(vcs_root).resolve())
+    if top not in allowed:
         return False
     rc_head, _, _ = _run_git(src_root, ["rev-parse", "--verify", "HEAD"])
     return rc_head == 0
 
 
-def collect_source_info(src_root: Path) -> dict[str, Any]:
+def collect_source_info(src_root: Path, vcs_root: Path | str | None = None) -> dict[str, Any]:
     """소스 루트의 git 커밋·브랜치·dirty·blob 해시(또는 비-git mtime) 정보를 수집한다."""
     now_kst = datetime.now(tz=KST)
     indexed_at = now_kst.isoformat(timespec="seconds")
@@ -57,7 +70,8 @@ def collect_source_info(src_root: Path) -> dict[str, Any]:
     ver = project.current_version()
     repo_name = src_root.resolve().name
 
-    if not is_git_repo(src_root):
+    outer_top = None if is_git_repo(src_root, vcs_root) else git_toplevel(src_root)
+    if not is_git_repo(src_root, vcs_root):
         max_mtime = 0.0
         for p in src_root.rglob("*"):
             if p.is_file() and ".git" not in p.parts:
@@ -69,6 +83,7 @@ def collect_source_info(src_root: Path) -> dict[str, Any]:
         mtime_dt = datetime.fromtimestamp(max_mtime, tz=KST) if max_mtime > 0 else now_kst
         return {
             "vcs": "none",
+            "outer_repo": str(outer_top) if outer_top else None,
             "src_root": str(src_root.resolve()),
             "repo_name": repo_name,
             "commit": None,
@@ -136,6 +151,7 @@ def collect_source_info(src_root: Path) -> dict[str, Any]:
 
     return {
         "vcs": "git",
+        "vcs_root": str(Path(vcs_root).resolve()) if vcs_root else None,
         "src_root": str(src_root.resolve()),
         "repo_name": repo_name,
         "commit": commit,
@@ -202,7 +218,7 @@ def check_commit_mismatch_warning(src_root: Path | None, src_index: Path | None)
     idx_commit = idx_meta.get("commit")
     if not idx_commit or idx_meta.get("vcs") != "git":
         return None
-    if not is_git_repo(src_root):
+    if not is_git_repo(src_root, idx_meta.get("vcs_root")):
         return None
     rc, head_out, _ = _run_git(src_root, ["rev-parse", "HEAD"])
     if rc != 0 or not head_out.strip():
@@ -689,8 +705,8 @@ def _check_index_freshness(
     if source_meta.get("dirty"):
         return 2, "오류: 색인이 dirty 상태입니다 (미커밋 변경 포함) — 커밋 후 `index-src` 먼저 실행하세요.", {}, {}
 
-    if src_root and src_root.is_dir() and is_git_repo(src_root):
-        curr_info = collect_source_info(src_root)
+    if src_root and src_root.is_dir() and is_git_repo(src_root, source_meta.get("vcs_root")):
+        curr_info = collect_source_info(src_root, source_meta.get("vcs_root"))
         if curr_info.get("dirty"):
             return 2, "오류: 소스에 미커밋 변경(dirty)이 있습니다 — 커밋 후 `index-src` 먼저 실행하세요.", {}, {}
         if curr_info.get("commit") != source_meta.get("commit"):
@@ -1290,7 +1306,7 @@ def run_drift(
     if not screen_args and not all_screens and not show_new:
         return 2, "오류: 비교할 화면 이름을 지정하거나 --all 옵션을 사용하세요.", warnings
 
-    git_mode = is_git_repo(eff_src)
+    git_mode = is_git_repo(eff_src, source_meta.get("vcs_root"))
     head_commit = None
     head_short = "-"
     if git_mode:
@@ -1732,7 +1748,7 @@ def _render_table_output(
         range_str = f"{short_bases[0]}..{head_short}" if short_bases else f"..{head_short}"
         head_info = f"소스 HEAD {head_short}, 기준 커밋 범위 {range_str}"
     else:
-        head_info = "소스 (git 아님)"
+        head_info = "소스 (git 정보 없음 — sha256 비교)"
 
     lines: list[str] = []
 

@@ -14,7 +14,7 @@ from yunhee.tools.analysis.common import (
 NAME = "ui"
 DESCRIPTION = "UI 대조표 및 단계별 버튼/이벤트/그리드 현황 분석 (연결 컴포넌트 포함)"
 TARGET_HELP = "<화면클래스>"
-FORMATS = ("md",)
+FORMATS = ("md", "json")
 EXAMPLES = [
     'yunhee analysis ui Emp00_Tab_TransInfo --done Emp00_Tab_TransInfo,Emp03_Edit_Person --later "2단계=Emp02_Lookup_HireDate,Emp03_Lookup_Grade"',
     "yunhee analysis ui Sys05_Tab_UserRole --tobe AssetERP_1/frontend/src/pages/sys",
@@ -280,6 +280,9 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
 
     has_tobe = bool(tobe)
 
+    if fmt == "json":
+        return _render_json(obj, opts, group_done, group_later, group_remain, later_label)
+
     lines = [f"### `{screen_name}` UI 대조표"]
 
     if has_tobe:
@@ -365,3 +368,79 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     lines.append(f"| **전체 합계** | **{len(valid_total)}** | **{tot_b}** | **{tot_e}** | **{tot_g}** |")
 
     return "\n".join(lines)
+
+
+def _render_json(
+    obj: dict[str, Any],
+    opts: dict[str, Any] | None,
+    group_done: list[str],
+    group_later: list[str],
+    group_remain: list[str],
+    later_label: str,
+) -> str:
+    """UI 대조 결과를 JSON으로 직렬화한다 (그룹별 합계 + 클래스별 값, --tobe면 TOBE 칸 포함)."""
+    import json
+
+    as_is = obj["as_is"]
+    tobe = obj["tobe"]
+    no_e0 = bool((opts and opts.get("no_e0")) or obj.get("no_e0", False))
+
+    def excluded(n: str) -> bool:
+        return bool(as_is[n].get("is_linked") and not as_is[n].get("same_domain", True))
+
+    def cls_row(n: str) -> dict[str, Any]:
+        ai = as_is[n]
+        ai_ids = set(ai.get("event_ids", set()))
+        if no_e0:
+            ai_ids.discard(0)
+        row: dict[str, Any] = {
+            "name": n,
+            "linked": bool(ai.get("is_linked")),
+            "same_domain": bool(ai.get("same_domain", True)),
+            "as_is": {"buttons": ai["buttons"], "events": ai["events"], "grids": ai["grids"]},
+        }
+        if tobe:
+            tb = tobe.get(n, {})
+            impl = set(tb.get("impl_event_ids", set()))
+            skip = set(tb.get("skipped_event_ids", set()))
+            if no_e0:
+                impl.discard(0)
+                skip.discard(0)
+            row["tobe"] = {
+                "buttons": tb.get("buttons", 0),
+                "events": tb.get("events", len(impl)),
+                "events_skipped": tb.get("events_skipped", len(skip)),
+                "grids": tb.get("grids", 0),
+            }
+            row["missing_events"] = [
+                {"id": f"E{e}", "reason": "생략" if e in skip else "미구현"} for e in sorted(ai_ids - impl)
+            ]
+        return row
+
+    def group(label: str, names: list[str]) -> dict[str, Any]:
+        valid = [n for n in names if not excluded(n)]
+        return {
+            "group": label,
+            "classes": len(valid),
+            "buttons": sum(as_is[n]["buttons"] for n in valid),
+            "events": sum(as_is[n]["events"] for n in valid),
+            "grids": sum(as_is[n]["grids"] for n in valid),
+        }
+
+    groups = []
+    if group_done:
+        groups.append(group("done", group_done))
+    if group_later:
+        groups.append(group(later_label, group_later))
+    if group_remain:
+        groups.append(group("remain", group_remain))
+    return json.dumps(
+        {
+            "screen": obj["screen"],
+            "groups": groups,
+            "total": group("total", list(as_is.keys())),
+            "classes": [cls_row(n) for n in as_is],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )

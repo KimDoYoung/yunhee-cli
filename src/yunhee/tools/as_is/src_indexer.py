@@ -1708,6 +1708,7 @@ def index_src(
     db_index_dir: Path | None = None,
     with_events: bool = True,
     button_types_path: Path | None = None,
+    vcs_root: Path | None = None,
 ) -> ToolResult:
     """AS-IS 소스의 화면 → 서비스 → SQL → 테이블 호출 경로 색인을 target_dir에 생성한다.
 
@@ -1749,7 +1750,7 @@ def index_src(
         if db_rel is None or db_rel.split("/").count("..") > 4:
             db_rel = db_index_dir.resolve().as_posix()
 
-    source_info = collect_source_info(src_root)
+    source_info = collect_source_info(src_root, vcs_root)
 
     client = parse_client(app)
     server = parse_server(app)
@@ -1818,6 +1819,11 @@ def index_src(
             "events_classes_count": len(idx.events_cache),
             "events_errors": idx.events_errors,
             "source_info": {k: v for k, v in source_info.items() if k != "tree_blobs"},
+            "vcs_warning": (
+                f"⚠ 소스 폴더가 git 저장소의 루트가 아니다(바깥 저장소 {source_info['outer_repo']} 무시)"
+                f" — 파일 sha256 으로 기록"
+                if source_info.get("vcs") == "none" and source_info.get("outer_repo") else None
+            ),
             "tracked_files_count": tracked_files_count,
             "files_count": tracked_files_count,
             "prev_diff": prev_diff,

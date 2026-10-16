@@ -192,7 +192,7 @@ def test_032_1_index_src_metadata_and_frontmatter(tmp_path: Path):
     readme_text = (target / "README.md").read_text(encoding="utf-8")
     assert f"소스 커밋: {source_json['commit']} (ioc," in readme_text
     assert "색인 생성:" in readme_text
-    assert "yunhee 0.3." in readme_text
+    assert "yunhee 0." in readme_text
 
     # 3. 화면 .md frontmatter 확인
     sys27_md = target / "sys" / "screens" / "Sys27_Tab_LoginManage.md"
@@ -574,7 +574,7 @@ def test_032_6_version_changelog_agent_guide():
     """032-6: 버전, changelog, agent-guide, drift --help 검증."""
     res_ver = runner.invoke(cli.app, ["--version"])
     assert res_ver.exit_code == 0
-    assert "0.3." in res_ver.output
+    assert "0." in res_ver.output
 
     res_cl = runner.invoke(cli.app, ["changelog", "0.3.8"])
     assert res_cl.exit_code == 0

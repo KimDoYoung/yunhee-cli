@@ -484,6 +484,6 @@ def test_033_4_builtin_menus_sql(tmp_path: Path):
 
     # 버전 0.3.9 및 changelog 확인
     res_ver = runner.invoke(cli.app, ["--version"])
-    assert "0.3.9" in res_ver.output
-    res_cl = runner.invoke(cli.app, ["changelog"])
+    assert "yunhee 0." in res_ver.output
+    res_cl = runner.invoke(cli.app, ["changelog", "0.3.9"])
     assert "## [0.3.9]" in res_cl.output
