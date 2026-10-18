@@ -288,6 +288,7 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     if has_tobe:
         lines.append("\n| 클래스 | 버튼 (AS-IS/TOBE) | 이벤트 (AS-IS/TOBE) | 그리드 (AS-IS/TOBE) |")
         lines.append("|:---|:---:|:---:|:---:|")
+        has_missing_e0 = False
         for c in all_cls_names:
             ai = as_is[c]
             tb = tobe.get(
@@ -326,6 +327,8 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
                     if eid in tb_skip_ids:
                         missing_parts.append(f"E{eid}(생략)")
                     else:
+                        if eid == 0:
+                            has_missing_e0 = True
                         missing_parts.append(f"E{eid}(미구현)")
                 ev_str += f" · 없음: {', '.join(missing_parts)}"
             elif tb.get("events_skipped", 0) > 0:
@@ -335,6 +338,8 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
             lines.append(
                 f"| {c} | {ai['buttons']}/{tb['buttons']} | {ev_str} | {ai_g_str}/{tb['grids']} |"
             )
+        if has_missing_e0:
+            lines.append("\nE0은 생성자 이벤트 — 대응 코드 근처에 `// [E0] …` 주석을 달면 된다")
         return "\n".join(lines)
 
     # 단계별 합계 표

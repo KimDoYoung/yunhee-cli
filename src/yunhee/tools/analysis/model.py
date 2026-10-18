@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from yunhee.tools.analysis.common import resolve_as_is_paths
+from yunhee.tools.as_is.events import find_table_columns
 from yunhee.tools.as_is.mybatis_render import Node, get_all_statements, parse_xml
 from yunhee.tools.as_is.src_indexer import find_app
 
@@ -138,10 +139,11 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     model_cls_name = base_name if base_name.endswith("Model") else f"{base_name}Model"
     props_cls_name = f"{model_cls_name}Properties"
 
-    src_root, _ = resolve_as_is_paths(src=opts.get("src"), src_index=opts.get("src_index"))
+    src_root, src_index = resolve_as_is_paths(src=opts.get("src"), src_index=opts.get("src_index"))
     if not src_root or not src_root.is_dir():
         raise ValueError("AS-IS 소스 디렉터리를 찾을 수 없습니다. --src 옵션을 지정하세요.")
 
+    extra_db_dirs = [src_index.parent / "db" / "tables"] if src_index else None
     app = find_app(src_root) or src_root
 
     # 파일 탐색
@@ -167,7 +169,8 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     # SQL 파라미터가 주어진 경우
     sql_opt = opts.get("sql")
     sql_select_cols: set[str] = set()
-    sql_tables: set[str] = set()
+    sql_tables: list[str] = []
+    has_unqualified_star = False
     if sql_opt:
         stmts = get_all_statements(src_root)
         st = stmts.get(sql_opt) or next((s for s in stmts.values() if s.sid == sql_opt), None)
@@ -175,12 +178,18 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             raw_xml = st.raw
             m_s = re.search(rf'<{st.kind}\b[^>]*\bid="{re.escape(st.sid)}"[^>]*>(.*?)</{st.kind}>', raw_xml, re.DOTALL)
             sbody = m_s.group(1) if m_s else raw_xml
+            sbody_clean = re.sub(r"<!--.*?-->", " ", sbody, flags=re.DOTALL)
+            sbody_clean = re.sub(r"/\*.*?\*/", " ", sbody_clean, flags=re.DOTALL)
+            sbody_clean = re.sub(r"--[^\n]*", " ", sbody_clean)
             # 테이블 탐색
-            for t in re.findall(r"\bFROM\s+([a-zA-Z0-9_]+)|\bJOIN\s+([a-zA-Z0-9_]+)", sbody, re.IGNORECASE):
-                sql_tables.add((t[0] or t[1]).lower())
+            for t in re.findall(r"\bFROM\s+([a-zA-Z0-9_]+)|\bJOIN\s+([a-zA-Z0-9_]+)", sbody_clean, re.IGNORECASE):
+                tbl_n = (t[0] or t[1]).lower()
+                if tbl_n not in sql_tables:
+                    sql_tables.append(tbl_n)
             # 컬럼/별칭 탐색
-            for c in re.findall(r"\b([a-zA-Z0-9_]+)\b", sbody):
+            for c in re.findall(r"\b([a-zA-Z0-9_]+)\b", sbody_clean):
                 sql_select_cols.add(c.lower())
+            has_unqualified_star = bool(re.search(r"(?<![.\w])\*", sbody_clean))
 
     # 속성 통합 목록 작성
     all_prop_keys = sorted(set(list(path_map.keys()) + list(fields_map.keys()) + list(getters_map.keys())))
@@ -217,11 +226,37 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             elif db_col:
                 col_lower = db_col.lower()
                 prefix = col_lower.split("_")[0] if "_" in col_lower else ""
+                is_plain_prop = not is_calc and "." not in path_val and prop not in path_map
                 if col_lower in sql_select_cols:
                     sql_status = "✅"
-                elif any(t.startswith(prefix) for t in sql_tables):
-                    tbl_match = next((t for t in sql_tables if t.startswith(prefix)), "")
-                    sql_status = f"✅({tbl_match}.*)"
+                elif any(t.startswith(prefix) for t in sql_tables) or has_unqualified_star:
+                    tbl_match = next((t for t in sql_tables if prefix and t.startswith(prefix)), "")
+                    cand_tables: list[str] = []
+                    if tbl_match:
+                        cand_tables.append(tbl_match)
+                    if has_unqualified_star:
+                        for t in sql_tables:
+                            if t not in cand_tables:
+                                cand_tables.append(t)
+
+                    found_in_tbl = ""
+                    known_any_tbl = False
+                    for t in cand_tables:
+                        t_cols = find_table_columns(t, extra_dirs=extra_db_dirs)
+                        if t_cols is not None:
+                            known_any_tbl = True
+                            if col_lower in t_cols:
+                                found_in_tbl = t
+                                break
+
+                    if found_in_tbl:
+                        sql_status = f"✅({found_in_tbl}.*)"
+                    elif is_plain_prop and known_any_tbl:
+                        sql_status = "⚠ 테이블에 열 없음"
+                    elif tbl_match:
+                        sql_status = f"✅({tbl_match}.*)"
+                    else:
+                        sql_status = "❌"
                 else:
                     sql_status = "❌"
             else:

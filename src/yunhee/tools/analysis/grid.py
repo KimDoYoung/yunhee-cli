@@ -4,12 +4,15 @@ import json
 import re
 from typing import Any
 
+from yunhee.tools.analysis import model as model_analyzer
 from yunhee.tools.analysis.common import resolve_as_is_paths
 from yunhee.tools.as_is.events import (
     KNOWN_GB_OPS,
+    class_sql_ids,
     col_to_tobe_prop,
     find_mapper_for_model,
 )
+from yunhee.tools.as_is.mybatis_render import get_all_statements
 from yunhee.tools.as_is.src_indexer import find_app, paren_end, split_args
 
 NAME = "grid"
@@ -77,6 +80,43 @@ def _extract_methods_with_braces(text: str) -> list[tuple[str, str, int]]:
     return methods
 
 
+def _find_grid_sqls(full_text: str, ns: str, app: Any, src_root: Any) -> list[str]:
+    """화면 소스에서 그리드 모델의 매퍼(ns)에 해당하는 조회 SQL ID(ns.sid) 목록을 찾는다."""
+    if not ns:
+        return []
+    try:
+        stmts = get_all_statements(src_root)
+    except Exception:  # noqa: BLE001
+        stmts = {}
+
+    # 1. GridRetrieveData.retrieve("...") 또는 select* 서비스 메서드 호출을 우선 탐색
+    retrieve_calls = re.findall(
+        r'\.retrieve\s*\(\s*"([a-z]\w*\.[A-Z]\w*\.\w+)"', full_text
+    )
+    select_srv_calls = re.findall(
+        r'"([a-z]\w*\.[A-Z]\w*\.(?:select|search|retrieve)\w*)"', full_text
+    )
+    priority_text = "\n".join(f'"{k}"' for k in (retrieve_calls + select_srv_calls))
+    priority_sids = class_sql_ids(priority_text, [app, src_root]) if priority_text else []
+    all_sids = priority_sids + [s for s in class_sql_ids(full_text, [app, src_root]) if s not in priority_sids]
+
+    def _collect(sids_list: list[str]) -> list[str]:
+        res: list[str] = []
+        for sid in sids_list:
+            full_key = f"{ns}.{sid}"
+            if full_key in stmts:
+                if stmts[full_key].kind == "select" and full_key not in res:
+                    res.append(full_key)
+            elif sid.lower().startswith("select") and not stmts and full_key not in res:
+                res.append(full_key)
+        return res
+
+    prio_matched = _collect(priority_sids)
+    if prio_matched:
+        return prio_matched
+    return _collect(all_sids)
+
+
 def _parse_single_grid(
     cls_name: str,
     meth_name: str,
@@ -86,6 +126,9 @@ def _parse_single_grid(
     full_text: str,
     app: Any,
     src_root: Any,
+    src_index: Any = None,
+    sql_opt: str | None = None,
+    check_columns: bool = True,
 ) -> dict[str, Any]:
     lines = grid_text.splitlines()
 
@@ -285,16 +328,52 @@ def _parse_single_grid(
         else ""
     )
 
+    candidate_sqls = _find_grid_sqls(full_text, _ns, app, src_root)
+    if sql_opt:
+        effective_sql = f"{_ns}.{sql_opt}" if ("." not in sql_opt and _ns) else sql_opt
+    else:
+        effective_sql = candidate_sqls[0] if candidate_sqls else None
+
+    model_rows_by_prop: dict[str, dict[str, Any]] = {}
+    if check_columns and effective_sql and _ns:
+        try:
+            m_res = model_analyzer.resolve(
+                model_name,
+                {"src": src_root, "src_index": src_index, "sql": effective_sql},
+            )
+            model_rows_by_prop = {r["prop"]: r for r in m_res.get("rows", [])}
+        except Exception:  # noqa: BLE001, S110
+            pass
+
     for fc in final_cols:
         p = fc["prop"]
         col = prop_to_col.get(p, "")
         fc["col"] = col
         fc["tobe_prop"] = col_to_tobe_prop(col, tbl_pfx) if col else p
 
+        col_status = ""
+        if model_rows_by_prop and p not in ("rowNumberer", "checkBoxSelection") and fc["meth"] != "addCell" and p != "actionCell":
+            m_row = model_rows_by_prop.get(p)
+            if m_row:
+                st = m_row.get("sql_status", "")
+                if st == "계산":
+                    col_status = "계산"
+                elif st.startswith("✅"):
+                    col_status = "✅"
+                elif "테이블에" in st:
+                    col_status = "⚠ 테이블에 없음"
+                else:
+                    col_status = "⚠ SQL에 없음"
+            else:
+                col_status = "⚠ SQL에 없음"
+        fc["col_status"] = col_status
+
     return {
         "method": meth_name,
         "field": field_name,
         "model": model_name,
+        "sql": effective_sql,
+        "candidate_sqls": candidate_sqls,
         "grid_type": grid_type,
         "checked_type": checked_type,
         "row_num_hidden": row_num_hidden,
@@ -315,8 +394,10 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         cls_name = target_clean
 
     meth_opt = opts.get("method") or target_meth_filter
+    sql_opt = opts.get("sql")
+    check_columns = opts.get("check_columns", True)
 
-    src_root, _ = resolve_as_is_paths(src=opts.get("src"), src_index=opts.get("src_index"))
+    src_root, src_index = resolve_as_is_paths(src=opts.get("src"), src_index=opts.get("src_index"))
     if not src_root or not src_root.is_dir():
         raise ValueError("AS-IS 소스 디렉터리를 찾을 수 없습니다. --src 옵션을 지정하세요.")
 
@@ -360,6 +441,9 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             full_text=text,
             app=app,
             src_root=src_root,
+            src_index=src_index,
+            sql_opt=sql_opt,
+            check_columns=check_columns,
         )
         for m_name, f_name, m_text, m_line in grid_methods
     ]
@@ -385,6 +469,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         "is_filtered": is_filtered,
         # 단일 그리드 호환성 필드
         "model": first_g.get("model", ""),
+        "sql": first_g.get("sql"),
         "grid_type": first_g.get("grid_type", "SingleGrid"),
         "checked_type": first_g.get("checked_type"),
         "row_num_hidden": first_g.get("row_num_hidden", False),
@@ -393,17 +478,43 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _render_grid_table(cols: list[dict[str, Any]], show_col_status: bool) -> list[str]:
+    lines: list[str] = []
+    if show_col_status:
+        lines.append("\n| index | 속성 | 폭 | 제목 | GridBuilder 메서드 | 렌더링 | 편집기 | 숨김 | 컬럼 검증 |")
+        lines.append("|:---|:---|:---|:---|:---|:---|:---|:---|:---|")
+    else:
+        lines.append("\n| index | 속성 | 폭 | 제목 | GridBuilder 메서드 | 렌더링 | 편집기 | 숨김 |")
+        lines.append("|:---|:---|:---|:---|:---|:---|:---|:---|")
+    for c in cols:
+        hid_str = "숨김" if c.get("hidden") else ""
+        ed_str = c.get("editor") or ""
+        ren_str = c.get("renderer") or ""
+        if show_col_status:
+            st_str = c.get("col_status") or ""
+            lines.append(
+                f"| {c['index']} | {c['prop']} | {c['width']} | {c['label']} | {c['meth']} | {ren_str} | {ed_str} | {hid_str} | {st_str} |"
+            )
+        else:
+            lines.append(
+                f"| {c['index']} | {c['prop']} | {c['width']} | {c['label']} | {c['meth']} | {ren_str} | {ed_str} | {hid_str} |"
+            )
+    return lines
+
+
 def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = None) -> str:
     """결과를 포맷에 맞게 렌더링한다."""
     cls_name = obj["cls"]
     grids = obj.get("grids", [])
     is_filtered = obj.get("is_filtered", False)
+    check_columns = opts.get("check_columns", True) if opts else True
 
     if not grids:
         grids = [{
             "method": "buildGrid",
             "field": None,
             "model": obj.get("model", ""),
+            "sql": obj.get("sql"),
             "grid_type": obj.get("grid_type", "SingleGrid"),
             "checked_type": obj.get("checked_type"),
             "columns": obj.get("columns", []),
@@ -444,18 +555,15 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         grid_type = g["grid_type"]
         cols = g["columns"]
         hidden_calls = g["hidden_calls"]
+        show_col_status = check_columns and any(c.get("col_status") for c in cols)
         lines = [f"### 그리드 `{cls_name}` (유형: `{grid_type}`)"]
         if g.get("checked_type"):
             lines.append(f"- **선택 모드**: `{g['checked_type']}`")
-        lines.append("\n| index | 속성 | 폭 | 제목 | GridBuilder 메서드 | 렌더링 | 편집기 | 숨김 |")
-        lines.append("|:---|:---|:---|:---|:---|:---|:---|:---|")
-        for c in cols:
-            hid_str = "숨김" if c.get("hidden") else ""
-            ed_str = c.get("editor") or ""
-            ren_str = c.get("renderer") or ""
-            lines.append(
-                f"| {c['index']} | {c['prop']} | {c['width']} | {c['label']} | {c['meth']} | {ren_str} | {ed_str} | {hid_str} |"
-            )
+        if show_col_status and g.get("sql"):
+            cands = g.get("candidate_sqls") or []
+            cand_note = f" (후보: {', '.join(cands)} — --sql로 지정 가능)" if len(cands) > 1 else ""
+            lines.append(f"- **대조 SQL**: `{g['sql']}`{cand_note}")
+        lines.extend(_render_grid_table(cols, show_col_status))
         if hidden_calls:
             lines.append("\n**동적 숨김 호출**:")
             for h in hidden_calls:
@@ -472,18 +580,15 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         grid_type = g["grid_type"]
         cols = g["columns"]
         hidden_calls = g["hidden_calls"]
+        show_col_status = check_columns and any(c.get("col_status") for c in cols)
         lines = [f"### 그리드 `{title_name}` (유형: `{grid_type}`, 모델: `{g['model']}`)"]
         if g.get("checked_type"):
             lines.append(f"- **선택 모드**: `{g['checked_type']}`")
-        lines.append("\n| index | 속성 | 폭 | 제목 | GridBuilder 메서드 | 렌더링 | 편집기 | 숨김 |")
-        lines.append("|:---|:---|:---|:---|:---|:---|:---|:---|")
-        for c in cols:
-            hid_str = "숨김" if c.get("hidden") else ""
-            ed_str = c.get("editor") or ""
-            ren_str = c.get("renderer") or ""
-            lines.append(
-                f"| {c['index']} | {c['prop']} | {c['width']} | {c['label']} | {c['meth']} | {ren_str} | {ed_str} | {hid_str} |"
-            )
+        if show_col_status and g.get("sql"):
+            cands = g.get("candidate_sqls") or []
+            cand_note = f" (후보: {', '.join(cands)} — --sql로 지정 가능)" if len(cands) > 1 else ""
+            lines.append(f"- **대조 SQL**: `{g['sql']}`{cand_note}")
+        lines.extend(_render_grid_table(cols, show_col_status))
         if hidden_calls:
             lines.append("\n**동적 숨김 호출**:")
             for h in hidden_calls:

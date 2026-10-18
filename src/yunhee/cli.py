@@ -1485,6 +1485,10 @@ def analysis_cmd(
         str | None,
         typer.Option("--called-from", help="호출 클래스 기준 오버로드 선택"),
     ] = None,
+    check_columns: Annotated[
+        bool,
+        typer.Option("--check-columns/--no-check-columns", help="그리드 열의 모델·SQL·테이블 존재 검증 (기본 켬)"),
+    ] = True,
 ):
     """AS-IS·TOBE 통합 분석 (method/sql/model/grid/screen/ui/tobe/run)
 
@@ -1578,6 +1582,7 @@ def analysis_cmd(
         "no_linked": no_linked,
         "no_e0": no_e0,
         "called_from": called_from,
+        "check_columns": check_columns,
     }
 
     try:

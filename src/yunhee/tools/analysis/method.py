@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from yunhee.tools.analysis.common import AmbiguousTargetError, resolve_as_is_paths
-from yunhee.tools.as_is.src_indexer import find_app, paren_end, split_args
+from yunhee.tools.as_is.src_indexer import find_app, paren_end, split_args, strip_java
 
 NAME = "method"
 DESCRIPTION = "AS-IS 메서드 본문 및 호출 흐름 분석 (클라이언트·서버)"
@@ -202,7 +202,18 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             return selected
 
     if len(candidates) > 1 and idx_choice is None:
-        cand_descs = [f"{c['rel']}:{c['start']} {c['sig']}" for c in candidates]
+        is_short_or_delegated = _annotate_overloads(candidates)
+        cand_descs = [
+            f"{c['rel']}:{c['start']} {c['sig']}"
+            + (f"  → #{c['delegates_to']} 위임" if c.get("delegates_to") else "")
+            for c in candidates
+        ]
+        if opts.get("output") == "code" and is_short_or_delegated:
+            return {
+                **candidates[0],
+                "multi_candidates": candidates,
+                "cand_descs": cand_descs,
+            }
         raise AmbiguousTargetError(cand_descs, target)
 
     if idx_choice is not None:
@@ -211,6 +222,46 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         return candidates[idx_choice - 1]
 
     return candidates[0]
+
+
+def _annotate_overloads(candidates: list[dict[str, Any]]) -> bool:
+    """오버로드 후보들의 실질 코드 줄 수와 위임 관계(→ #N 위임)를 분석하고 인라인 출력 대상인지 반환한다."""
+    if not candidates:
+        return False
+    meth_name = candidates[0]["method"]
+
+    # 각 후보의 파라미터 개수 계산
+    param_counts: list[int] = []
+    for c in candidates:
+        sig = c["sig"]
+        m_p = re.search(r"\((.*)\)", sig, re.DOTALL)
+        if not m_p or not m_p.group(1).strip():
+            param_counts.append(0)
+        else:
+            p_str = re.sub(r"<[^<>]*>", "", m_p.group(1))
+            param_counts.append(p_str.count(",") + 1)
+
+    for idx, c in enumerate(candidates):
+        body = c["body"]
+        b_start = body.find("{")
+        b_end = body.rfind("}")
+        inner = body[b_start + 1:b_end] if (b_start != -1 and b_end > b_start) else body
+        no_comm, _ = strip_java(inner)
+        code_lines = [ln.strip() for ln in no_comm.splitlines() if ln.strip() and ln.strip() not in ("{", "}")]
+        c["code_lines_count"] = len(code_lines)
+
+        # 같은 이름의 오버로드 호출(this.meth(...) 또는 meth(...)) 탐색
+        for m_call in re.finditer(rf"(?:\bthis\s*\.\s*|\b){re.escape(meth_name)}\s*\(([^()]*)\)", no_comm):
+            args_str = m_call.group(1).strip()
+            call_cnt = 0 if not args_str else (args_str.count(",") + 1)
+            for other_idx, p_cnt in enumerate(param_counts):
+                if other_idx != idx and p_cnt == call_cnt:
+                    c["delegates_to"] = other_idx + 1
+                    break
+
+    all_short = all(c.get("code_lines_count", 99) <= 5 or c.get("delegates_to") for c in candidates)
+    return all_short
+
 
 
 def _resolve_overload_by_caller(
@@ -634,6 +685,13 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     body = obj["body"]
 
     if fmt == "code":
+        if obj.get("multi_candidates"):
+            header_lines = [f"#{i}: {desc}" for i, desc in enumerate(obj["cand_descs"], 1)]
+            body_blocks = [
+                f"// #{i} (L{c['start']}-{c['end']})\n{c['body']}"
+                for i, c in enumerate(obj["multi_candidates"], 1)
+            ]
+            return "\n".join(header_lines) + "\n\n" + "\n".join(body_blocks)
         return f"{rel_file}:{start_line}-{end_line}\n{body}"
 
     # 기본 md 요약: caller_event가 있으면 기본으로 붙임

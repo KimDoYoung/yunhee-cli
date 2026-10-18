@@ -36,7 +36,7 @@ def resolve_as_is_paths(
     # 1. src_root
     final_src: Path | None = None
     if src:
-        final_src = src
+        final_src = Path(src)
     elif toml_as_is.get("src"):
         final_src = Path(toml_as_is["src"])
     elif config.ASIS_SRC_DIR and config.ASIS_SRC_DIR.is_dir():
@@ -47,7 +47,7 @@ def resolve_as_is_paths(
     # 2. src_index
     final_index: Path | None = None
     if src_index:
-        final_index = src_index
+        final_index = Path(src_index)
     elif toml_as_is.get("src_index"):
         final_index = Path(toml_as_is["src_index"])
     else:

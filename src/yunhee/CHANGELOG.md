@@ -2,6 +2,14 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.4.2] - 2026-10-18
+수정사항 037 (`analysis model`/`grid` 와일드카드 테이블 열 검증, `port-sql` 계산 getter 지원, `analysis method -o code` 짧은 오버로드/위임 인라인 출력, `analysis ui --tobe` E0 안내) 반영.
+- `analysis model --sql`: `테이블.*` 또는 `*` 와일드카드 매칭 시 실제 DB 테이블(DBML/스키마 스냅샷)에 해당 컬럼이 존재하는지 대조해 없으면 `⚠ 테이블에 열 없음`으로 표시 (037-1)
+- `analysis grid`: 그리드 열이 모델 `resultMap` → 화면 조회 SQL → DB 테이블까지 이어지는지 검증하는 `컬럼 검증` 열(`✅` / `계산` / `⚠ SQL에 없음` / `⚠ 테이블에 없음`) 및 `--check-columns/--no-check-columns` 옵션 추가 (037-2)
+- `port-sql`: `--cols`에 모델 계산 getter가 포함될 때 `// ⚠ SQL 열 없음` 대신 getter 본문 주석(`// getAdminYn L146-149: ...`), 단순 비교식의 SQL 표현식 후보 주석, getter 반환 타입(`Boolean` 등) 반영 (037-3)
+- `analysis method -o code`: 오버로드 후보들이 5줄 이하이거나 다른 오버로드로 위임(`→ #1 위임`)하는 경우 후보 목록 아래에 본문을 바로 이어 출력하고 `Exit 0`으로 종료 (037-4)
+- `analysis ui --tobe`: `E0(미구현)` 발생 시 표 아래에 생성자 이벤트 주석(`// [E0] …`) 안내 출력 (037-5)
+
 ## [0.4.1] - 2026-10-17
 수정사항 035 (`analysis sql -o json` 렌더링 실패) 반영.
 - `analysis sql -o json`: `file`을 문자열(상대 경로)로 변환해 `Object of type PosixPath is not JSON serializable` 오류 수정. `sql`·`screen --list`·`ui`의 `-o json`에 `default=str` 안전장치 추가 (035-1)

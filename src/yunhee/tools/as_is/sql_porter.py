@@ -243,6 +243,160 @@ def get_model_getter_defaults(model_class_or_path: str, src_root: Path | None = 
     return defaults
 
 
+def _java_cond_to_sql_candidate(
+    cond: str,
+    prop_to_col: dict[str, str],
+    alias: str,
+) -> str | None:
+    """단순 Java 비교식을 SQL 표현식 후보로 변환한다."""
+    tokens = re.split(r"\s*(\|\||&&)\s*", cond.strip())
+    sql_parts: list[str] = []
+    for tok in tokens:
+        t = tok.strip()
+        if t == "||":
+            sql_parts.append("OR")
+            continue
+        if t == "&&":
+            sql_parts.append("AND")
+            continue
+        m_cmp = re.match(r"^(?:this\.)?(\w+)\s*(==|!=|<=|>=|<|>)\s*(.+)$", t)
+        if not m_cmp:
+            return None
+        prop, op, val = m_cmp.group(1), m_cmp.group(2), m_cmp.group(3).strip()
+        col = prop_to_col.get(prop)
+        if not col:
+            return None
+        sql_op = "=" if op == "==" else ("<>" if op == "!=" else op)
+        if val.startswith('"') and val.endswith('"'):
+            sql_val = f"'{val[1:-1]}'"
+        else:
+            sql_val = val
+        if sql_op == "<>" and sql_val == "0":
+            sql_parts.append(f"COALESCE({col},0) <> 0")
+        else:
+            sql_parts.append(f"{col} {sql_op} {sql_val}")
+    if not sql_parts:
+        return None
+    joined = " ".join(sql_parts)
+    if " OR " in joined or " AND " in joined:
+        return f"({joined}) AS {alias}"
+    return f"{joined} AS {alias}"
+
+
+def get_model_calculated_getters(
+    model_class_or_path: str,
+    src_root: Path | None = None,
+    rm_mappings: list[tuple[str, str]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Model.java에서 필드가 없는 계산 getter(메서드명, 줄범위, 반환타입, 본문 식, SQL 후보)를 추출한다."""
+    if not model_class_or_path:
+        return {}
+    roots = []
+    if src_root and src_root.is_dir():
+        roots.append(src_root)
+    if ASIS_SRC_DIR and Path(ASIS_SRC_DIR).is_dir():
+        roots.append(Path(ASIS_SRC_DIR))
+    roots.append(WORK_DIR)
+
+    model_file_name = model_class_or_path.split(".")[-1] + ".java"
+    java_file: Path | None = None
+    for r in roots:
+        for p in r.rglob(model_file_name):
+            if "target" not in p.parts:
+                java_file = p
+                break
+        if java_file:
+            break
+
+    if not java_file or not java_file.is_file():
+        return {}
+
+    try:
+        text = java_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+
+    lines = text.splitlines()
+    fields: set[str] = set()
+    for line in lines:
+        m_field = re.search(r"(?:private|protected)\s+([\w<>\[\], ?]+)\s+(\w+)\s*;", line)
+        if m_field:
+            fields.add(m_field.group(2))
+
+    prop_to_col: dict[str, str] = {}
+    if rm_mappings:
+        for c, p in rm_mappings:
+            prop_to_col[p] = c
+
+    calc_getters: dict[str, dict[str, Any]] = {}
+    for i, line in enumerate(lines):
+        m_get = re.search(r"public\s+([\w<>\[\], ?]+)\s+(get([A-Z]\w*))\s*\(\s*\)", line)
+        if not m_get:
+            continue
+        ret_type = m_get.group(1).strip()
+        meth_name = m_get.group(2).strip()
+        raw_name = m_get.group(3)
+        prop_name = raw_name[0].lower() + raw_name[1:]
+        if prop_name in ("keyId",) or prop_name in fields:
+            continue
+
+        start_l = i + 1
+        end_l = start_l
+        for j in range(i, min(len(lines), i + 30)):
+            if "}" in lines[j]:
+                end_l = j + 1
+                break
+
+        # 전체 메서드 본문 추출 (중괄호 깊이 기준)
+        depth = 0
+        body_lines: list[str] = []
+        started = False
+        for j in range(i, min(len(lines), i + 40)):
+            ln = lines[j]
+            for ch in ln:
+                if ch == "{":
+                    depth += 1
+                    started = True
+                elif ch == "}":
+                    depth -= 1
+            body_lines.append(ln)
+            if started and depth <= 0:
+                break
+
+        raw_body = "\n".join(body_lines)
+        brace_idx = raw_body.find("{")
+        rbrace_idx = raw_body.rfind("}")
+        inner_body = raw_body[brace_idx + 1:rbrace_idx].strip() if (brace_idx != -1 and rbrace_idx > brace_idx) else raw_body.strip()
+
+        expr_str = ""
+        m_if_bool = re.search(
+            r"if\s*\((.+?)\)\s*\{\s*return\s+true\s*;\s*\}\s*else\s*\{\s*return\s+false\s*;\s*\}",
+            inner_body,
+            re.DOTALL,
+        )
+        if m_if_bool:
+            expr_str = re.sub(r"\s+", " ", m_if_bool.group(1).strip())
+        else:
+            m_ret = re.match(r"^return\s+(.+?)\s*;$", inner_body.strip(), re.DOTALL)
+            if m_ret:
+                expr_str = re.sub(r"\s+", " ", m_ret.group(1).strip())
+            else:
+                expr_str = re.sub(r"\s+", " ", inner_body)
+
+        snake_alias = camel_to_snake(prop_name)
+        sql_cand = _java_cond_to_sql_candidate(expr_str, prop_to_col, snake_alias) if prop_to_col else None
+        calc_getters[prop_name] = {
+            "method": meth_name,
+            "start": start_l,
+            "end": end_l,
+            "ret_type": ret_type,
+            "expr": expr_str,
+            "sql_candidate": sql_cand,
+        }
+    return calc_getters
+
+
+
 def determine_java_type(col_name: str, db_type: str = "", is_calculated: bool = False, expr: str = "") -> str:
     """컬럼명 및 DB 타입/식에서 Java 레코드 DTO 타입을 결정한다."""
     col_lower = col_name.lower()
@@ -373,6 +527,7 @@ def port_sql(
     model_cls = rm_info["model"] if rm_info else ""
     rm_mappings = rm_info["mappings"] if rm_info else []
     getter_map = get_model_getter_defaults(model_cls, src_root) if (getter_defaults and model_cls) else {}
+    calc_getters = get_model_calculated_getters(model_cls, src_root, rm_mappings) if model_cls else {}
 
     # 최상위 깊이 SELECT 절 파싱
     masked = mask_sql_preserve(sbody)
@@ -552,6 +707,7 @@ def port_sql(
     # --cols 매핑 및 Record DTO 필드 생성
     warnings: list[str] = []
     dto_fields: list[str] = []
+    sql_candidate_comments: list[str] = []
 
     if cols:
         matched_items: list[dict[str, Any]] = []
@@ -583,6 +739,15 @@ def port_sql(
                 jtype = determine_java_type(it["col"], db_type=db_type, is_calculated=it["is_calc"], expr=it["expr"])
                 dto_fields.append(f"        {jtype} {u_clean}")
                 matched_items.append(it)
+            elif u_clean in calc_getters:
+                cg = calc_getters[u_clean]
+                dto_fields.append(
+                    f"        // {cg['method']} L{cg['start']}-{cg['end']}: {cg['expr']}\n        {cg['ret_type']} {u_clean}"
+                )
+                if cg.get("sql_candidate"):
+                    sql_candidate_comments.append(
+                        f"        -- {cg['method']} L{cg['start']}-{cg['end']}: {cg['sql_candidate']}"
+                    )
             else:
                 warnings.append(f"SQL 열 없음: {u_clean}")
                 dto_fields.append(f"        // ⚠ SQL 열 없음: {u_clean}\n        String {u_clean}")
@@ -602,6 +767,9 @@ def port_sql(
         padded_expr = it["expr"].ljust(max_expr_len)
         col_lines.append(f"        {padded_expr}   AS {it['alias']}")
     rendered_cols = ",\n".join(col_lines)
+    if sql_candidate_comments:
+        rendered_cols = "\n".join(sql_candidate_comments) + "\n" + rendered_cols
+
 
     # FROM 절 및 본문 포맷팅 (최상위 FROM부터 원문 그대로 복사)
     from_raw = sbody[from_matches[0].start():].strip()

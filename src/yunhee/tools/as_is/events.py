@@ -1034,6 +1034,24 @@ def find_mapper_for_model(model_name: str, roots: list[Path]) -> tuple[dict[str,
     return {}, "", "", {}
 
 
+def _parse_dbml_tables_from_dir(c_dir: Path, tables: dict[str, set[str]]) -> None:
+    if not c_dir or not c_dir.is_dir():
+        return
+    for f in c_dir.glob("*.md"):
+        try:
+            txt = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in re.finditer(r'Table\s+(?:"[^"]+"\.)?"?([a-z0-9_]+)"?\s*\{([^}]+)\}', txt, re.IGNORECASE):
+            t_name = m.group(1).lower()
+            if t_name in tables:
+                continue
+            cols = set(re.findall(r'^\s*"?([a-z0-9_]+)"?\s+[a-z0-9_]', m.group(2), re.MULTILINE | re.IGNORECASE))
+            if cols:
+                tables[t_name] = {c.lower() for c in cols}
+
+
+
 def _load_all_dbml_tables() -> dict[str, set[str]]:
     global _ALL_DBML_PARSED_TABLES
     if _ALL_DBML_PARSED_TABLES is not None:
@@ -1045,26 +1063,17 @@ def _load_all_dbml_tables() -> dict[str, set[str]]:
     cand_dirs = [
         find_as_is_dir("db") / "tables",
         WORK_DIR / "docs" / "as-is" / "db" / "tables",
+        Path("/home/kdy987/work/framework-sprt/AssetERP/docs/as-is/db/tables"),
         Path("/home/kdy987/work/framework-sprt/docs/as-is/db/tables"),
     ]
     for c_dir in cand_dirs:
-        if not c_dir.is_dir():
-            continue
-        for f in c_dir.glob("*.md"):
-            try:
-                txt = f.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            for m in re.finditer(r'Table\s+(?:"[^"]+"\.)?"?([a-z0-9_]+)"?\s*\{([^}]+)\}', txt, re.IGNORECASE):
-                t_name = m.group(1).lower()
-                cols = set(re.findall(r'^\s*"([a-z0-9_]+)"', m.group(2), re.MULTILINE))
-                if cols:
-                    tables[t_name] = cols
+        _parse_dbml_tables_from_dir(c_dir, tables)
 
     # 2. *-dbml.md
     cand_dbmls = [
         *list(find_as_is_dir().glob("*-dbml.md")),
         *list(WORK_DIR.glob(".yunhee/*-dbml.md")),
+        Path("/home/kdy987/work/framework-sprt/AssetERP/.yunhee/asseterp-dbml.md"),
         Path("/home/kdy987/work/framework-sprt/.yunhee/asseterp-dbml.md"),
     ]
     for dbml in cand_dbmls:
@@ -1081,14 +1090,36 @@ def _load_all_dbml_tables() -> dict[str, set[str]]:
                 if cols:
                     tables[t_name] = cols
 
+    # 3. 스키마 스냅샷 fallback
+    try:
+        from yunhee.config import SCHEMA_ENV
+        from yunhee.tools.schema_snapshot import load_snapshot
+
+        snap = load_snapshot(SCHEMA_ENV)
+        if snap.ok and isinstance(snap.data, dict):
+            for t in snap.data.get("tables", []):
+                t_name = str(t.get("name", "")).lower()
+                if t_name and t_name not in tables:
+                    cols = {str(c.get("name", "")).lower() for c in t.get("columns", []) if c.get("name")}
+                    if cols:
+                        tables[t_name] = cols
+    except Exception:  # noqa: BLE001, S110
+        pass
+
     _ALL_DBML_PARSED_TABLES = tables
     return tables
 
 
-def find_table_columns(table_name: str) -> set[str] | None:
+def find_table_columns(table_name: str, extra_dirs: list[Path] | None = None) -> set[str] | None:
     """DBML 색인에서 대상 테이블의 컬럼 집합을 조회한다."""
     if not table_name:
         return None
+    if extra_dirs:
+        local_tables: dict[str, set[str]] = {}
+        for d in extra_dirs:
+            _parse_dbml_tables_from_dir(d, local_tables)
+        if table_name.lower() in local_tables:
+            return local_tables[table_name.lower()]
     dbml_tables = _load_all_dbml_tables()
     return dbml_tables.get(table_name.lower())
 

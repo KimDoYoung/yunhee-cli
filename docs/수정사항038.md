@@ -1,0 +1,9 @@
+# yunhee 수정 요청 (E18·E19 세션, yunhee 0.4.2)
+
+| # | 증상 | 기대 | 근거 |
+|:--|:---|:---|:---|
+| 1 | PreToolUse 훅이 heredoc 안의 주석·문자열(`tail of …`, `sed -n …`)에도 걸려 명령 전체가 막힌다 | 실제 명령어 위치의 `cat/sed/head/tail/awk`·`grep -A/-B/-C`만 차단. 따옴표·heredoc 본문은 검사 제외. 막을 때 어느 토큰 때문인지 이미 출력하므로(차단 원인) 그 토큰이 명령 위치인지 판별 | E18에서 6회, 파이썬 주석 `# remove old tail of update`가 걸림 |
+| 2 | `analysis grid`의 Grid Spec·`compare --grid`가 필드명을 추측(`reportCode`→`reportCd`)해 `missing: reportCd` 경고만 낸다 | 모델 속성명(`reportCode`)을 그대로 쓰거나, 추측 이름이면 "(추정)" 표시 후 경고 생략 | E19 `compare` ⚠️, `analysis grid`는 속성 `reportCode`를 정확히 보여 줌 |
+| 3 | `sql-check --tobe`가 모든 매퍼를 다 출력한다(수백 줄) | `--only <매퍼명|glob>` 또는 요약만(`--summary`: 매퍼별 ✅/❌ 수, ❌만 상세) | 매번 `grep`·`tail`을 붙여야 했고, 다른 화면의 기존 ❌(`sys71_…`, `emp36_…`)가 섞여 보임 |
+| 4 | `analysis method` 오버로드 모호 시 후보만 나오고 종료(Exit 2) | `--all`로 전체 본문, 또는 호출 위치가 넘어온 `execute` 계열은 자동으로 위임 대상 하나만 | `Dcr05_Tab_DocType.execute` 후보 9개 |
+| 5 | `yunhee run`이 `gradle test` 전체 실패 시 "전체 2 · 실패 1"처럼 일부만 세고 원인(`x.OthersDbTest` UnknownHost)을 요약 하단에서만 보여 준다 | 실패 클래스 목록과 첫 원인을 위에 한 번 | E18 전체 테스트 |
