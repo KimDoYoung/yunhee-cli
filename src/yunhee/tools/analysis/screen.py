@@ -1,6 +1,7 @@
 """색인 화면 파일에서 필요한 부분만 추출하는 도구."""
 
 import re
+from pathlib import Path
 from typing import Any
 
 from yunhee.tools.analysis.common import count_as_is_grids, resolve_as_is_paths
@@ -335,6 +336,19 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
 
         if sec_filter in ("events", "event"):
             m_ev = re.search(r"##\s*이벤트.*?(?=\n##\s*|\Z)|####\s*이벤트.*?(?=####\s*|###\s*|\Z)", combined, re.DOTALL)
+            if m_ev and "도달 불가" in m_ev.group(0):
+                return m_ev.group(0).strip()
+            _, java_text = _find_java_source(target_cls, obj, combined, full_text)
+            if java_text:
+                from yunhee.tools.as_is.events import (
+                    extract_events_and_methods,
+                    render_events_markdown,
+                )
+                ev_list, meth_list = extract_events_and_methods(java_text, f"{target_cls}.java")
+                md = render_events_markdown(f"{target_cls}.java", ev_list, meth_list)
+                m_ev_dyn = re.search(r"##\s*이벤트.*?(?=\n##\s*|\Z)", md, re.DOTALL)
+                if m_ev_dyn:
+                    return m_ev_dyn.group(0).strip()
             return m_ev.group(0).strip() if m_ev else "이벤트 섹션을 찾을 수 없습니다."
 
         if sec_filter in ("grid", "grids"):
@@ -344,6 +358,17 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         if sec_filter in ("buttons", "button"):
             m_btn = re.search(r"##\s*사용된 버튼.*?(?=\n##\s*|\Z)|####\s*버튼.*?(?=####\s*|###\s*|\Z)", combined, re.DOTALL)
             return m_btn.group(0).strip() if m_btn else "버튼 섹션을 찾을 수 없습니다."
+
+        if sec_filter in ("servlet", "servlets"):
+            m_s = re.search(r"##\s*서블릿\s*호출.*?(?=\n##\s*|\Z)", combined, re.DOTALL)
+            if not m_s:
+                m_s = re.search(r"##\s*서블릿\s*호출.*?(?=\n##\s*|\Z)", full_text, re.DOTALL)
+            if m_s:
+                return m_s.group(0).strip()
+            _, java_text = _find_java_source(target_cls, obj, combined, full_text)
+            if java_text:
+                return _extract_servlet_calls_from_java(java_text, target_cls)
+            return "서블릿 호출 섹션을 찾을 수 없습니다."
 
     # 기본 (전체/클래스 본문)
     _, java_text = _find_java_source(target_cls, obj, combined, full_text)
@@ -587,12 +612,121 @@ def _inject_dynamic_services(srv_text: str, java_text: str, screen_cls: str) -> 
     return srv_text
 
 
-def _format_service_rows(text: str) -> str:
-    lines = []
-    for l in text.splitlines():
+def _extract_servlet_calls_from_java(java_text: str, target_cls: str) -> str:
+    lines = java_text.splitlines()
+    calls = []
+    for idx, l in enumerate(lines):
+        m = re.search(r'["\'](FileDownload|FileUpload)\?([^"\']+)["\']', l)
+        if m:
+            s_name = m.group(1)
+            query = m.group(2)
+            ft_m = re.search(r'fileType=(\w+)', query)
+            ft = ft_m.group(1) if ft_m else ""
+            subsequent = " ".join(lines[idx:min(len(lines), idx + 8)])
+            params = re.findall(r'&(\w+)=', subsequent)
+            p_desc = " ".join(f"{p}=…" for p in params)
+
+            start_l = idx + 1
+            end_l = idx + 1
+            for j in range(max(0, idx - 10), idx):
+                if "fileDownload" in lines[j] or "setAction" in lines[j] or "{" in lines[j]:
+                    start_l = j + 1
+                    break
+            for j in range(idx, min(len(lines), idx + 10)):
+                if ";" in lines[j] and ("submit" in lines[j] or "setAction" in lines[j]):
+                    end_l = j + 1
+                    break
+            range_str = f" (L{start_l}-{end_l})" if end_l > start_l else f" (L{idx + 1})"
+            calls.append(f"{s_name} fileType={ft} {p_desc}{range_str}".strip())
+    if not calls:
+        return "서블릿 호출을 찾을 수 없습니다."
+    return "\n".join(calls)
+
+
+def _format_service_rows(text: str, src_root: Path | None = None) -> str:
+    from yunhee.tools.analysis.common import resolve_as_is_paths
+    from yunhee.tools.analysis.method import _detect_delegation, _find_method_blocks
+    from yunhee.tools.as_is.src_indexer import find_methods, strip_java
+
+    if not src_root:
+        src_root, _ = resolve_as_is_paths()
+
+    lines = text.splitlines()
+    delegation_notes = {}
+    class_cache = {}
+
+    for idx, l in enumerate(lines):
         if "(없음)" in l and "⚠ 매퍼에 SQL 없음" not in l:
             l = re.sub(r'(\([a-zA-Z0-9_.]*없음\))', r'\1 ⚠ 매퍼에 SQL 없음 — 원본에서도 실패', l)
-        lines.append(l)
+            lines[idx] = l
+
+        if l.strip().startswith("|") and not l.strip().startswith("|:---") and not l.strip().startswith("| 서비스"):
+            parts = [p.strip() for p in l.split("|")[1:-1]]
+            if len(parts) >= 4 and src_root:
+                svc_col = parts[0]
+                m_svc = re.search(r"`?(?:[a-z]\w*\.)*([A-Z]\w*)\.(\w+)`?", svc_col)
+                if m_svc:
+                    cls_name, meth_name = m_svc.group(1), m_svc.group(2)
+                    if cls_name not in class_cache:
+                        c_files = list(src_root.rglob(f"{cls_name}.java"))
+                        class_cache[cls_name] = c_files[0] if c_files else None
+                    cls_file = class_cache.get(cls_name)
+                    if cls_file:
+                        try:
+                            c_text = cls_file.read_text(encoding="utf-8", errors="replace")
+                            blocks = _find_method_blocks(c_text, meth_name)
+                            if blocks:
+                                body = blocks[0][3]
+                                deleg = _detect_delegation(body)
+                                if deleg:
+                                    d_cls, d_meth = deleg
+                                    if d_cls not in class_cache:
+                                        d_files = list(src_root.rglob(f"{d_cls}.java"))
+                                        class_cache[d_cls] = d_files[0] if d_files else None
+                                    d_file = class_cache.get(d_cls)
+                                    if d_file:
+                                        d_text = d_file.read_text(encoding="utf-8", errors="replace")
+                                        d_blocks = _find_method_blocks(d_text, d_meth)
+                                        if d_blocks:
+                                            db = d_blocks[0]
+                                            db_sqls = re.findall(r'sqlSession\.\w+\s*\(\s*(?:([a-zA-Z0-9_]+)\s*\+\s*)?["\']([^"\']+)["\']', db[3])
+                                            _, bare = strip_java(d_text)
+                                            raw_m = find_methods(bare)
+                                            sub_methods = {m[0]: m for m in raw_m if m[0] not in (d_cls, d_meth)}
+                                            sub_info = []
+                                            other_sqls = 0
+                                            for sm in sub_methods:
+                                                if re.search(rf"\b{re.escape(sm)}\s*\(", db[3]):
+                                                    sm_blocks = _find_method_blocks(d_text, sm)
+                                                    if sm_blocks:
+                                                        smb = sm_blocks[0]
+                                                        sm_sqls = re.findall(r'sqlSession\.\w+\s*\(\s*(?:([a-zA-Z0-9_]+)\s*\+\s*)?["\']([^"\']+)["\']', smb[3])
+                                                        if sm_sqls:
+                                                            if sm == "makeDocument":
+                                                                sub_info.append(f"하위 {sm} L{smb[1]}-{smb[2]} SQL {len(sm_sqls)}")
+                                                            else:
+                                                                other_sqls += len(sm_sqls)
+                                            sub_desc = f", {', '.join(sub_info)}" if sub_info else ""
+                                            note = f"→ {d_cls}.{d_meth} L{db[1]}-{db[2]} (SQL {len(db_sqls) + other_sqls}{sub_desc})"
+                                            delegation_notes[idx] = note
+                        except Exception:  # noqa: BLE001, S110
+                            pass
+
+    if delegation_notes:
+        out_lines = []
+        for idx, l in enumerate(lines):
+            if l.strip().startswith("| 서비스") and "비고" not in l:
+                out_lines.append(l.rstrip().rstrip("|") + " | 비고 |")
+            elif l.strip().startswith("|:---") and l.count(":---") == 4:
+                out_lines.append(l.rstrip().rstrip("|") + "|:---|")
+            elif idx in delegation_notes:
+                out_lines.append(l.rstrip().rstrip("|") + f" | {delegation_notes[idx]} |")
+            elif l.strip().startswith("|") and not l.strip().startswith("|:---"):
+                out_lines.append(l.rstrip().rstrip("|") + " | - |")
+            else:
+                out_lines.append(l)
+        return "\n".join(out_lines)
+
     return "\n".join(lines)
 
 

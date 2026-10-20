@@ -458,6 +458,7 @@ class ClientClass:
         self.name, self.rel, self.domain, self.is_model = name, rel, domain, is_model
         self.path: Path | None = None
         self.services: list[tuple[str, int]] = []
+        self.servlets: list[tuple[str, str, str, int]] = []
         self.unresolved: list[tuple[str, int]] = []
         self.refs: set[str] = set()
         self.model_refs: set[str] = set()
@@ -554,6 +555,19 @@ def parse_client(app: Path) -> dict[str, list[ClientClass]]:
             if m.group(1) in server_domains and key not in found:
                 found.add(key)
                 cls.services.append((key, line_of(no_comment, m.start())))
+
+        # 서블릿 호출 감지 (FileDownload?fileType=..., FileUpload?...)
+        for m in re.finditer(r'["\'](FileDownload|FileUpload)\?([^"\']+)["\']', no_comment):
+            s_name = m.group(1)
+            query = m.group(2)
+            ft_m = re.search(r'fileType=(\w+)', query)
+            ft = ft_m.group(1) if ft_m else ""
+            line = line_of(no_comment, m.start())
+            subsequent = no_comment[m.start():m.start() + 200]
+            params = re.findall(r'&(\w+)=', subsequent)
+            p_desc = " ".join(f"{p}=…" for p in params)
+            cls.servlets.append((s_name, ft, p_desc, line))
+
         cls._bare = bare
         classes.setdefault(cls.name, []).append(cls)
 
@@ -1287,6 +1301,9 @@ def write_unit(
     unresolved = [(c.name, e, l) for c in classes for e, l in c.unresolved]
     if unresolved:
         lines += ["", "## 해석 못 한 서비스 호출", ""] + [f"- `{n}:{l}` `{md_cell(e)}`" for n, e, l in unresolved]
+    servlets = [(c.name, s_name, ft, p_desc, l) for c in classes for s_name, ft, p_desc, l in getattr(c, "servlets", [])]
+    if servlets:
+        lines += ["", "## 서블릿 호출", ""] + [f"- `{n}:{l}` `{s_name} fileType={ft} {p_desc}`" for n, s_name, ft, p_desc, l in servlets]
     ui = [c for c in classes if idx.is_vi(c) and c.path]
     if ui:
         lines += ["", "## UI", "", "GXT 소스에서 정적으로 뽑은 화면 구성 (LLM 없음). 처리 로직은 메서드 줄 범위만 원본에서 읽는다.", ""]

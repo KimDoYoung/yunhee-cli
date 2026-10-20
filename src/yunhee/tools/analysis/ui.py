@@ -70,7 +70,7 @@ def _tobe_event_ids(text: str) -> tuple[set[int], set[int]]:
 
 def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     """화면 파일 및 TOBE 디렉터리에서 UI 통계를 추출한다."""
-    _, src_index = resolve_as_is_paths(src=opts.get("src"), src_index=opts.get("src_index"))
+    src_root, src_index = resolve_as_is_paths(src=opts.get("src"), src_index=opts.get("src_index"))
     if not src_index or not src_index.is_dir():
         raise ValueError("색인 디렉터리를 찾을 수 없습니다. --src-index 옵션을 지정하세요.")
 
@@ -105,17 +105,44 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     else:
         classes.append({"name": screen_file.stem, "text": text})
 
+    unreachable_opt = str(opts.get("unreachable") or "count").lower()
     as_is_stats: dict[str, dict[str, Any]] = {}
     for c in classes:
         c_text = c["text"]
         btn_cnt = len(re.findall(r"-\s*<Button\b|\d+\.\s+<Button\b", c_text))
         ev_matches = re.findall(r"\[E(\d+)\]", c_text)
+        unreach_matches = re.findall(r"\[E(\d+)\].*?(?:도달\s*불가|⚠\s*도달\s*불가)", c_text)
+
+        if not ev_matches and src_root:
+            c_files = list(src_root.rglob(f"{c['name']}.java"))
+            if c_files:
+                try:
+                    java_text = c_files[0].read_text(encoding="utf-8", errors="replace")
+                    from yunhee.tools.as_is.events import (
+                        extract_buttons,
+                        extract_events_and_methods,
+                    )
+
+                    ev_list, _ = extract_events_and_methods(java_text, c_files[0])
+                    ev_matches = [e.id.replace("E", "") for e in ev_list]
+                    unreach_matches = [e.id.replace("E", "") for e in ev_list if e.is_unreachable]
+                    if btn_cnt == 0:
+                        btn_list = extract_buttons(java_text, events=ev_list, file_path=c_files[0])
+                        btn_cnt = len(btn_list)
+                except Exception:  # noqa: BLE001, S110
+                    pass
+
         ev_ids = {int(x) for x in ev_matches}
+        unreach_ids = {int(x) for x in unreach_matches}
+        if unreachable_opt == "ignore":
+            ev_ids = ev_ids - unreach_ids
+
         grid_cnt, grid_warn = count_as_is_grids(c_text)
         as_is_stats[c["name"]] = {
             "buttons": btn_cnt,
             "events": len(ev_ids),
             "event_ids": ev_ids,
+            "unreach_ids": unreach_ids,
             "grids": grid_cnt,
             "grid_warn": grid_warn,
         }
@@ -171,13 +198,39 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         comp_text = comp_file.read_text(encoding="utf-8", errors="replace")
         btn_cnt = len(re.findall(r"-\s*<Button\b|\d+\.\s+<Button\b", comp_text))
         ev_matches = re.findall(r"\[E(\d+)\]", comp_text)
+        unreach_matches = re.findall(r"\[E(\d+)\].*?(?:도달\s*불가|⚠\s*도달\s*불가)", comp_text)
+
+        if not ev_matches and src_root:
+            c_files = list(src_root.rglob(f"{comp_name}.java"))
+            if c_files:
+                try:
+                    java_text = c_files[0].read_text(encoding="utf-8", errors="replace")
+                    from yunhee.tools.as_is.events import (
+                        extract_buttons,
+                        extract_events_and_methods,
+                    )
+
+                    ev_list, _ = extract_events_and_methods(java_text, c_files[0])
+                    ev_matches = [e.id.replace("E", "") for e in ev_list]
+                    unreach_matches = [e.id.replace("E", "") for e in ev_list if e.is_unreachable]
+                    if btn_cnt == 0:
+                        btn_list = extract_buttons(java_text, events=ev_list, file_path=c_files[0])
+                        btn_cnt = len(btn_list)
+                except Exception:  # noqa: BLE001, S110
+                    pass
+
         ev_ids = {int(x) for x in ev_matches}
+        unreach_ids = {int(x) for x in unreach_matches}
+        if unreachable_opt == "ignore":
+            ev_ids = ev_ids - unreach_ids
+
         grid_cnt, grid_warn = count_as_is_grids(comp_text)
 
         as_is_stats[comp_name] = {
             "buttons": btn_cnt,
             "events": len(ev_ids),
             "event_ids": ev_ids,
+            "unreach_ids": unreach_ids,
             "grids": grid_cnt,
             "grid_warn": grid_warn,
             "is_linked": True,
@@ -248,6 +301,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         "done": opts.get("done", ""),
         "later": opts.get("later", ""),
         "no_e0": no_e0,
+        "unreachable": unreachable_opt,
     }
 
 
@@ -305,8 +359,16 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
             ai_ev_ids = set(ai.get("event_ids", set()))
             tb_impl_ids = set(tb.get("impl_event_ids", set()))
             tb_skip_ids = set(tb.get("skipped_event_ids", set()))
-            ai_events = ai.get("events", len(ai_ev_ids))
-            tb_events = tb.get("events", len(tb_impl_ids))
+
+            unreach_ids = set(ai.get("unreach_ids", set()))
+            unreachable_opt = str((opts and opts.get("unreachable")) or obj.get("unreachable", "count")).lower()
+            if unreachable_opt == "ignore" and unreach_ids:
+                ai_ev_ids = ai_ev_ids - unreach_ids
+                tb_impl_ids = tb_impl_ids - unreach_ids
+                tb_skip_ids = tb_skip_ids - unreach_ids
+
+            ai_events = len(ai_ev_ids)
+            tb_events = len(tb_impl_ids)
 
             no_e0 = bool((opts and opts.get("no_e0")) or obj.get("no_e0", False))
             if no_e0:

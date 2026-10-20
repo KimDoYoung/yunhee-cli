@@ -227,44 +227,51 @@ def find_target_statement(ref: str, current_ns: str, statements: dict[str, State
     return None
 
 
-def eval_test_condition(test: str, params: dict[str, Any]) -> bool:
-    """MyBatis <if test="..."> 또는 <when test="..."> 조건을 평가한다.
+def eval_test_condition_status(test: str, params: dict[str, Any]) -> tuple[bool | None, str]:
+    """MyBatis <if test="..."> 또는 <when test="..."> 조건을 평가하고 상태와 관련 변수명을 반환한다.
 
-    지원:
-    - isPostgreSql (True), isTibero / isOracle (False)
-    - x == true / x == false (따옴표 없는 boolean 리터럴)
-    - x != null / x == null
-    - x != '' / x == ''
-    - x == 'val' / x != 'val'
-    - x > 1 / x >= 0 등 숫자 대소비교
-    - x.size() > 0 / x.size() == 0 등
-    - and / or 복합식
-    - 알 수 없는 식은 경고 출력 후 False
+    반환: (True|False|None, var_name)
+    - True: 조건 일치
+    - False: 조건 불일치
+    - None: 식을 판정하지 못함
     """
     test = unescape(test).strip()
     if not test:
-        return True
+        return True, ""
 
     if "isPostgreSql" in test or ("_databaseId" in test and "postgresql" in test.lower()):
-        return True
+        return True, ""
     if "isTibero" in test or "isOracle" in test or ("_databaseId" in test and ("oracle" in test.lower() or "tibero" in test.lower())):
-        return False
+        return False, ""
+
+    # 변수명 추정 (test 내 첫 식별자)
+    v_match = re.search(r"\b([a-zA-Z_]\w*)\b", test)
+    var_name = v_match.group(1) if v_match else ""
 
     # or 분리 (우선순위: or 단위 중 하나라도 True면 True)
     or_parts = re.split(r"\b(?:or|OR)\b", test)
+    any_none = False
     for or_part in or_parts:
         and_parts = re.split(r"\b(?:and|AND)\b", or_part)
         and_ok = True
         for and_part in and_parts:
-            if not _eval_single_condition(and_part.strip(), params):
+            res = _eval_single_condition_status(and_part.strip(), params)
+            if res is None:
+                any_none = True
+                and_ok = False
+                break
+            if not res:
                 and_ok = False
                 break
         if and_ok:
-            return True
-    return False
+            return True, var_name
+
+    if any_none:
+        return None, var_name
+    return False, var_name
 
 
-def _eval_single_condition(expr: str, params: dict[str, Any]) -> bool:
+def _eval_single_condition_status(expr: str, params: dict[str, Any]) -> bool | None:
     expr = expr.strip()
     if not expr:
         return True
@@ -418,9 +425,14 @@ def _eval_single_condition(expr: str, params: dict[str, Any]) -> bool:
             return False
         return bool(val)
 
-    # 판정하지 못한 식 경고 및 False 반환
-    sys.stderr.write(f"⚠ 판정 못한 test: {expr}\n")
-    return False
+    # 판정하지 못한 식은 None
+    return None
+
+
+def eval_test_condition(test: str, params: dict[str, Any]) -> bool:
+    """MyBatis <if test="..."> 또는 <when test="..."> 조건을 평가한다."""
+    res, _ = eval_test_condition_status(test, params)
+    return bool(res)
 
 
 def eval_bind(name: str, value: str, params: dict[str, Any]) -> None:
@@ -566,22 +578,49 @@ def render_node(
     if tag == "choose":
         whens = [w for w in node.children if isinstance(w, Node) and w.tag == "when"]
         other = next((w for w in node.children if isinstance(w, Node) and w.tag == "otherwise"), None)
+        selected_when = None
+        excluded_vars = []
         for w in whens:
             test = w.attrs.get("test", "")
-            if eval_test_condition(test, params):
-                return render_node(w, current_ns, statements, params, mode, seen, missing_params)
+            eval_res, var_name = eval_test_condition_status(test, params)
+            if eval_res is True:
+                selected_when = w
+                break
+            elif eval_res is False:
+                if var_name and var_name not in ("isTibero", "isOracle"):
+                    excluded_vars.append(var_name)
+            else:
+                body = "".join(
+                    render_node(c, current_ns, statements, params, mode, seen, missing_params)
+                    for c in w.children
+                )
+                return f"\n/* if {test} */\n{body}\n/* end */\n"
+        if selected_when:
+            return render_node(selected_when, current_ns, statements, params, mode, seen, missing_params)
         if other:
             return render_node(other, current_ns, statements, params, mode, seen, missing_params)
+        if excluded_vars:
+            return f"\n-- 분기 제외: {', '.join(excluded_vars)}\n"
         return ""
 
     if tag == "if":
         test = node.attrs.get("test", "")
-        if eval_test_condition(test, params):
+        eval_res, var_name = eval_test_condition_status(test, params)
+        if eval_res is True:
             return "".join(
                 render_node(c, current_ns, statements, params, mode, seen, missing_params)
                 for c in node.children
             )
-        return ""
+        elif eval_res is False:
+            if var_name and var_name not in ("isTibero", "isOracle"):
+                return f"\n-- 분기 제외: {var_name}\n"
+            return ""
+        else:
+            body = "".join(
+                render_node(c, current_ns, statements, params, mode, seen, missing_params)
+                for c in node.children
+            )
+            return f"\n/* if {test} */\n{body}\n/* end */\n"
 
     if tag == "foreach":
         collection = node.attrs.get("collection", "")
@@ -683,15 +722,22 @@ def render(
     # mode == "params" 파라미터 대입
     def replace_sharp(m: re.Match) -> str:
         var = m.group(1).strip()
+        if "," in var:
+            var = var.split(",")[0].strip()
         if var in local_params and local_params[var] is not None:
             val = local_params[var]
-            val_escaped = str(val).replace("'", "''")
+            val_str = str(val)
+            if val_str.lstrip("-").isdigit() and not (val_str.startswith("0") and len(val_str) > 1):
+                return val_str
+            val_escaped = val_str.replace("'", "''")
             return f"'{val_escaped}'"
         missing_params.append(var)
-        return "NULL"
+        return f":{var}"
 
     def replace_dollar(m: re.Match) -> str:
         var = m.group(1).strip()
+        if "," in var:
+            var = var.split(",")[0].strip()
         if var in local_params and local_params[var] is not None:
             return str(local_params[var])
         return "1"
@@ -705,6 +751,8 @@ def render(
 
     # 고유한 누락 파라미터 목록
     unique_missing = sorted(set(missing_params))
+    if unique_missing:
+        sql += "\n" + "\n".join(f"-- 필요: {p}" for p in unique_missing)
     return sql, unique_missing
 
 

@@ -81,6 +81,116 @@ def _field_covered(expected_col: str, api_fields: set[str]) -> bool:
     return False
 
 
+def extract_trace_sql_params(trace_id: str, sql_ref: str, req_path: str = "") -> dict[str, str]:
+    """로그 trace에서 특정 SQL statement의 바인딩 파라미터를 이름과 함께 추출한다."""
+    from yunhee.tools import log_reader
+
+    sid = sql_ref.split(".")[-1]
+
+    raw = ""
+    try:
+        if config.LOG_DOCKER:
+            raw = log_reader.read_logs_docker(
+                config.LOG_DOCKER, config.LOG_DIR, config.LOG_APP, trace_id=trace_id
+            )
+        else:
+            raw = log_reader.read_logs_local(
+                Path(config.LOG_DIR), config.LOG_APP, trace_id=trace_id
+            )
+    except Exception:  # noqa: BLE001
+        return {}
+
+    lines = raw.splitlines()
+    raw_params = None
+    for i, line in enumerate(lines):
+        if "==>  Preparing:" in line and sid in line:
+            for j in range(i + 1, min(i + 10, len(lines))):
+                if "==> Parameters:" in lines[j]:
+                    m_p = re.search(r"==>\s+Parameters:\s*(.*)$", lines[j])
+                    if m_p:
+                        raw_params = m_p.group(1)
+                    break
+            if raw_params is not None:
+                break
+
+    if not raw_params:
+        return {}
+
+    param_vals = [re.sub(r"\([A-Za-z]+\)$", "", p.strip()) for p in raw_params.split(",") if p.strip()]
+
+    # statement에서 파라미터 이름 추출 (#{} 목록)
+    param_names = []
+    ns, sid = sql_ref.split(".", 1) if "." in sql_ref else ("", sql_ref)
+
+    # 1. find_mapper_file(ns)로 해당 매퍼 XML 우선 탐색
+    if ns:
+        try:
+            mf = find_mapper_file(ns)
+            if mf and mf.is_file():
+                content = mf.read_text(encoding="utf-8", errors="replace")
+                m = re.search(
+                    rf'<(?:select|insert|update|delete)\b[^>]*\bid=["\x27]{re.escape(sid)}["\x27][^>]*>(.*?)</(?:select|insert|update|delete)>',
+                    content,
+                    re.DOTALL,
+                )
+                if m:
+                    body = re.sub(r"<!--.*?-->", "", m.group(1), flags=re.DOTALL)
+                    param_names = re.findall(r"#\{\s*([a-zA-Z0-9_.]+)(?:[,\s:][^}]*)?\}", body)
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+    # 2. TOBE mapper XML 검색
+    if not param_names:
+        search_dirs = [
+            config.WORK_DIR / "backend/src/main/resources/mapper",
+            config.WORK_DIR / "src/main/resources/mapper",
+            config.WORK_DIR,
+        ]
+        for sdir in search_dirs:
+            if sdir.is_dir():
+                for mf in sdir.rglob("*.xml"):
+                    try:
+                        content = mf.read_text(encoding="utf-8", errors="replace")
+                        m = re.search(
+                            rf'<(?:select|insert|update|delete)\b[^>]*\bid=["\x27]{re.escape(sid)}["\x27][^>]*>(.*?)</(?:select|insert|update|delete)>',
+                            content,
+                            re.DOTALL,
+                        )
+                        if m:
+                            body = re.sub(r"<!--.*?-->", "", m.group(1), flags=re.DOTALL)
+                            names = re.findall(r"#\{\s*([a-zA-Z0-9_.]+)(?:[,\s:][^}]*)?\}", body)
+                            if len(names) == len(param_vals):
+                                param_names = names
+                                break
+                    except Exception:  # noqa: BLE001, S110
+                        pass
+                if param_names:
+                    break
+
+    if not param_names and config.ASIS_SRC_DIR and config.ASIS_SRC_DIR.is_dir():
+        for mf in config.ASIS_SRC_DIR.rglob("*.xml"):
+            try:
+                content = mf.read_text(encoding="utf-8", errors="replace")
+                m = re.search(
+                    rf'<(?:select|insert|update|delete)\b[^>]*\bid=["\x27]{re.escape(sid)}["\x27][^>]*>(.*?)</(?:select|insert|update|delete)>',
+                    content,
+                    re.DOTALL,
+                )
+                if m:
+                    body = re.sub(r"<!--.*?-->", "", m.group(1), flags=re.DOTALL)
+                    param_names = re.findall(r"#\{\s*([a-zA-Z0-9_.]+)(?:[,\s:][^}]*)?\}", body)
+                    if param_names:
+                        break
+            except Exception:  # noqa: BLE001, S110
+                pass
+
+    res = {}
+    if param_names and len(param_names) == len(param_vals):
+        for name, val in zip(param_names, param_vals):
+            res[name] = val
+    return res
+
+
 def find_screen_grid_info(
     sql_ref: str,
     src_root: Path | None = None,
@@ -354,6 +464,9 @@ def compare_api_sql(
     db_name: str = "asseterpdb",
     src_root: Path | None = None,
     grid: str | None = None,
+    as_user: str = "admin",
+    sql_total_ref: str | None = None,
+    from_log: bool = False,
 ) -> ToolResult:
     """조회 API와 AS-IS SQL의 결과 행 수 및 필드 커버리지를 비교 검증한다."""
     import sys
@@ -371,6 +484,44 @@ def compare_api_sql(
 
     ns, sid = sql_ref.split(".", 1)
 
+    # 1. API 호출
+    api_res = request_api(
+        method=method,
+        path=path,
+        base_url=base_url,
+        as_role=as_user,
+        company_code=company,
+        tenant=tenant,
+        params=api_params if method.upper() == "GET" else None,
+        json_body=api_params if method.upper() != "GET" else None,
+    )
+    if not api_res.ok and not api_res.data:
+        return ToolResult(ok=False, error=f"API 호출 실패: {api_res.error}")
+
+    user_info = (api_res.data or {}).get("user_info") or {}
+    if user_info:
+        if "empId" not in sql_params and user_info.get("user_id") is not None:
+            sql_params["empId"] = str(user_info["user_id"])
+        if "orgId" not in sql_params and user_info.get("org_id") is not None:
+            sql_params["orgId"] = str(user_info["org_id"])
+        if "companyId" not in sql_params and user_info.get("company_id") is not None:
+            sql_params["companyId"] = str(user_info["company_id"])
+
+    # --from-log 처리
+    used_params_msg = ""
+    if from_log:
+        trace_id = (api_res.data or {}).get("trace_id")
+        if trace_id:
+            log_p = extract_trace_sql_params(trace_id, sql_ref, req_path=path)
+            merged = dict(log_p)
+            merged.update(sql_params)
+            sql_params = merged
+        if sql_params:
+            p_items = [f"{k}={v}" for k, v in sorted(sql_params.items())]
+            used_params_msg = f"\n사용한 파라미터: {', '.join(p_items)}"
+
+    # 2. SQL 렌더링
+    stmts = {}
     try:
         stmts = get_all_statements(src_root)
         if sql_ref in stmts or any(s.sid == sid for s in stmts.values()):
@@ -388,19 +539,6 @@ def compare_api_sql(
     except Exception as e:  # noqa: BLE001
         return ToolResult(ok=False, error=f"SQL 렌더링 실패: {e}")
 
-    # 1. API 호출
-    api_res = request_api(
-        method=method,
-        path=path,
-        base_url=base_url,
-        company_code=company,
-        tenant=tenant,
-        params=api_params if method.upper() == "GET" else None,
-        json_body=api_params if method.upper() != "GET" else None,
-    )
-    if not api_res.ok:
-        return ToolResult(ok=False, error=f"API 호출 실패: {api_res.error}")
-
     api_data = api_res.data
     raw_json = {}
     if isinstance(api_data, dict):
@@ -413,31 +551,48 @@ def compare_api_sql(
         elif "data" in api_data:
             raw_json = api_data["data"]
 
-    raw_data = raw_json.get("data") if isinstance(raw_json, dict) else raw_json
+    raw_data = raw_json.get("data") if isinstance(raw_json, dict) and "data" in raw_json else raw_json
     if raw_data is None and isinstance(raw_json, list):
         raw_data = raw_json
 
-    # API 응답에서 행 목록 추출
+    compare_conf = config.TOML_CONFIG.get("compare", {})
+    paging_keys = compare_conf.get("paging_keys") or ["rows", "total"]
+    rows_key = paging_keys[0] if len(paging_keys) > 0 else "rows"
+    total_key = paging_keys[1] if len(paging_keys) > 1 else "total"
+
+    is_paging = False
+    api_total = 0
     api_rows_list: list[Any] = []
-    if isinstance(raw_data, list):
-        api_rows_list = raw_data
-    elif isinstance(raw_data, dict):
-        if "data" in raw_data and isinstance(raw_data["data"], list):
-            api_rows_list = raw_data["data"]
-        elif "list" in raw_data and isinstance(raw_data["list"], list):
-            api_rows_list = raw_data["list"]
-        elif "items" in raw_data and isinstance(raw_data["items"], list):
-            api_rows_list = raw_data["items"]
-        else:
-            api_rows_list = [raw_data]
-
-    api_row_count = len(api_rows_list)
     api_fields: set[str] = set()
-    for row in api_rows_list:
-        if isinstance(row, dict):
-            api_fields.update(row.keys())
 
-    # 2. SQL 실행 (Read-Only)
+    if isinstance(raw_data, dict) and rows_key in raw_data and total_key in raw_data and isinstance(raw_data[rows_key], list):
+        is_paging = True
+        api_rows_list = raw_data[rows_key]
+        try:
+            api_total = int(raw_data[total_key])
+        except (ValueError, TypeError):
+            api_total = len(api_rows_list)
+        api_row_count = len(api_rows_list)
+        if api_rows_list and isinstance(api_rows_list[0], dict):
+            api_fields.update(api_rows_list[0].keys())
+    else:
+        if isinstance(raw_data, list):
+            api_rows_list = raw_data
+        elif isinstance(raw_data, dict):
+            if "data" in raw_data and isinstance(raw_data["data"], list):
+                api_rows_list = raw_data["data"]
+            elif "list" in raw_data and isinstance(raw_data["list"], list):
+                api_rows_list = raw_data["list"]
+            elif "items" in raw_data and isinstance(raw_data["items"], list):
+                api_rows_list = raw_data["items"]
+            else:
+                api_rows_list = [raw_data]
+        api_row_count = len(api_rows_list)
+        for row in api_rows_list:
+            if isinstance(row, dict):
+                api_fields.update(row.keys())
+
+    # 3. SQL 실행 (Read-Only)
     conn_str = get_connection_string(db_name)
     try:
         with psycopg.connect(conn_str, autocommit=False) as conn:
@@ -450,20 +605,72 @@ def compare_api_sql(
     except Exception as exc:  # noqa: BLE001
         return ToolResult(ok=False, error=f"SQL 실행 실패: {exc}\n실행 SQL: {sql}")
 
+    # 페이징인 경우 총건수 대조
+    if is_paging:
+        sql_total = None
+        if sql_total_ref:
+            try:
+                ns_t, sid_t = sql_total_ref.split(".", 1) if "." in sql_total_ref else ("", sql_total_ref)
+                if sql_total_ref in stmts or any(s.sid == sid_t for s in stmts.values()):
+                    total_sql, _ = mr_render(sql_total_ref, params=sql_params, mode="params", statements=stmts)
+                else:
+                    xml_path_t = find_mapper_file(ns_t, src_root)
+                    if xml_path_t:
+                        xml_text_t = xml_path_t.read_text(encoding="utf-8", errors="replace")
+                        total_sql, _ = render_mybatis_sql(xml_text_t, sid_t, sql_params)
+                    else:
+                        total_sql = None
+                if total_sql:
+                    with psycopg.connect(conn_str, autocommit=False) as conn:
+                        conn.read_only = True
+                        with conn.cursor() as cur:
+                            cur.execute(total_sql)
+                            t_row = cur.fetchone()
+                            if t_row:
+                                sql_total = int(t_row[0])
+            except Exception:  # noqa: BLE001, S110
+                pass
+        elif "LIMIT" in sql.upper():
+            inner_sql = re.sub(r'\s+LIMIT\s+[0-9]+(?:\s+OFFSET\s+[0-9]+)?', '', sql, flags=re.IGNORECASE)
+            inner_sql = re.sub(r'\s+OFFSET\s+[0-9]+(?:\s+LIMIT\s+[0-9]+)?', '', inner_sql, flags=re.IGNORECASE)
+            cnt_query = f"SELECT count(*) FROM ({inner_sql}) _cnt_sub"
+            try:
+                with psycopg.connect(conn_str, autocommit=False) as conn:
+                    conn.read_only = True
+                    with conn.cursor() as cur:
+                        cur.execute(cnt_query)
+                        t_row = cur.fetchone()
+                        if t_row:
+                            sql_total = int(t_row[0])
+            except Exception:  # noqa: BLE001, S110
+                pass
+
+        if sql_total is None:
+            sql_total = sql_row_count
+
+        rows_match = (api_total == sql_total)
+        rows_mark = "✅" if rows_match else "❌"
+        if api_row_count == api_total:
+            count_part = f"API total={api_total} (rows={api_row_count}), SQL total={sql_total} {rows_mark}"
+        else:
+            count_part = f"API total={api_total} (이번 페이지 rows={api_row_count}), SQL total={sql_total} {rows_mark}"
+    else:
+        rows_match = (api_row_count == sql_row_count)
+        rows_mark = "✅" if rows_match else "❌"
+        count_part = f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}"
+
     # 테이블 접두어 추출
     tbl_pfx_m = re.match(r"^([a-z]+\d*)_", ns)
     tbl_prefix = (tbl_pfx_m.group(1) + "_") if tbl_pfx_m else ""
-
-    # 3. 비교 판정
-    rows_match = (api_row_count == sql_row_count)
-    rows_mark = "✅" if rows_match else "❌"
 
     # Grid Spec 컬럼 우선 매핑, 없으면 SQL 컬럼 사용
     grid_info = find_screen_grid_info(sql_ref, src_root, grid_class=grid, api_fields=api_fields)
     if grid_info.get("not_found"):
         search_dir = grid_info.get("search_dir", "")
         search_suffix = f" (탐색 폴더: {search_dir})" if search_dir else ""
-        summary_line = f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}  ⚠ 그리드 못 찾음: {grid_info['class_name']}{search_suffix}"
+        summary_line = f"{count_part}  ⚠ 그리드 못 찾음: {grid_info['class_name']}{search_suffix}"
+        if used_params_msg:
+            summary_line += f"\n{used_params_msg.strip()}"
         return ToolResult(
             ok=True,
             data={
@@ -477,6 +684,7 @@ def compare_api_sql(
                 "missing_fields": [],
                 "rendered_sql": sql,
                 "trace_id": (api_res.data or {}).get("trace_id"),
+                "user_info": user_info,
             },
         )
 
@@ -494,15 +702,18 @@ def compare_api_sql(
     cols_mark = "✅" if cols_covered else "⚠️"
 
     if api_row_count == 0:
-        summary_line = f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}  필드 비교 못 함 (행 0건){cols_desc}"
+        summary_line = f"{count_part}  필드 비교 못 함 (행 0건){cols_desc}"
     else:
         summary_parts = [
-            f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}",
+            count_part,
             f"fields ⊇ grid cols {cols_mark}{cols_desc}",
         ]
         if not cols_covered and api_fields:
             summary_parts.append(f"(missing: {', '.join(sorted(missing_fields))})")
         summary_line = "  ".join(summary_parts)
+
+    if used_params_msg:
+        summary_line += f"\n{used_params_msg.strip()}"
 
     return ToolResult(
         ok=True,
@@ -517,5 +728,6 @@ def compare_api_sql(
             "missing_fields": sorted(missing_fields),
             "rendered_sql": sql,
             "trace_id": (api_res.data or {}).get("trace_id"),
+            "user_info": user_info,
         },
     )

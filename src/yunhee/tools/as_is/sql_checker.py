@@ -430,8 +430,17 @@ def extract_select_aliases_from_sql(sql: str) -> set[str] | None:
     return {to_camel(n) for n in names if n}
 
 
-def check_tobe_sql(mapper_dir: Path, db: str = "asseterpdb") -> ToolResult:
+def check_tobe_sql(
+    mapper_dir: Path,
+    db: str = "asseterpdb",
+    only: list[str] | None = None,
+    changed: bool = False,
+    summary: bool = False,
+) -> ToolResult:
     """TOBE 매퍼 XML을 대상 DB에서 EXPLAIN 및 검증한다."""
+    import fnmatch
+    import subprocess
+
     if not mapper_dir.is_dir():
         return ToolResult(ok=False, error=f"TOBE 매퍼 디렉터리를 찾을 수 없습니다: {mapper_dir}")
 
@@ -442,6 +451,36 @@ def check_tobe_sql(mapper_dir: Path, db: str = "asseterpdb") -> ToolResult:
             ok=False,
             error=f"대상 DB({target_db}) 접속 실패: {test_err}",
         )
+
+    # --changed 대상 XML 파일 수집
+    changed_xml_paths: set[Path] | None = None
+    if changed:
+        changed_xml_paths = set()
+        repo_dir = mapper_dir.resolve()
+        while repo_dir != repo_dir.parent and not (repo_dir / ".git").is_dir():
+            repo_dir = repo_dir.parent
+
+        if (repo_dir / ".git").is_dir():
+            try:
+                # 1. git diff (unstaged)
+                p1 = subprocess.run(["git", "diff", "--name-only"], cwd=repo_dir, capture_output=True, text=True, check=False)
+                # 2. git diff --cached (staged)
+                p2 = subprocess.run(["git", "diff", "--name-only", "--cached"], cwd=repo_dir, capture_output=True, text=True, check=False)
+                # 3. git ls-files --others (untracked)
+                p3 = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"], cwd=repo_dir, capture_output=True, text=True, check=False)
+                combined_diff = (p1.stdout + "\n" + p2.stdout + "\n" + p3.stdout).strip()
+                if not combined_diff:
+                    p4 = subprocess.run(["git", "diff", "--name-only", "HEAD~1"], cwd=repo_dir, capture_output=True, text=True, check=False)
+                    combined_diff = p4.stdout.strip()
+
+                for line in combined_diff.splitlines():
+                    line = line.strip()
+                    if line and line.endswith(".xml"):
+                        abs_p = (repo_dir / line).resolve()
+                        if abs_p.is_file():
+                            changed_xml_paths.add(abs_p)
+            except Exception:  # noqa: BLE001, S110
+                pass
 
     statements: dict[str, Statement] = {}
     for path in sorted(mapper_dir.rglob("*.xml")):
@@ -461,13 +500,48 @@ def check_tobe_sql(mapper_dir: Path, db: str = "asseterpdb") -> ToolResult:
                 st = Statement(ns, child.attrs["id"], child.tag, child, path.relative_to(mapper_dir), line)
                 statements[st.key] = st
 
-    targets = [s for s in statements.values() if s.kind != "sql"]
-    if not targets:
+    all_targets = [s for s in statements.values() if s.kind != "sql"]
+    if not all_targets:
         return ToolResult(ok=False, error=f"{mapper_dir} 아래에서 검증할 매퍼 SQL을 찾지 못했습니다.")
+
+    # 필터링 적용 (--changed, --only)
+    targets = []
+    for st in all_targets:
+        full_path = (mapper_dir / st.rel).resolve()
+        if changed_xml_paths is not None and full_path not in changed_xml_paths:
+            continue
+
+        cls_name = st.ns.split(".")[-1]
+        xml_stem = Path(st.rel).stem
+        if only:
+            matched = any(
+                fnmatch.fnmatch(cls_name, pat)
+                or fnmatch.fnmatch(xml_stem, pat)
+                or fnmatch.fnmatch(st.sid, pat)
+                or fnmatch.fnmatch(st.key, pat)
+                for pat in only
+            )
+            if not matched:
+                continue
+
+        targets.append(st)
+
+    if not targets:
+        return ToolResult(
+            ok=True,
+            data={
+                "summary": "검증 대상 매퍼 없음 (필터 조건에 일치하는 매퍼가 없습니다)",
+                "total": 0,
+                "results": {},
+            },
+        )
 
     search_roots = java_source_roots(mapper_dir.resolve())
 
     results_by_cls: dict[str, list[str]] = defaultdict(list)
+    failure_details_by_cls: dict[str, list[str]] = defaultdict(list)
+    success_count_by_cls: dict[str, int] = defaultdict(int)
+    failure_count_by_cls: dict[str, int] = defaultdict(int)
     has_failure = False
 
     for st in sorted(targets, key=lambda s: (s.ns, s.line)):
@@ -506,13 +580,25 @@ def check_tobe_sql(mapper_dir: Path, db: str = "asseterpdb") -> ToolResult:
 
         if err is None:
             results_by_cls[cls_name].append(f"{st.sid} ✅{warn}")
+            success_count_by_cls[cls_name] += 1
         else:
             has_failure = True
-            results_by_cls[cls_name].append(f"{st.sid} ❌ {err} (L{st.line})")
+            fail_msg = f"{st.sid} ❌ {err} (L{st.line})"
+            results_by_cls[cls_name].append(fail_msg)
+            failure_details_by_cls[cls_name].append(fail_msg)
+            failure_count_by_cls[cls_name] += 1
 
     lines = []
-    for cls_name, items in results_by_cls.items():
-        lines.append(f"{cls_name}: " + " / ".join(items))
+    if summary:
+        for cls_name in sorted(results_by_cls.keys()):
+            succ = success_count_by_cls[cls_name]
+            fail = failure_count_by_cls[cls_name]
+            lines.append(f"{cls_name}: ✅ {succ} / ❌ {fail}")
+            for fail_detail in failure_details_by_cls[cls_name]:
+                lines.append(f"  - {fail_detail}")
+    else:
+        for cls_name, items in results_by_cls.items():
+            lines.append(f"{cls_name}: " + " / ".join(items))
 
     summary_text = "\n".join(lines)
     return ToolResult(

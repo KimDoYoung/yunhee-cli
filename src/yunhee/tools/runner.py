@@ -200,6 +200,7 @@ def execute_command(
 
     # 전체 로그 파일 저장
     log_content = (
+        f"cwd: {effective_cwd}\n"
         f"=== Command: {command} ===\n"
         f"=== Directory: {effective_cwd} ===\n"
         f"=== Project Root: {project_root} ===\n"

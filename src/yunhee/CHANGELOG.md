@@ -2,6 +2,24 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.4.3] - 2026-10-20
+수정사항 039 (서버 위임 추적, 서블릿 분석, compare 페이징 및 --from-log, sql-check 필터, PreToolUse 훅, API 자동 경로 보정, run -C, analysis sql grep 및 파라미터 대입, save-script, 배포 대기, -u 사원 가장, mapper-run, 미도달 이벤트 감지) 반영.
+- `analysis method` & `screen`: 서버 위임 메서드 추적(`getInDocument` → `makeDocument` 줄 범위/SQL 수 표시), `<패키지>.<클래스>.<메서드>` 패키지 명시 지원, 미발견 시 후보 목록 및 Exit code 2, 위임 전용 시 `⚠ 결과 없음` 경고 억제 (039-1, 039-16)
+- `analysis servlet`: 서블릿 다운로드/보고서 분석 커맨드 추가, `analysis screen --section servlet` 지원, `src_indexer` 서블릿 URL 색인 생성 (039-2)
+- `compare`: 페이징 응답 자동 감지(`{rows, total}`), 행수 및 총합 비교, `--sql-total <ns.id>` 지정 및 자동 `COUNT(*)` 비교, `[compare] paging_keys` 설정 지원 (039-3)
+- `sql-check --tobe`: `--only <glob>` 특정 매퍼 필터, `--changed` 변경/추가 매퍼 자동 탐지, `--summary` 성공/실패 요약 행, 대상 범위 실패 시에만 Exit code 1 반환 (039-4)
+- PreToolUse Hook: `hook_guard.py` 명령 토큰화(따옴표/플래그 안전 파싱), `&&`/`||`/`;` 체이닝 지원, `yunhee-guard.sh` 연동 (039-5)
+- `api`: 404 발생 시 `/api/v1/` 자동 재시도 및 `ℹ 경로를 /api/v1/... 로 보정` 안내, `[api] auto_prefix` 설정 지원 (039-6)
+- `run`: `-C/--cwd <경로>` 작업 폴더 지정 옵션 추가, 실행 전 `cwd: <경로>` 명시, `[run] cwd` 설정 지원 (039-7)
+- `analysis sql`: 중복 include 정형화, `--grep <패턴> -C <줄수>` 옵션 추가 (039-8)
+- `analysis sql`: 파라미터 대입 모드(숫자 리터럴, 문자열 따옴표, 누락 변수 `-- 필요: k`), if/choose 분기 조건 평가 및 `-- 분기 제외: <var>` 주석 표시 (039-9)
+- `analysis save-script`: 서버 저장 메서드 쓰기 SQL들을 순서대로 추출하고 파라미터를 대입하여 트랜잭션 롤백 스크립트로 생성하는 커맨드 추가 (039-10)
+- `api` / `compare`: 배포 직후 기동 중 감지 안내(`ℹ 배포 후 앱이 아직 올라오는 중일 수 있음`), `--wait-deploy [초]` 대기 옵션 지원 (039-11)
+- `api` / `compare` / `sql`: `-u/--as <사원번호|이름>` 사원 가장 로그인, `emp00_trans_info` 기반 부서/회사 자동 조회 및 세션 격리, `empId/orgId/companyId` 파라미터 자동 바인딩 (039-12)
+- `compare`: `--from-log` 지정 시 직전 trace 로그의 바인딩 파라미터를 자동 추출하여 AS-IS SQL에 매핑, `사용한 파라미터:` 안내 (039-13)
+- `mapper-run`: TOBE MyBatis 매퍼의 XML statement를 실제 DB에서 안전하게 실행하는 도구 추가, 쓰기문 `--rollback` 강제, `--compare <ns.id>` AS-IS SQL 비교 지원 (039-14)
+- `analysis ui`: 도달 불가능한 이벤트 핸들러(호출되지 않는 메서드, 컬럼/툴바 미연결 위젯) 감지, `--unreachable count|ignore` 옵션 지원 (039-15)
+
 ## [0.4.2] - 2026-10-18
 수정사항 037 (`analysis model`/`grid` 와일드카드 테이블 열 검증, `port-sql` 계산 getter 지원, `analysis method -o code` 짧은 오버로드/위임 인라인 출력, `analysis ui --tobe` E0 안내) 반영.
 - `analysis model --sql`: `테이블.*` 또는 `*` 와일드카드 매칭 시 실제 DB 테이블(DBML/스키마 스냅샷)에 해당 컬럼이 존재하는지 대조해 없으면 `⚠ 테이블에 열 없음`으로 표시 (037-1)

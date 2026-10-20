@@ -55,6 +55,8 @@ class EventInfo:
     parent_id: str | None = None  # 중첩 종속 이벤트의 부모 E-id
     sub_events: list["EventInfo"] = field(default_factory=list)
     raw_snippet: str = ""  # 본문 요약 발췌
+    is_unreachable: bool = False
+    unreachable_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -684,6 +686,67 @@ def extract_events_and_methods(
         "유틸": 6,
     }
     method_infos.sort(key=lambda m: (cat_order.get(m.category, 99), m.line_start))
+
+    # 10. 도달 불가(Unreachable) 이벤트 판정
+    uncalled_meth_spans: dict[str, tuple[int, int]] = {}
+    for m in method_infos:
+        if m.callers in (["공개 메서드"], ["미사용 후보"], []):
+            m_pure_name = m.name.split()[1].removesuffix("()")
+            uncalled_meth_spans[m_pure_name] = (m.line_start, m.line_end)
+
+    def is_widget_attached(w: str, src_text: str) -> bool:
+        for m_call in re.finditer(
+            r"\b\w+\.(?:add\w*|setEditor|setWidget)\s*\(",
+            src_text,
+        ):
+            if m_call.group(0).startswith(f"{w}."):
+                continue
+            open_p = m_call.end() - 1
+            close_p = paren_end(src_text, open_p)
+            args_text = src_text[open_p + 1 : close_p]
+            if re.search(rf"\b{re.escape(w)}\b", args_text):
+                return True
+        return False
+
+    DIALOG_TYPES = {"dialoghide", "hide", "close"}
+
+    for ev in ev_list:
+        if ev.id == "E0":
+            continue
+
+        # 1) 호출처 없는 메서드 내부의 이벤트
+        for m_name, (ms, me) in uncalled_meth_spans.items():
+            if ms <= ev.line <= me:
+                ev.is_unreachable = True
+                ev.unreachable_reason = f"{m_name}() 호출처 없음"
+                break
+
+        if ev.is_unreachable:
+            continue
+
+        # 2) 컬럼·툴바에 연결되지 않은 위젯 핸들러
+        clean_widget = re.sub(r"\[.*?\]", "", ev.source).replace("this.", "").strip()
+        is_dialog = (
+            ev.event_type.lower() in DIALOG_TYPES
+            or clean_widget.lower().endswith(("messagebox", "confirmbox", "dialog", "simplemessage"))
+            or clean_widget.lower() in ("msgbox", "confirmbox", "dialog")
+        )
+        if (
+            not is_dialog
+            and clean_widget
+            and clean_widget.isidentifier()
+            and clean_widget not in ("grid", "tree", "this", "searchText", "docSearch")
+            and not is_widget_attached(clean_widget, code)
+        ):
+            ev.is_unreachable = True
+            ev.unreachable_reason = f"{clean_widget} 컬럼·툴바 미연결"
+
+    for ev in ev_list:
+        if ev.is_unreachable and ev.sub_events:
+            for sub in ev.sub_events:
+                sub.is_unreachable = True
+                if not sub.unreachable_reason:
+                    sub.unreachable_reason = ev.unreachable_reason
 
     return ev_list, method_infos
 
@@ -1532,7 +1595,13 @@ def render_events_markdown(
     buttons: list[ButtonInfo] | None = None,
 ) -> str:
     """마크다운 형태로 이벤트 및 메서드 분석 결과를 렌더링한다."""
-    lines = [f"원본: {file_label}", "", "## 이벤트"]
+    unreach_events = [e for e in events if e.is_unreachable]
+    unreach_header = ""
+    if unreach_events:
+        reasons = list(dict.fromkeys(e.unreachable_reason for e in unreach_events if e.unreachable_reason))
+        unreach_header = f" (도달 불가: {', '.join(reasons)})"
+
+    lines = [f"원본: {file_label}", "", f"## 이벤트{unreach_header}"]
 
     # E0 (생성자/열림)
     e0 = next((e for e in events if e.id == "E0"), None)
@@ -1545,10 +1614,12 @@ def render_events_markdown(
         if e.id == "E0" or e.parent_id:
             continue
         cond_str = f" {e.condition}" if e.condition else ""
-        lines.append(f"[{e.id}] {e.source}.{e.event_type}{cond_str} (L{e.line}) → {e.action}")
+        unreach_str = f" ⚠ 도달 불가 ({e.unreachable_reason})" if e.is_unreachable else ""
+        lines.append(f"[{e.id}] {e.source}.{e.event_type}{cond_str} (L{e.line}) → {e.action}{unreach_str}")
         for sub in e.sub_events:
             s_cond = f" {sub.condition}" if sub.condition else ""
-            lines.append(f"       └ [{sub.id}] {sub.source}.{sub.event_type}{s_cond} (L{sub.line}) → {sub.action}")
+            s_unreach = f" ⚠ 도달 불가 ({sub.unreachable_reason})" if sub.is_unreachable else ""
+            lines.append(f"       └ [{sub.id}] {sub.source}.{sub.event_type}{s_cond} (L{sub.line}) → {sub.action}{s_unreach}")
 
     lines.append("")
     lines.append("## 메서드")

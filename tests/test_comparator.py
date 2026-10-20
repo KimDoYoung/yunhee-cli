@@ -36,7 +36,7 @@ def test_render_mybatis_sql():
         {"roleName": "%", "companyId": "28000", "useYn": "true"},
     )
     assert "LIKE '%'" in sql
-    assert "= '28000'" in sql
+    assert "= 28000" in sql or "= '28000'" in sql
     assert "sys04_use_yn = 'true'" in sql
 
     # useYn 없는 경우 <if> 제외

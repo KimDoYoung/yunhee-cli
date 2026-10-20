@@ -246,6 +246,7 @@ def _get_project_name(root: Path | None = None) -> str:
 
 def _run_exec(
     command: Annotated[str, typer.Argument(help="실행할 셸 명령어")],
+    cwd: Annotated[Path | None, typer.Option("-C", "--cwd", help="명령어를 실행할 작업 디렉터리")] = None,
     timeout: Annotated[int, typer.Option("--timeout", "-t", help="타임아웃(초)")] = 120,
     no_llm: Annotated[bool, typer.Option("--no-llm", help="실패 시 로컬 Qwen 요약을 건너뜀")] = False,
     raw: Annotated[bool, typer.Option("--raw", help="요약 없이 원시 출력을 그대로 출력")] = False,
@@ -259,9 +260,24 @@ def _run_exec(
     from yunhee.store import run_tracker
     from yunhee.tools.runner import execute_command
 
-    cur_cwd = Path.cwd()
-    project_root = project.find_project_root(cur_cwd)
-    result = execute_command(command, cwd=cur_cwd, timeout=timeout)
+    target_cwd = None
+    if cwd is not None:
+        target_cwd = (Path.cwd() / cwd).resolve()
+    else:
+        toml_cwd = config.TOML_CONFIG.get("run", {}).get("cwd")
+        if toml_cwd:
+            target_cwd = (Path.cwd() / toml_cwd).resolve()
+        else:
+            target_cwd = Path.cwd().resolve()
+
+    if not target_cwd.is_dir():
+        typer.echo("실행 전 오류: 디렉터리 없음", err=True)
+        raise typer.Exit(code=1)
+
+    print(f"cwd: {target_cwd}")
+
+    project_root = project.find_project_root(target_cwd)
+    result = execute_command(command, cwd=target_cwd, timeout=timeout)
     data = result.data
     project_name = _get_project_name(project_root)
 
@@ -280,7 +296,7 @@ def _run_exec(
             stdout=data["stdout"],
             stderr=data["stderr"],
             use_llm=not no_llm,
-            cwd=cur_cwd,
+            cwd=target_cwd,
             start_time=data.get("start_time"),
         )
         print(summary)
@@ -424,7 +440,7 @@ TENANT_REQUIRED_MSG = (
 def api(
     method: Annotated[str, typer.Argument(help="HTTP 메서드 (GET, POST, PUT, DELETE)")],
     path: Annotated[str, typer.Argument(help="호출할 API 경로 (예: /api/v1/sys/roles)")],
-    as_role: Annotated[str, typer.Option("--as", help="로그인 역할 (admin 또는 user)")] = "admin",
+    as_role: Annotated[str, typer.Option("--as", "-u", help="로그인 계정/역할 (사원 ID, 로그인 ID, admin)")] = "admin",
     base: Annotated[str | None, typer.Option("--base", help="기본 URL")] = None,
     login_path: Annotated[str | None, typer.Option("--login-path", help="로그인 엔드포인트 경로 (기본: .env.local의 YUNHEE_API_LOGIN_PATH 또는 /api/auth/login)")] = None,
     company: Annotated[str | None, typer.Option("--company", "-c", help="로그인 시 전달할 회사 코드 (companyCode)")] = None,
@@ -435,6 +451,7 @@ def api(
     timeout: Annotated[float | None, typer.Option("--timeout", help="요청 타임아웃(초) (기본: .env.local의 YUNHEE_API_TIMEOUT 또는 15)")] = None,
     log: Annotated[bool, typer.Option("--log", help="호출 후 서버 로그(trace) 요약 출력")] = False,
     no_mask: Annotated[bool, typer.Option("--no-mask", help="개인정보 마스킹 해제")] = False,
+    wait_deploy: Annotated[float | None, typer.Option("--wait-deploy", help="배포 후 앱 기동 완료까지 대기(초, 기본 60초)")] = None,
 ):
     """자동 로그인 기반 API 호출 및 응답(상태·행수·필드) 요약
 
@@ -484,6 +501,7 @@ def api(
         json_body=json_body,
         timeout=timeout,
         mask=not no_mask,
+        wait_deploy=wait_deploy,
         **kw,
     )
 
@@ -648,6 +666,9 @@ def compare_cmd(
     db: Annotated[str, typer.Option("--db", help="대상 DB명 (기본: asseterpdb)")] = "asseterpdb",
     src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
     grid: Annotated[str | None, typer.Option("--grid", help="대조할 화면/그리드 클래스 (예: Sys05_Page_UserRole)")] = None,
+    as_user: Annotated[str, typer.Option("--as", "-u", help="로그인 계정/역할 (사원 ID, 로그인 ID, admin)")] = "admin",
+    sql_total: Annotated[str | None, typer.Option("--sql-total", help="페이징 총건수 검증용 AS-IS SQL ID (예: apr40_download_history.selectByTextPagingTotal)")] = None,
+    from_log: Annotated[bool, typer.Option("--from-log", help="최근 로그 trace에서 매퍼 파라미터를 읽어 기본값으로 사용")] = False,
 ) -> None:
     """조회 API와 AS-IS SQL 행 수 및 그리드 컬럼 커버리지 비교"""
     from yunhee.tools.comparator import compare_api_sql
@@ -685,9 +706,15 @@ def compare_cmd(
         db_name=db,
         src_root=src,
         grid=grid,
+        as_user=as_user,
+        sql_total_ref=sql_total,
+        from_log=from_log,
     )
     if not res.ok:
-        typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
+        err_msg = res.error or "비교 실패"
+        if err_msg.startswith("API 호출 실패: "):
+            err_msg = err_msg.replace("API 호출 실패: ", "")
+        typer.secho(f"[ERROR] {err_msg}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
     from yunhee.tools.api_client import header_tag
@@ -696,7 +723,53 @@ def compare_cmd(
     tag = header_tag(effective_base, effective_tenant, company, trace_id=trace_id)
     if tag:
         typer.echo(tag)
+    user_info = (res.data or {}).get("user_info")
+    if user_info and user_info.get("user_id") is not None:
+        u_id = user_info.get("user_id")
+        o_id = user_info.get("org_id", 0)
+        c_id = user_info.get("company_id", "")
+        typer.echo(f"user={u_id} org={o_id} company={c_id}")
     typer.echo(res.data["summary"])
+
+
+@app.command(name="mapper-run")
+def mapper_run_cmd(
+    target: Annotated[str, typer.Argument(help="실행할 TOBE 매퍼와 statement ID (예: backend/src/main/resources/mapper/FbxFileMapper.xml#selectByBoxId)")],
+    param: Annotated[list[str] | None, typer.Option("--param", "-p", help="쿼리 파라미터 (key=value, 반복 가능)")] = None,
+    compare: Annotated[str | None, typer.Option("--compare", help="비교할 AS-IS SQL ID (예: fbx03_file.selectByBoxId)")] = None,
+    count: Annotated[bool, typer.Option("--count", help="행 수만 출력")] = False,
+    rows: Annotated[int | None, typer.Option("--rows", "-n", help="출력할 최대 행 수")] = None,
+    rollback: Annotated[bool, typer.Option("--rollback", help="트랜잭션 실행 후 롤백 (쓰기 문장 필수)")] = False,
+    db: Annotated[str, typer.Option("--db", "-c", help="대상 DB명 (기본: asseterpdb)")] = "asseterpdb",
+    src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
+) -> None:
+    """TOBE 매퍼 statement 실행 및 AS-IS SQL 비교"""
+    from yunhee.tools.as_is.mapper_runner import run_mapper_statement
+
+    params_dict = {}
+    if param:
+        for p in param:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                params_dict[k.strip()] = v.strip()
+
+    res = run_mapper_statement(
+        target=target,
+        params=params_dict,
+        db_name=db,
+        compare_sql=compare,
+        count_only=count,
+        limit_rows=rows,
+        rollback=rollback,
+        src_root=src,
+    )
+    if not res.ok and not res.data:
+        typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(res.data.get("summary", ""))
+    if not res.ok:
+        raise typer.Exit(code=1)
 
 
 @app.command(name="changelog")
@@ -1194,6 +1267,18 @@ def sql_check_cmd(
         Path | None,
         typer.Option("--src-index", help="src-index 출력 폴더 (기본: docs/as-is/src 탐색)"),
     ] = None,
+    only: Annotated[
+        list[str] | None,
+        typer.Option("--only", help="검증할 매퍼 이름 또는 glob 패턴 (여러 번 가능)"),
+    ] = None,
+    changed: Annotated[
+        bool,
+        typer.Option("--changed", help="git diff (+untracked) 변경된 매퍼 XML만 검증"),
+    ] = False,
+    summary: Annotated[
+        bool,
+        typer.Option("--summary", help="매퍼별 ✅ n / ❌ m 한 줄 및 ❌ statement만 상세 출력"),
+    ] = False,
 ):
     """MyBatis 매퍼 SQL EXPLAIN 정합성 및 SQL Drift 검증"""
     import json
@@ -1228,7 +1313,7 @@ def sql_check_cmd(
         if not tobe.is_dir():
             typer.secho(f"[ERROR] TOBE 매퍼 디렉터리를 찾을 수 없습니다: {tobe}", fg=typer.colors.RED)
             raise typer.Exit(1)
-        res = check_tobe_sql(tobe, db=db)
+        res = check_tobe_sql(tobe, db=db, only=only, changed=changed, summary=summary)
         if not res.ok and not res.data:
             typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED)
             raise typer.Exit(1)
@@ -1489,6 +1574,30 @@ def analysis_cmd(
         bool,
         typer.Option("--check-columns/--no-check-columns", help="그리드 열의 모델·SQL·테이블 존재 검증 (기본 켬)"),
     ] = True,
+    grep: Annotated[
+        str | None,
+        typer.Option("--grep", help="코드/본문 패턴 검색"),
+    ] = None,
+    context_lines: Annotated[
+        int,
+        typer.Option("-C", "--context", help="패턴 검색 시 전후 출력 줄 수 (기본: 2)"),
+    ] = 2,
+    follow: Annotated[
+        bool,
+        typer.Option("--follow", help="서버 메서드 단순 위임 1~2단계 추적"),
+    ] = False,
+    file_type: Annotated[
+        str | None,
+        typer.Option("--type", help="서블릿 fileType (servlet 분석 등)"),
+    ] = None,
+    branch: Annotated[
+        list[str] | None,
+        typer.Option("--branch", help="분기 조건 지정 key=val (save-script 등)"),
+    ] = None,
+    unreachable: Annotated[
+        str,
+        typer.Option("--unreachable", help="도달 불가 이벤트 처리: count(기본) | ignore"),
+    ] = "count",
 ):
     """AS-IS·TOBE 통합 분석 (method/sql/model/grid/screen/ui/tobe/run)
 
@@ -1583,6 +1692,12 @@ def analysis_cmd(
         "no_e0": no_e0,
         "called_from": called_from,
         "check_columns": check_columns,
+        "grep": grep,
+        "context_lines": context_lines,
+        "follow": follow,
+        "type": file_type,
+        "branch": branch or [],
+        "unreachable": unreachable,
     }
 
     try:
@@ -1619,6 +1734,12 @@ if "--since-run" in sys.argv:
     for idx, a in enumerate(sys.argv):
         if a == "--since-run" and (idx + 1 >= len(sys.argv) or sys.argv[idx + 1].startswith("-")):
             sys.argv.insert(idx + 1, "last")
+
+# --wait-deploy 옵션의 인자 없는 호출을 '60'으로 보정
+if "--wait-deploy" in sys.argv:
+    for idx, a in enumerate(sys.argv):
+        if a == "--wait-deploy" and (idx + 1 >= len(sys.argv) or sys.argv[idx + 1].startswith("-")):
+            sys.argv.insert(idx + 1, "60")
 
 
 @log_app.command(name="trace")

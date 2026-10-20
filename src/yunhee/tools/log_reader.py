@@ -662,39 +662,51 @@ def format_time_pair(dt_log: datetime, log_tz_is_utc: bool) -> str:
     return f"{dt_log.strftime('%H:%M:%S')}"
 
 
-def find_deploy_time_docker(container: str, log_dir: str, app: str) -> datetime:
+def find_deploy_time_docker(container: str, log_dir: str, app: str, raise_on_error: bool = True) -> datetime | None:
     info_file = f"{log_dir}/{app}-info.log"
-    cmd = ["docker", "exec", container, "sh", "-c", f"grep -E 'Started \\w+ in [0-9.]+ seconds' {info_file} | tail -n 1"]
+    cmd = ["docker", "exec", container, "sh", " -c", f"grep -E 'Started \\w+ in [0-9.]+ seconds' {info_file} | tail -n 1"]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         err_msg = proc.stderr.strip() or f"종료 코드 {proc.returncode}"
-        raise DockerExecError(f"docker exec 실패 ({container}): {err_msg}")
+        if raise_on_error:
+            raise DockerExecError(f"docker exec 실패 ({container}): {err_msg}")
+        return None
     out = proc.stdout.strip()
     if not out:
-        sys.stderr.write("오늘 로그에 배포(앱 시작) 기록 없음 — --archived 또는 --from\n")
-        raise typer.Exit(1)
+        if raise_on_error:
+            sys.stderr.write("오늘 로그에 배포(앱 시작) 기록 없음 — --archived 또는 --from\n")
+            raise typer.Exit(1)
+        return None
     m = re.match(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{3})?)", out)
     if not m:
-        sys.stderr.write("오늘 로그에 배포(앱 시작) 기록 없음 — --archived 또는 --from\n")
-        raise typer.Exit(1)
+        if raise_on_error:
+            sys.stderr.write("오늘 로그에 배포(앱 시작) 기록 없음 — --archived 또는 --from\n")
+            raise typer.Exit(1)
+        return None
     ts_str = m.group(1)
     fmt = "%Y-%m-%d %H:%M:%S.%f" if "." in ts_str else "%Y-%m-%d %H:%M:%S"
     return datetime.strptime(ts_str, fmt)  # noqa: DTZ007
 
 
-def find_deploy_time_local(file_path: Path) -> datetime:
+def find_deploy_time_local(file_path: Path, raise_on_error: bool = True) -> datetime | None:
     if not file_path.is_file():
-        sys.stderr.write("오늘 로그에 배포(앱 시작) 기록 없음 — --archived 또는 --from\n")
-        raise typer.Exit(1)
+        if raise_on_error:
+            sys.stderr.write("오늘 로그에 배포(앱 시작) 기록 없음 — --archived 또는 --from\n")
+            raise typer.Exit(1)
+        return None
     try:
         content = file_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        sys.stderr.write("오늘 로그에 배포(앱 시작) 기록 없음 — --archived 또는 --from\n")
-        raise typer.Exit(1)
+        if raise_on_error:
+            sys.stderr.write("오늘 로그에 배포(앱 시작) 기록 없음 — --archived 또는 --from\n")
+            raise typer.Exit(1)
+        return None
     matches = list(re.finditer(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{3})?).*Started \w+ in [\d.]+ seconds", content, re.MULTILINE))
     if not matches:
-        sys.stderr.write("오늘 로그에 배포(앱 시작) 기록 없음 — --archived 또는 --from\n")
-        raise typer.Exit(1)
+        if raise_on_error:
+            sys.stderr.write("오늘 로그에 배포(앱 시작) 기록 없음 — --archived 또는 --from\n")
+            raise typer.Exit(1)
+        return None
     ts_str = matches[-1].group(1)
     fmt = "%Y-%m-%d %H:%M:%S.%f" if "." in ts_str else "%Y-%m-%d %H:%M:%S"
     return datetime.strptime(ts_str, fmt)  # noqa: DTZ007
@@ -757,6 +769,95 @@ def check_deploy_startup_staleness(deploy_dt_log: datetime, log_tz_is_utc: bool 
             break
 
     return None
+
+
+def check_app_starting_after_deploy() -> tuple[bool, str | None]:
+    """배포 후 앱 기동이 아직 완료되지 않았는지 확인한다.
+
+    기동 중이면 (True, hh_mm), 기동 완료되었거나 최근 배포 기록이 없으면 (False, None).
+    """
+    try:
+        from yunhee import project
+        from yunhee.store import run_tracker
+
+        eff_root = project.find_project_root()
+        proj_data = project.load(eff_root)
+        p_name = proj_data["name"] if proj_data and proj_data.get("name") else eff_root.name
+        runs = run_tracker.list_runs(project=p_name, limit=50)
+    except Exception:  # noqa: BLE001
+        try:
+            from yunhee.store import run_tracker
+
+            runs = run_tracker.list_runs(limit=50)
+        except Exception:  # noqa: BLE001
+            runs = []
+
+    last_deploy_run = None
+    for r in runs:
+        cmd = r.get("command", "").lower()
+        if "deploy" in cmd:
+            last_deploy_run = r
+            break
+
+    if not last_deploy_run:
+        return False, None
+
+    duration_ms = last_deploy_run.get("duration_ms") or 0
+    created_at_str = last_deploy_run.get("created_at")
+    if not created_at_str:
+        return False, None
+    try:
+        dt = datetime.fromisoformat(created_at_str)
+    except ValueError:
+        return False, None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    else:
+        dt = dt.astimezone(UTC)
+
+    run_id = last_deploy_run.get("id", "")
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})", run_id)
+    if m:
+        try:
+            dt = datetime.strptime(m.group(0), "%Y%m%d_%H%M%S").replace(tzinfo=UTC)
+        except ValueError:
+            pass
+
+    deploy_end_dt_utc = dt + timedelta(milliseconds=duration_ms)
+    hh_mm = deploy_end_dt_utc.astimezone(KST).strftime("%H:%M")
+
+    # 배포 종료 시각이 너무 오래 전(예: 30분 이상 지남)이면 기동 중으로 보지 않음
+    if (datetime.now(UTC) - deploy_end_dt_utc).total_seconds() > 1800:
+        return False, None
+
+    # 로그에서 최신 기동 시각 조회
+    deploy_dt_log = None
+    try:
+        if config.LOG_DOCKER:
+            deploy_dt_log = find_deploy_time_docker(
+                config.LOG_DOCKER, config.LOG_DIR, config.LOG_APP, raise_on_error=False
+            )
+        else:
+            deploy_dt_log = find_deploy_time_local(
+                Path(config.LOG_DIR) / f"{config.LOG_APP}-info.log", raise_on_error=False
+            )
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+    if deploy_dt_log is None:
+        return True, hh_mm
+
+    tz_val = config.LOG_TZ.upper() if config.LOG_TZ else ""
+    is_utc = (tz_val == "UTC") or (not tz_val)
+    if is_utc:
+        log_dt_utc = deploy_dt_log.replace(tzinfo=UTC)
+    else:
+        log_dt_utc = deploy_dt_log.replace(tzinfo=KST).astimezone(UTC)
+
+    if log_dt_utc < deploy_end_dt_utc:
+        return True, hh_mm
+
+    return False, None
 
 
 class RunTimeInfo(tuple):

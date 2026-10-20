@@ -62,23 +62,56 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         # XML 원문 및 include 조각 주석
         xml_path = st.rel
         raw_xml = st.raw
-        # include 조각 검색
-        includes = re.findall(r'<include\s+refid="([^"]+)"', raw_xml)
+        # statement 본문 먼저 추출
+        m = re.search(rf'<{st.kind}\b[^>]*\bid="{re.escape(st.sid)}"[^>]*>.*?</{st.kind}>', raw_xml, re.DOTALL)
+        body = m.group(0) if m else raw_xml
+
+        # include 조각 검색은 본문 내에서만 수행
+        includes = re.findall(r'<include\s+refid="([^"]+)"', body)
         inc_comments = []
+        missing_inc = []
         for inc in includes:
             target_st = stmts.get(inc) or stmts.get(f"{st.ns}.{inc}") or next((s for s in stmts.values() if s.sid == inc), None)
             if target_st:
                 inc_comments.append(f"<!-- include {inc} → {target_st.rel}:{target_st.line} -->")
             else:
-                inc_comments.append(f"<!-- include {inc} (미발견) -->")
+                missing_inc.append(inc)
 
         header = f"<!-- {st.key} ({xml_path}:{st.line}) -->\n"
         if inc_comments:
             header += "\n".join(inc_comments) + "\n"
-        # statement 본문
-        m = re.search(rf'<{st.kind}\b[^>]*\bid="{re.escape(st.sid)}"[^>]*>.*?</{st.kind}>', raw_xml, re.DOTALL)
-        body = m.group(0) if m else raw_xml
-        return header + body
+
+        full_code = header + body
+        if missing_inc:
+            full_code += "\n" + "\n".join(f"⚠ include 미발견: {inc}" for inc in sorted(set(missing_inc)))
+
+        grep_pat = opts.get("grep")
+        if grep_pat:
+            c_ctx = int(opts.get("context") or opts.get("context_lines") or opts.get("C") or 2)
+            code_lines = full_code.splitlines()
+            matching_indices: set[int] = set()
+            for idx, line in enumerate(code_lines):
+                if re.search(grep_pat, line):
+                    for j in range(max(0, idx - c_ctx), min(len(code_lines), idx + c_ctx + 1)):
+                        matching_indices.add(j)
+
+            if not matching_indices:
+                return ""
+
+            out_blocks = []
+            curr_block = []
+            prev_idx = None
+            for idx in sorted(matching_indices):
+                if prev_idx is not None and idx > prev_idx + 1:
+                    out_blocks.append("\n".join(curr_block))
+                    curr_block = []
+                curr_block.append(code_lines[idx])
+                prev_idx = idx
+            if curr_block:
+                out_blocks.append("\n".join(curr_block))
+            return "\n---\n".join(out_blocks)
+
+        return full_code
 
     # 2. sql 모드 또는 --count
     if fmt == "sql" or count_opt:

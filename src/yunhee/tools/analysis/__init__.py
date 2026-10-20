@@ -3,7 +3,18 @@
 from types import ModuleType
 from typing import Any
 
-from yunhee.tools.analysis import grid, method, model, run, screen, sql, tobe, ui
+from yunhee.tools.analysis import (
+    grid,
+    method,
+    model,
+    run,
+    save_script,
+    screen,
+    servlet,
+    sql,
+    tobe,
+    ui,
+)
 
 REGISTRY: dict[str, ModuleType] = {
     "method": method,
@@ -14,6 +25,9 @@ REGISTRY: dict[str, ModuleType] = {
     "ui": ui,
     "tobe": tobe,
     "run": run,
+    "save-script": save_script,
+    "save_script": save_script,
+    "servlet": servlet,
 }
 
 

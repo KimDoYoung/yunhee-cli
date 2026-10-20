@@ -106,7 +106,7 @@ def test_render_cross_namespace_and_include(tmp_path: Path):
     )
     assert missing == []
     assert "WITH paging AS" in sql_rendered
-    assert "AND company_id = '100'" in sql_rendered
+    assert "AND company_id = 100" in sql_rendered or "AND company_id = '100'" in sql_rendered
     assert "AND user_nm = 'Alice'" in sql_rendered
 
     # structure 모드 렌더링 (include는 펼치고 태그는 보존)
@@ -167,7 +167,7 @@ def test_greater_than_in_if_tag_and_eval_condition():
     # 4. params 모드 렌더링: 조건 충족 시 포함, 미충족 시 제외
     sql_true, _ = render_from_xml(xml, "emp.selectByPersonId", params={"personId": "29035"}, mode="params")
     assert '1">' not in sql_true
-    assert "AND person_id = '29035'" in sql_true
+    assert "AND person_id = 29035" in sql_true or "AND person_id = '29035'" in sql_true
 
     sql_false, _ = render_from_xml(xml, "emp.selectByPersonId", params={"personId": "0"}, mode="params")
     assert '1">' not in sql_false

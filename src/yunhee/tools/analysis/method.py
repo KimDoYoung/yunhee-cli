@@ -1,11 +1,18 @@
 """AS-IS 메서드 본문 분석 도구 (클라이언트·서버)."""
 
+import difflib
 import re
 from pathlib import Path
 from typing import Any
 
 from yunhee.tools.analysis.common import AmbiguousTargetError, resolve_as_is_paths
-from yunhee.tools.as_is.src_indexer import find_app, paren_end, split_args, strip_java
+from yunhee.tools.as_is.src_indexer import (
+    find_app,
+    find_methods,
+    paren_end,
+    split_args,
+    strip_java,
+)
 
 NAME = "method"
 DESCRIPTION = "AS-IS 메서드 본문 및 호출 흐름 분석 (클라이언트·서버)"
@@ -16,6 +23,66 @@ EXAMPLES = [
     "yunhee analysis method Emp00_TransInfo.update --server -o code",
     "yunhee analysis method Org00_Lookup_SelectSingle.open#3",
 ]
+
+
+class MethodNotFoundError(AmbiguousTargetError):
+    """메서드를 찾지 못했을 때 후보 목록을 제공 (Exit 2)."""
+
+    def __init__(self, target_method: str, candidates: list[str]) -> None:
+        cands_str = ", ".join(candidates)
+        self.target_method = target_method
+        self.candidates = candidates
+        self._msg = f"찾는 메서드: {target_method} — 후보: {cands_str}"
+        super(AmbiguousTargetError, self).__init__(self._msg)
+
+    def __str__(self) -> str:
+        return self._msg
+
+
+def _find_class_method_candidates(full_text: str, cls_name: str, target_method: str) -> list[str]:
+    """클래스 소스에서 target_method와 유사한 메서드 이름 후보를 최대 3개 추출한다."""
+    _, bare = strip_java(full_text)
+    raw_methods = find_methods(bare)
+
+    declared_methods: list[tuple[str, bool]] = []
+    for m in raw_methods:
+        name = m[0]
+        is_pub = m[4]
+        if not any(dm[0] == name for dm in declared_methods):
+            declared_methods.append((name, is_pub))
+
+    all_names = [dm[0] for dm in declared_methods]
+
+    # 1. difflib 기반 유사 이름
+    matches = difflib.get_close_matches(target_method, all_names, n=3, cutoff=0.35)
+    if matches:
+        return [f"{name} (생성자)" if name == cls_name else name for name in matches]
+
+    # 2. 유사 이름이 없는 경우 일반 메서드 우선 (공개, retrieve 우선)
+    non_ctors = [dm for dm in declared_methods if dm[0] != cls_name]
+    non_ctors.sort(key=lambda x: (0 if x[0] == "retrieve" else 1, 0 if x[1] else 1))
+    ordered = [name for name, _ in non_ctors]
+    if cls_name in all_names:
+        ordered.append(f"{cls_name} (생성자)")
+
+    return ordered[:3]
+
+
+def _detect_delegation(body: str) -> tuple[str, str] | None:
+    """메서드 본문에서 타 클래스로의 단순 위임 호출(new X().y(...) 또는 X x = new X(); x.y(...))을 탐지한다."""
+    # 1. new Target().method(
+    m = re.search(r"new\s+([A-Za-z0-9_]+)\s*\([^)]*\)\s*\.\s*([A-Za-z0-9_]+)\s*\(", body)
+    if m:
+        return m.group(1), m.group(2)
+    # 2. Target var = new Target(); var.method(
+    m2 = re.search(r"([A-Za-z0-9_]+)\s+(\w+)\s*=\s*new\s+\1\s*\([^)]*\)\s*;", body)
+    if m2:
+        cls_name = m2.group(1)
+        var_name = m2.group(2)
+        m3 = re.search(rf"\b{re.escape(var_name)}\s*\.\s*([A-Za-z0-9_]+)\s*\(", body)
+        if m3:
+            return cls_name, m3.group(1)
+    return None
 
 
 def _find_method_blocks(full_text: str, target_method: str) -> list[tuple[str, int, int, str]]:
@@ -134,7 +201,15 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     if "." not in target_clean:
         raise ValueError(f"올바른 형식(<클래스>.<메서드>)으로 입력해 주세요: {target}")
 
-    cls_name, meth_name = target_clean.rsplit(".", 1)
+    tokens = target_clean.split(".")
+    if len(tokens) >= 3:
+        cls_name = tokens[-2]
+        meth_name = tokens[-1]
+        pkg_parts = tokens[:-2]
+    else:
+        cls_name = tokens[0]
+        meth_name = tokens[1]
+        pkg_parts = []
 
     src_root, src_index = resolve_as_is_paths(
         src=opts.get("src"),
@@ -158,10 +233,22 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         search_dirs = [app]
 
     cand_files: list[Path] = []
-    for sdir in search_dirs:
-        for f in sdir.rglob(f"{cls_name}.java"):
-            if "target" not in f.parts and f not in cand_files:
-                cand_files.append(f)
+    if pkg_parts:
+        pkg_path = Path(*pkg_parts)
+        for sdir in search_dirs:
+            cand = sdir / pkg_path / f"{cls_name}.java"
+            if cand.is_file() and cand not in cand_files:
+                cand_files.append(cand)
+        if not cand_files and is_server_opt:
+            cand = app / "server" / pkg_path / f"{cls_name}.java"
+            if cand.is_file() and cand not in cand_files:
+                cand_files.append(cand)
+
+    if not cand_files:
+        for sdir in search_dirs:
+            for f in sdir.rglob(f"{cls_name}.java"):
+                if "target" not in f.parts and f not in cand_files:
+                    cand_files.append(f)
 
     if not cand_files:
         raise ValueError(f"클래스 소스 파일을 찾을 수 없습니다: {cls_name}.java")
@@ -191,9 +278,20 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
                 "is_server": "server" in f.parts,
                 "caller_event": caller_event,
                 "src_root": src_root,
+                "follow": bool(opts.get("follow", False)),
             })
 
     if not candidates:
+        if cand_files:
+            try:
+                first_text = cand_files[0].read_text(encoding="utf-8", errors="replace")
+                alt_cands = _find_class_method_candidates(first_text, cls_name, meth_name)
+                if alt_cands:
+                    raise MethodNotFoundError(meth_name, alt_cands)
+            except MethodNotFoundError:
+                raise
+            except Exception:  # noqa: BLE001, S110
+                pass
         raise ValueError(f"{cls_name} 에서 메서드 '{meth_name}'을 찾을 수 없습니다.")
 
     if called_from := opts.get("called_from"):
@@ -410,6 +508,7 @@ def _summarize_body(
     is_server: bool,
     file_text: str = "",
     src_root: Path | None = None,
+    follow: bool = False,
 ) -> list[str]:
     """메서드 본문을 파싱하여 중요 작업 흐름을 요약한다."""
     items = []
@@ -668,8 +767,60 @@ def _summarize_body(
         body_content = body[brace_pos:] if brace_pos != -1 else body
         has_delegate = bool(re.search(r'(?:,\s*result\s*\)|\(\s*result\s*\))', body_content))
 
+        sig_header = body[:brace_pos] if brace_pos != -1 else ""
+        is_void = bool(re.search(r"\bvoid\b", sig_header))
+        delegation = _detect_delegation(body)
+        has_set_status = "result.setStatus" in body
+
         if not has_result and not has_delegate:
-            items.append("⚠ 결과 없음: result.setResult/setRetrieveResult 호출이 없다 — 클라이언트가 result.getResult(…)를 읽으면 실패한다")
+            if is_void and not has_set_status and delegation:
+                items.append("ℹ 위임 전용")
+            else:
+                items.append("⚠ 결과 없음: result.setResult/setRetrieveResult 호출이 없다 — 클라이언트가 result.getResult(…)를 읽으면 실패한다")
+
+        if follow and delegation and src_root:
+            d_cls, d_meth = delegation
+            app = find_app(src_root) or src_root
+            d_files = list(app.rglob(f"{d_cls}.java"))
+            if not d_files:
+                d_files = [f for f in src_root.rglob(f"{d_cls}.java") if "target" not in f.parts]
+            if d_files:
+                try:
+                    d_text = d_files[0].read_text(encoding="utf-8", errors="replace")
+                    d_blocks = _find_method_blocks(d_text, d_meth)
+                    if d_blocks:
+                        _, db_start, db_end, db_body = d_blocks[0]
+                        db_sqls = []
+                        for sm in re.finditer(r'sqlSession\.\w+\s*\(\s*(?:([a-zA-Z0-9_]+)\s*\+\s*)?["\']([^"\']+)["\']', db_body):
+                            ln = db_start + db_body.count("\n", 0, sm.start())
+                            db_sqls.append((sm.group(2), ln))
+                        items.append(f"→ {d_cls}.{d_meth} (L{db_start}-{db_end})")
+                        for sql_id, ln in db_sqls:
+                            items.append(f"  - sqlSession: {sql_id} (L{ln})")
+
+                        # d_body에서 내부 서브메서드 호출 탐색 (2단계)
+                        _, d_bare = strip_java(d_text)
+                        d_methods = find_methods(d_bare)
+                        class_sub_methods = {m[0]: m for m in d_methods if m[0] not in (d_cls, d_meth)}
+                        sub_called = []
+                        for m_name in class_sub_methods:
+                            if re.search(rf"\b{re.escape(m_name)}\s*\(", db_body):
+                                sub_called.append(m_name)
+
+                        for sm_name in sub_called:
+                            sm_blocks = _find_method_blocks(d_text, sm_name)
+                            if sm_blocks:
+                                _, smb_start, smb_end, smb_body = sm_blocks[0]
+                                sm_sqls = []
+                                for sm in re.finditer(r'sqlSession\.\w+\s*\(\s*(?:([a-zA-Z0-9_]+)\s*\+\s*)?["\']([^"\']+)["\']', smb_body):
+                                    ln = smb_start + smb_body.count("\n", 0, sm.start())
+                                    sm_sqls.append((sm.group(2), ln))
+                                if sm_sqls:
+                                    items.append(f"  하위 {sm_name} (L{smb_start}-{smb_end}):")
+                                    for sql_id, ln in sm_sqls:
+                                        items.append(f"    - sqlSession: {sql_id} (L{ln})")
+                except Exception:  # noqa: BLE001, S110
+                    pass
 
     return items
 
@@ -701,6 +852,7 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     cls_name = obj["cls"]
     meth_name = obj["method"]
     is_server = obj["is_server"]
+    follow = bool(opts.get("follow") or obj.get("follow", False))
 
     summary_items = _summarize_body(
         body,
@@ -708,6 +860,7 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         is_server,
         file_text=obj.get("file_text", ""),
         src_root=obj.get("src_root"),
+        follow=follow,
     )
 
     out = [f"{cls_name}.{meth_name}()  {rel_file}:{start_line}-{end_line}{header_event}"]
