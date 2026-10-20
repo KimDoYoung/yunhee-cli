@@ -2,6 +2,12 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.4.5] - 2026-10-20
+수정사항 041 (매퍼 XML 정형 검사, 기동 실패 감지, deploy 명령 후 자동 헬스체크) 반영.
+- `sql-check --tobe`: 각 매퍼 XML 대상 XML well-formed 구문 검사(`ET.fromstring`) 사전 수행, 파싱 실패 시 `❌ XML 오류: <파일>:<줄>:<열>` 및 특수문자(`<`, `<=`, `<>`, `&`) 이스케이프 힌트 출력, `--summary`에 `XML ❌` 집계 (041-1)
+- `log`: `--since-deploy` 범위 계산 시 마지막 배포 이후의 기동 실패(`Application run failed`·`Context initialization failed`·`Error creating bean`)를 먼저 탐지하여 최상단에 `🚨 마지막 배포(HH:MM) 뒤 앱 기동 실패: <원인>` 경고 출력 및 매퍼 파일명 안내 (041-2)
+- `run`: 배포(`deploy`) 관련 명령어 종료 후 최대 N초 동안 로그를 감시하는 자동 헬스체크 추가, 기동 성공 시 `✅ 앱 기동 확인 (N초)`, 실패 시 `❌ 앱 기동 실패: <원인>` 출력 및 실행 종료 상태를 실패(exit 1)로 변경, `--health-timeout`(기본 90초) 및 `--no-health` 옵션 지원 (041-3)
+
 ## [0.4.4] - 2026-10-20
 수정사항 040 (`log --since-deploy` Docker exec 공백 인자 버그 수정) 반영.
 - `log`: `find_deploy_time_docker`에서 `sh` 옵션 문자열의 선행 공백(`" -c"` → `"-c"`)을 제거하여 Docker 컨테이너(`t3600-tomcat`) 내 배포 시각 탐색 시 `sh: 0: cannot open  -c: No such file` 오류가 발생하는 결함 수정 (040-1)

@@ -250,6 +250,8 @@ def _run_exec(
     timeout: Annotated[int, typer.Option("--timeout", "-t", help="타임아웃(초)")] = 120,
     no_llm: Annotated[bool, typer.Option("--no-llm", help="실패 시 로컬 Qwen 요약을 건너뜀")] = False,
     raw: Annotated[bool, typer.Option("--raw", help="요약 없이 원시 출력을 그대로 출력")] = False,
+    health: Annotated[bool, typer.Option("--health/--no-health", help="배포 명령 실행 후 기동 완료/실패 자동 헬스체크")] = True,
+    health_timeout: Annotated[int, typer.Option("--health-timeout", help="헬스체크 최대 대기 시간(초)")] = 90,
 ):
     """(=exec) 외부 명령 실행·로그 격리 및 에러 압축 리포트
 
@@ -300,6 +302,52 @@ def _run_exec(
             start_time=data.get("start_time"),
         )
         print(summary)
+
+    # 배포 명령 후 자동 헬스체크 (기동 성공/실패 감지)
+    import re
+    cmd_lower = command.lower()
+    deploy_cmds = config.TOML_CONFIG.get("run", {}).get("deploy_cmds", [])
+    is_deploy = "deploy" in cmd_lower or any(re.search(rf"\b{re.escape(dc)}\b", cmd_lower) for dc in deploy_cmds)
+
+    if health and is_deploy and data["exit_code"] == 0:
+        from datetime import UTC, datetime, timedelta
+
+        from yunhee.tools.log_reader import wait_for_deploy_health
+
+        start_ts = data.get("start_time")
+        if start_ts:
+            dep_start_utc = datetime.fromtimestamp(start_ts, tz=UTC)
+        else:
+            dep_start_utc = datetime.now(UTC) - timedelta(milliseconds=data.get("duration_ms") or 0)
+
+        h_status, h_text = wait_for_deploy_health(
+            deploy_start_dt_utc=dep_start_utc,
+            timeout=health_timeout,
+        )
+
+        if h_status == "success":
+            h_line = f"✅ {h_text}"
+            print(h_line)
+            if summary:
+                summary = f"{summary}\n{h_line}"
+            else:
+                summary = h_line
+        elif h_status == "failure":
+            orig_code = data["exit_code"]
+            data["exit_code"] = 1
+            h_line = f"❌ 앱 기동 실패: {h_text} (원 exit: {orig_code})"
+            print(h_line)
+            if summary:
+                summary = f"{summary}\n{h_line}"
+            else:
+                summary = h_line
+        elif h_status == "timeout":
+            h_line = f"⚠ {h_text}"
+            print(h_line)
+            if summary:
+                summary = f"{summary}\n{h_line}"
+            else:
+                summary = h_line
 
     start_iso = data.get("created_at")
     if not start_iso:

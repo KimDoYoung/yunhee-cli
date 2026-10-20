@@ -715,8 +715,130 @@ def find_deploy_time_local(file_path: Path, raise_on_error: bool = True) -> date
 _LAST_DEPLOY_WARN: str | None = None
 
 
-def check_deploy_startup_staleness(deploy_dt_log: datetime, log_tz_is_utc: bool = True) -> str | None:
-    """로그의 최근 기동 시각이 마지막 deploy 실행 종료 시각보다 이르면 경고 문자열을 반환한다."""
+def parse_startup_failure_cause(text: str) -> str:
+    """로그 텍스트에서 기동 실패 원인(Caused by 마지막 줄)과 매퍼 파일명을 추출한다."""
+    m_xml = re.search(r"['\"\[](?:.*[/\\])?([a-zA-Z0-9_]+(?:Mapper)?\.xml)['\"\]]", text, re.IGNORECASE)
+    mapper_file = m_xml.group(1) if m_xml else ""
+
+    caused = re.findall(r"Caused by:\s*(.+)", text)
+    if caused:
+        last = caused[-1].strip()
+        last = re.sub(r"^(?:[a-zA-Z0-9_]+\.)+([A-Z]\w+:)", r"\1", last)
+    else:
+        m_err = re.search(r"(?:ERROR|WARN)\s+.*?(?:SpringApplication|ContextLoaderListener)\s*-\s*(.+)", text)
+        last = m_err.group(1).strip() if m_err else "Application run failed"
+
+    if mapper_file and mapper_file not in last:
+        return f"{mapper_file}: {last}"
+    return last
+
+
+def find_deploy_startup_failure_docker(
+    container: str, log_dir: str, app: str, since_dt_utc: datetime | None = None
+) -> tuple[datetime, str] | None:
+    """Docker 컨테이너 안에서 마지막 배포 이후의 기동 실패 기록을 탐색한다."""
+    info_file = f"{log_dir}/{app}-info.log"
+    error_file = f"{log_dir}/{app}-error.log"
+
+    sh_cmd = (
+        f"grep -n -E 'Application run failed|Context initialization failed|Error creating bean' '{info_file}' 2>/dev/null | tail -n 1"
+    )
+    cmd = ["docker", "exec", container, "sh", "-c", sh_cmd]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    out = proc.stdout.strip()
+    target_file = info_file
+
+    if not out:
+        sh_cmd = (
+            f"grep -n -E 'Application run failed|Context initialization failed|Error creating bean' '{error_file}' 2>/dev/null | tail -n 1"
+        )
+        cmd = ["docker", "exec", container, "sh", "-c", sh_cmd]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        out = proc.stdout.strip()
+        target_file = error_file
+
+    if not out:
+        return None
+
+    m = re.match(r"^(\d+):(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{3})?)", out)
+    if not m:
+        return None
+
+    line_num = int(m.group(1))
+    ts_str = m.group(2)
+    fmt = "%Y-%m-%d %H:%M:%S.%f" if "." in ts_str else "%Y-%m-%d %H:%M:%S"
+    try:
+        err_dt = datetime.strptime(ts_str, fmt)  # noqa: DTZ007
+    except ValueError:
+        return None
+
+    tz_val = config.LOG_TZ.upper() if config.LOG_TZ else ""
+    is_utc = (tz_val == "UTC") or (not tz_val)
+    err_dt_utc = err_dt.replace(tzinfo=UTC) if is_utc else err_dt.replace(tzinfo=KST).astimezone(UTC)
+
+    if since_dt_utc is not None and err_dt_utc < (since_dt_utc - timedelta(seconds=15)):
+        return None
+
+    # 해당 에러 시각 이후에 기동 성공 기록이 있는지 확인
+    deploy_dt = find_deploy_time_docker(container, log_dir, app, raise_on_error=False)
+    if deploy_dt:
+        log_utc = deploy_dt.replace(tzinfo=UTC) if is_utc else deploy_dt.replace(tzinfo=KST).astimezone(UTC)
+        if log_utc > err_dt_utc:
+            return None
+
+    sh_snippet = f"sed -n '{line_num},{line_num + 250}p' '{target_file}'"
+    p_snip = subprocess.run(["docker", "exec", container, "sh", "-c", sh_snippet], capture_output=True, text=True, check=False)
+    cause_str = parse_startup_failure_cause(p_snip.stdout)
+    return err_dt_utc, cause_str
+
+
+def find_deploy_startup_failure_local(
+    file_path: Path, since_dt_utc: datetime | None = None, log_tz: str | None = None
+) -> tuple[datetime, str] | None:
+    """로컬 로그 파일에서 마지막 배포 이후의 기동 실패 기록을 탐색한다."""
+    if not file_path.is_file():
+        return None
+    try:
+        content = file_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+    matches = list(re.finditer(
+        r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d{3})?).*?(?:Application run failed|Context initialization failed|Error creating bean)",
+        content,
+        re.MULTILINE,
+    ))
+    if not matches:
+        return None
+
+    last_m = matches[-1]
+    ts_str = last_m.group(1)
+    fmt = "%Y-%m-%d %H:%M:%S.%f" if "." in ts_str else "%Y-%m-%d %H:%M:%S"
+    try:
+        err_dt = datetime.strptime(ts_str, fmt)  # noqa: DTZ007
+    except ValueError:
+        return None
+
+    tz_val = (log_tz or config.LOG_TZ).upper() if (log_tz or config.LOG_TZ) else ""
+    is_utc = (tz_val == "UTC") or (not tz_val and bool(config.LOG_DOCKER))
+    err_dt_utc = err_dt.replace(tzinfo=UTC) if is_utc else err_dt.replace(tzinfo=KST).astimezone(UTC)
+
+    if since_dt_utc is not None and err_dt_utc < (since_dt_utc - timedelta(seconds=15)):
+        return None
+
+    deploy_dt = find_deploy_time_local(file_path, raise_on_error=False)
+    if deploy_dt:
+        log_utc = deploy_dt.replace(tzinfo=UTC) if is_utc else deploy_dt.replace(tzinfo=KST).astimezone(UTC)
+        if log_utc > err_dt_utc:
+            return None
+
+    snippet = content[last_m.start():last_m.start() + 15000]
+    cause_str = parse_startup_failure_cause(snippet)
+    return err_dt_utc, cause_str
+
+
+def get_last_deploy_run_info() -> tuple[dict, datetime, datetime, str] | None:
+    """마지막 deploy 실행의 (run_dict, start_dt_utc, end_dt_utc, hh_mm_kst)를 반환한다."""
     try:
         from yunhee import project
         from yunhee.store import run_tracker
@@ -728,45 +850,131 @@ def check_deploy_startup_staleness(deploy_dt_log: datetime, log_tz_is_utc: bool 
     except Exception:  # noqa: BLE001
         try:
             from yunhee.store import run_tracker
+
             runs = run_tracker.list_runs(limit=50)
         except Exception:  # noqa: BLE001
             runs = []
 
+    last_deploy_run = None
     for r in runs:
         cmd = r.get("command", "").lower()
         if "deploy" in cmd:
-            duration_ms = r.get("duration_ms") or 0
-            created_at_str = r.get("created_at")
-            if not created_at_str:
-                continue
-            try:
-                dt = datetime.fromisoformat(created_at_str)
-            except ValueError:
-                continue
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=UTC)
-            else:
-                dt = dt.astimezone(UTC)
-
-            run_id = r.get("id", "")
-            m = re.match(r"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})", run_id)
-            if m:
-                try:
-                    dt = datetime.strptime(m.group(0), "%Y%m%d_%H%M%S").replace(tzinfo=UTC)
-                except ValueError:
-                    pass
-
-            deploy_end_dt_utc = dt + timedelta(milliseconds=duration_ms)
-
-            if log_tz_is_utc:
-                log_dt_utc = deploy_dt_log.replace(tzinfo=UTC)
-            else:
-                log_dt_utc = deploy_dt_log.replace(tzinfo=KST).astimezone(UTC)
-
-            if log_dt_utc < deploy_end_dt_utc:
-                hh_mm = deploy_end_dt_utc.astimezone(KST).strftime("%H:%M")
-                return f"⚠ 마지막 배포({hh_mm}) 뒤 앱 기동 기록 없음 — 아직 올라오는 중이면 잠시 뒤 다시"
+            last_deploy_run = r
             break
+
+    if not last_deploy_run:
+        return None
+
+    duration_ms = last_deploy_run.get("duration_ms") or 0
+    created_at_str = last_deploy_run.get("created_at")
+    if not created_at_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(created_at_str)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    else:
+        dt = dt.astimezone(UTC)
+
+    run_id = last_deploy_run.get("id", "")
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})", run_id)
+    if m:
+        try:
+            dt = datetime.strptime(m.group(0), "%Y%m%d_%H%M%S").replace(tzinfo=UTC)
+        except ValueError:
+            pass
+
+    deploy_start_dt_utc = dt
+    deploy_end_dt_utc = dt + timedelta(milliseconds=duration_ms)
+    hh_mm = deploy_end_dt_utc.astimezone(KST).strftime("%H:%M")
+    return last_deploy_run, deploy_start_dt_utc, deploy_end_dt_utc, hh_mm
+
+
+def wait_for_deploy_health(
+    deploy_start_dt_utc: datetime,
+    timeout: int = 90,
+    interval: float = 2.0,
+    docker_container: str | None = None,
+    log_dir: str | None = None,
+    app: str | None = None,
+    file_path: Path | None = None,
+    log_tz: str | None = None,
+) -> tuple[str, str]:
+    """배포 후 앱 기동 완료 또는 실패를 로그에서 기다린다."""
+    import time
+
+    start_poll = time.time()
+    container = docker_container if docker_container is not None else config.LOG_DOCKER
+    dir_str = log_dir or config.LOG_DIR
+    app_str = app or config.LOG_APP
+    tz_val = (log_tz or config.LOG_TZ).upper() if (log_tz or config.LOG_TZ) else ""
+    is_utc = (tz_val == "UTC") or (not tz_val and bool(container))
+
+    while (time.time() - start_poll) <= timeout:
+        # 1. 기동 실패 먼저 확인
+        if file_path:
+            fail_info = find_deploy_startup_failure_local(
+                file_path, since_dt_utc=deploy_start_dt_utc, log_tz="UTC" if is_utc else "KST"
+            )
+        elif container:
+            fail_info = find_deploy_startup_failure_docker(container, dir_str, app_str, since_dt_utc=deploy_start_dt_utc)
+        else:
+            fail_info = find_deploy_startup_failure_local(
+                Path(dir_str) / f"{app_str}-info.log", since_dt_utc=deploy_start_dt_utc, log_tz="UTC" if is_utc else "KST"
+            )
+
+        if fail_info:
+            _, fail_cause = fail_info
+            return "failure", fail_cause
+
+        # 2. 기동 성공 확인 (Started ... in N seconds)
+        if file_path:
+            deploy_dt = find_deploy_time_local(file_path, raise_on_error=False)
+        elif container:
+            deploy_dt = find_deploy_time_docker(container, dir_str, app_str, raise_on_error=False)
+        else:
+            deploy_dt = find_deploy_time_local(Path(dir_str) / f"{app_str}-info.log", raise_on_error=False)
+
+        if deploy_dt is not None:
+            log_utc = deploy_dt.replace(tzinfo=UTC) if is_utc else deploy_dt.replace(tzinfo=KST).astimezone(UTC)
+            if log_utc >= deploy_start_dt_utc - timedelta(seconds=5):
+                elapsed = max(1, int(time.time() - start_poll))
+                return "success", f"앱 기동 확인 ({elapsed}초)"
+
+        time.sleep(interval)
+
+    return "timeout", "기동 확인 못 함"
+
+
+def check_deploy_startup_staleness(deploy_dt_log: datetime, log_tz_is_utc: bool = True) -> str | None:
+    """로그의 최근 기동 시각이 마지막 deploy 실행 종료 시각보다 이르면 경고 문자열을 반환한다."""
+    deploy_info = get_last_deploy_run_info()
+    if not deploy_info:
+        return None
+
+    _, deploy_start_dt_utc, deploy_end_dt_utc, hh_mm = deploy_info
+
+    log_dt_utc = deploy_dt_log.replace(tzinfo=UTC) if log_tz_is_utc else deploy_dt_log.replace(tzinfo=KST).astimezone(UTC)
+
+    if log_dt_utc < deploy_end_dt_utc:
+        # 혹시 기동 실패 기록이 있는지 확인
+        fail_res = None
+        if config.LOG_DOCKER:
+            fail_res = find_deploy_startup_failure_docker(config.LOG_DOCKER, config.LOG_DIR, config.LOG_APP, since_dt_utc=deploy_start_dt_utc)
+        else:
+            fail_res = find_deploy_startup_failure_local(
+                Path(config.LOG_DIR) / f"{config.LOG_APP}-info.log",
+                since_dt_utc=deploy_start_dt_utc,
+                log_tz="UTC" if log_tz_is_utc else "KST",
+            )
+
+        if fail_res:
+            _, fail_cause = fail_res
+            return f"🚨 마지막 배포({hh_mm}) 뒤 앱 기동 실패: {fail_cause}"
+
+        return f"⚠ 마지막 배포({hh_mm}) 뒤 앱 기동 기록 없음 — 아직 올라오는 중이면 잠시 뒤 다시"
 
     return None
 
@@ -946,6 +1154,7 @@ def resolve_time_range(
     default_since: str | None = None,
     log_tz: str = "UTC",
     deploy_getter: Any = None,
+    deploy_failure_getter: Any = None,
 ) -> tuple[datetime | None, datetime | None, str]:
     """공통 시간 범위 해석 함수."""
     start_flags = [bool(since), bool(from_time), bool(since_deploy), bool(since_run)]
@@ -972,7 +1181,19 @@ def resolve_time_range(
         start_log = start_host.astimezone(UTC).replace(tzinfo=None) if is_utc else start_host.replace(tzinfo=None)
         header_tag = ""
     elif since_deploy:
-        if deploy_getter:
+        dep_info = get_last_deploy_run_info()
+        fail_found = False
+        if dep_info and deploy_failure_getter:
+            _, dep_start_utc, _, hh_mm = dep_info
+            fail_res = deploy_failure_getter(dep_start_utc)
+            if fail_res:
+                fail_found = True
+                fail_dt_utc, fail_cause = fail_res
+                _LAST_DEPLOY_WARN = f"🚨 마지막 배포({hh_mm}) 뒤 앱 기동 실패: {fail_cause}"
+                start_log = (fail_dt_utc.replace(tzinfo=None) - timedelta(seconds=10)) if is_utc else (fail_dt_utc.astimezone(KST).replace(tzinfo=None) - timedelta(seconds=10))
+                header_tag = f"· 배포 {hh_mm} (기동 실패)"
+
+        if not fail_found and deploy_getter:
             deploy_dt_log = deploy_getter()
             start_log = deploy_dt_log
             if is_utc:
@@ -1267,10 +1488,13 @@ def get_req_summary(
 
     if file_path:
         deploy_getter = lambda: find_deploy_time_local(Path(file_path))
+        deploy_failure_getter = lambda s_dt: find_deploy_startup_failure_local(Path(file_path), s_dt)
     elif docker:
         deploy_getter = lambda: find_deploy_time_docker(docker, dir_str, app_str)
+        deploy_failure_getter = lambda s_dt: find_deploy_startup_failure_docker(docker, dir_str, app_str, s_dt)
     else:
         deploy_getter = lambda: find_deploy_time_local(Path(dir_str) / f"{app_str}-info.log")
+        deploy_failure_getter = lambda s_dt: find_deploy_startup_failure_local(Path(dir_str) / f"{app_str}-info.log", s_dt)
 
     user_range_specified = bool(since or from_time or since_deploy or since_run)
 
@@ -1283,6 +1507,7 @@ def get_req_summary(
         default_since="24h" if not file_path else None,
         log_tz=tz_str,
         deploy_getter=deploy_getter,
+        deploy_failure_getter=deploy_failure_getter,
     )
 
     if file_path:
@@ -1443,10 +1668,13 @@ def get_errors_summary(
 
     if file_path:
         deploy_getter = lambda: find_deploy_time_local(Path(file_path))
+        deploy_failure_getter = lambda s_dt: find_deploy_startup_failure_local(Path(file_path), s_dt)
     elif docker:
         deploy_getter = lambda: find_deploy_time_docker(docker, dir_str, app_str)
+        deploy_failure_getter = lambda s_dt: find_deploy_startup_failure_docker(docker, dir_str, app_str, s_dt)
     else:
         deploy_getter = lambda: find_deploy_time_local(Path(dir_str) / f"{app_str}-info.log")
+        deploy_failure_getter = lambda s_dt: find_deploy_startup_failure_local(Path(dir_str) / f"{app_str}-info.log", s_dt)
 
     user_range_specified = bool(since or from_time or since_deploy or since_run)
 
@@ -1459,6 +1687,7 @@ def get_errors_summary(
         default_since="1h" if not file_path else None,
         log_tz=tz_str,
         deploy_getter=deploy_getter,
+        deploy_failure_getter=deploy_failure_getter,
     )
 
     if file_path:
@@ -1665,10 +1894,13 @@ def get_tail_summary(
 
     if file_path:
         deploy_getter = lambda: find_deploy_time_local(Path(file_path))
+        deploy_failure_getter = lambda s_dt: find_deploy_startup_failure_local(Path(file_path), s_dt)
     elif docker:
         deploy_getter = lambda: find_deploy_time_docker(docker, dir_str, app_str)
+        deploy_failure_getter = lambda s_dt: find_deploy_startup_failure_docker(docker, dir_str, app_str, s_dt)
     else:
         deploy_getter = lambda: find_deploy_time_local(Path(dir_str) / f"{app_str}-info.log")
+        deploy_failure_getter = lambda s_dt: find_deploy_startup_failure_local(Path(dir_str) / f"{app_str}-info.log", s_dt)
 
     user_range_specified = bool(since or from_time or since_deploy or since_run)
 
@@ -1681,6 +1913,7 @@ def get_tail_summary(
         default_since="10m" if not file_path else None,
         log_tz=tz_str,
         deploy_getter=deploy_getter,
+        deploy_failure_getter=deploy_failure_getter,
     )
 
     if file_path:

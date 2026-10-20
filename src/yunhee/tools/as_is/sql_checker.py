@@ -483,12 +483,50 @@ def check_tobe_sql(
                 pass
 
     statements: dict[str, Statement] = {}
+    xml_errors_by_cls: dict[str, list[str]] = defaultdict(list)
+    has_failure = bool(xml_errors_by_cls)
+
     for path in sorted(mapper_dir.rglob("*.xml")):
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        full_path = path.resolve()
+        if changed_xml_paths is not None and full_path not in changed_xml_paths:
+            continue
+
+        raw_bytes = path.read_bytes()
+        raw = raw_bytes.decode("utf-8", errors="replace")
         ns_m = re.search(r'<mapper\s+namespace="([^"]+)"', raw)
+        ns = ns_m.group(1) if ns_m else path.stem
+        cls_name = ns.split(".")[-1]
+        xml_stem = path.stem
+
+        if only:
+            matched_cls = any(
+                fnmatch.fnmatch(cls_name, pat) or fnmatch.fnmatch(xml_stem, pat)
+                for pat in only
+            )
+            raw_ids = re.findall(r'<[a-zA-Z0-9_]+\b[^>]*\bid\s*=\s*"([^"]+)"', raw)
+            matched_id = any(
+                fnmatch.fnmatch(sid, pat) or fnmatch.fnmatch(f"{ns}.{sid}", pat)
+                for pat in only
+                for sid in raw_ids
+            )
+            if not matched_cls and not matched_id:
+                continue
+
+        # XML well-formed 검증 (외부 DTD fetch 없이 로컬 구문만 검사)
+        import xml.etree.ElementTree as ET
+        try:
+            ET.fromstring(raw_bytes)
+        except ET.ParseError as e:
+            line, col = e.position if hasattr(e, "position") and e.position else (0, 0)
+            rel_path = path.relative_to(mapper_dir)
+            err_msg = str(e)
+            hint = " (힌트: 본문의 <, <=, <>, & 는 &lt;, &lt;=, &lt;&gt;, &amp; 또는 <![CDATA[ … ]]> 로 이스케이프 필요)"
+            xml_errors_by_cls[cls_name].append(f"❌ XML 오류: {rel_path}:{line}:{col} {err_msg}{hint}")
+            has_failure = True
+            continue
+
         if not ns_m:
             continue
-        ns = ns_m.group(1)
         root = parse_xml(raw)
         mapper = next((c for c in root.children if isinstance(c, Node) and c.tag == "mapper"), None)
         if not mapper:
@@ -501,7 +539,7 @@ def check_tobe_sql(
                 statements[st.key] = st
 
     all_targets = [s for s in statements.values() if s.kind != "sql"]
-    if not all_targets:
+    if not all_targets and not xml_errors_by_cls:
         return ToolResult(ok=False, error=f"{mapper_dir} 아래에서 검증할 매퍼 SQL을 찾지 못했습니다.")
 
     # 필터링 적용 (--changed, --only)
@@ -526,7 +564,7 @@ def check_tobe_sql(
 
         targets.append(st)
 
-    if not targets:
+    if not targets and not xml_errors_by_cls:
         return ToolResult(
             ok=True,
             data={
@@ -542,7 +580,7 @@ def check_tobe_sql(
     failure_details_by_cls: dict[str, list[str]] = defaultdict(list)
     success_count_by_cls: dict[str, int] = defaultdict(int)
     failure_count_by_cls: dict[str, int] = defaultdict(int)
-    has_failure = False
+    has_failure = bool(xml_errors_by_cls)
 
     for st in sorted(targets, key=lambda s: (s.ns, s.line)):
         cls_name = st.ns.split(".")[-1]
@@ -589,24 +627,34 @@ def check_tobe_sql(
             failure_count_by_cls[cls_name] += 1
 
     lines = []
+    all_classes = sorted(set(list(results_by_cls.keys()) + list(xml_errors_by_cls.keys())))
     if summary:
-        for cls_name in sorted(results_by_cls.keys()):
-            succ = success_count_by_cls[cls_name]
-            fail = failure_count_by_cls[cls_name]
-            lines.append(f"{cls_name}: ✅ {succ} / ❌ {fail}")
-            for fail_detail in failure_details_by_cls[cls_name]:
+        for cls_name in all_classes:
+            succ = success_count_by_cls.get(cls_name, 0)
+            fail = failure_count_by_cls.get(cls_name, 0)
+            xml_errs = xml_errors_by_cls.get(cls_name, [])
+            if xml_errs:
+                lines.append(f"{cls_name}: XML ❌ {len(xml_errs)} / ✅ {succ} / ❌ {fail}")
+                for err_detail in xml_errs:
+                    lines.append(f"  - {err_detail}")
+            else:
+                lines.append(f"{cls_name}: ✅ {succ} / ❌ {fail}")
+            for fail_detail in failure_details_by_cls.get(cls_name, []):
                 lines.append(f"  - {fail_detail}")
     else:
-        for cls_name, items in results_by_cls.items():
-            lines.append(f"{cls_name}: " + " / ".join(items))
+        for cls_name in all_classes:
+            xml_errs = xml_errors_by_cls.get(cls_name, [])
+            items = results_by_cls.get(cls_name, [])
+            lines.append(f"{cls_name}: " + " / ".join(xml_errs + items))
 
     summary_text = "\n".join(lines)
     return ToolResult(
         ok=not has_failure,
         data={
             "summary": summary_text,
-            "total": len(targets),
+            "total": len(targets) + sum(len(v) for v in xml_errors_by_cls.values()),
             "results": results_by_cls,
+            "xml_errors": xml_errors_by_cls,
         },
-        error=None if not has_failure else "일부 SQL 검증 실패",
+        error=None if not has_failure else "일부 SQL 또는 매퍼 XML 검증 실패",
     )
