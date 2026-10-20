@@ -2,6 +2,10 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.4.4] - 2026-10-20
+수정사항 040 (`log --since-deploy` Docker exec 공백 인자 버그 수정) 반영.
+- `log`: `find_deploy_time_docker`에서 `sh` 옵션 문자열의 선행 공백(`" -c"` → `"-c"`)을 제거하여 Docker 컨테이너(`t3600-tomcat`) 내 배포 시각 탐색 시 `sh: 0: cannot open  -c: No such file` 오류가 발생하는 결함 수정 (040-1)
+
 ## [0.4.3] - 2026-10-20
 수정사항 039 (서버 위임 추적, 서블릿 분석, compare 페이징 및 --from-log, sql-check 필터, PreToolUse 훅, API 자동 경로 보정, run -C, analysis sql grep 및 파라미터 대입, save-script, 배포 대기, -u 사원 가장, mapper-run, 미도달 이벤트 감지) 반영.
 - `analysis method` & `screen`: 서버 위임 메서드 추적(`getInDocument` → `makeDocument` 줄 범위/SQL 수 표시), `<패키지>.<클래스>.<메서드>` 패키지 명시 지원, 미발견 시 후보 목록 및 Exit code 2, 위임 전용 시 `⚠ 결과 없음` 경고 억제 (039-1, 039-16)

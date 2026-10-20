@@ -664,7 +664,7 @@ def format_time_pair(dt_log: datetime, log_tz_is_utc: bool) -> str:
 
 def find_deploy_time_docker(container: str, log_dir: str, app: str, raise_on_error: bool = True) -> datetime | None:
     info_file = f"{log_dir}/{app}-info.log"
-    cmd = ["docker", "exec", container, "sh", " -c", f"grep -E 'Started \\w+ in [0-9.]+ seconds' {info_file} | tail -n 1"]
+    cmd = ["docker", "exec", container, "sh", "-c", f"grep -E 'Started \\w+ in [0-9.]+ seconds' '{info_file}' | tail -n 1"]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         err_msg = proc.stderr.strip() or f"종료 코드 {proc.returncode}"

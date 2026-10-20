@@ -430,5 +430,58 @@ def test_027_check_deploy_startup_staleness(monkeypatch):
     assert log_reader.check_deploy_startup_staleness(log_dt_fresh, log_tz_is_utc=True) is None
 
 
+def test_find_deploy_time_docker(monkeypatch):
+    import subprocess
+    from datetime import datetime
+
+    called_cmds = []
+
+    class DummyProc:
+        def __init__(self, stdout="", stderr="", returncode=0):
+            self.stdout = stdout
+            self.stderr = stderr
+            self.returncode = returncode
+
+    def fake_run(cmd, capture_output=True, text=True, check=False):
+        called_cmds.append(cmd)
+        if "fail-container" in cmd:
+            return DummyProc(stderr="No such container", returncode=1)
+        if "empty-log" in cmd:
+            return DummyProc(stdout="", returncode=0)
+        return DummyProc(
+            stdout="2026-10-20 04:13:59.002 [SYSTEM] [-] [-] [-] [Catalina-utility-2] INFO  k.c.kfs.asseterp.AssetErpApplication - Started AssetErpApplication in 6.088 seconds\n",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    # 1. 정상 파싱 및 커맨드 인자 검증 (선행 공백 없는 "-c" 확인)
+    dt = log_reader.find_deploy_time_docker("t3600-tomcat", "/logs", "AssetERP-backend")
+    assert dt == datetime(2026, 10, 20, 4, 13, 59, 2000)  # noqa: DTZ001
+    assert len(called_cmds) == 1
+    cmd = called_cmds[0]
+    assert cmd[0] == "docker"
+    assert cmd[1] == "exec"
+    assert cmd[2] == "t3600-tomcat"
+    assert cmd[3] == "sh"
+    assert cmd[4] == "-c"  # 반드시 선행 공백 없는 "-c"
+    assert "grep -E 'Started \\w+ in [0-9.]+ seconds' '/logs/AssetERP-backend-info.log' | tail -n 1" in cmd[5]
+
+    # 2. 컨테이너 에러 시 (raise_on_error=True vs False)
+    with pytest.raises(log_reader.DockerExecError, match="No such container"):
+        log_reader.find_deploy_time_docker("fail-container", "/logs", "AssetERP-backend", raise_on_error=True)
+
+    res_none = log_reader.find_deploy_time_docker("fail-container", "/logs", "AssetERP-backend", raise_on_error=False)
+    assert res_none is None
+
+    # 3. 배포 로그 없을 때 (raise_on_error=True vs False)
+    with pytest.raises(typer.Exit) as exc_info:
+        log_reader.find_deploy_time_docker("empty-log", "/logs", "AssetERP-backend", raise_on_error=True)
+    assert exc_info.value.exit_code == 1
+
+    res_empty = log_reader.find_deploy_time_docker("empty-log", "/logs", "AssetERP-backend", raise_on_error=False)
+    assert res_empty is None
+
+
 
 
