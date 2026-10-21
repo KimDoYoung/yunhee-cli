@@ -2,8 +2,12 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.4.7] - 2026-10-21
+- 개발 작업 진행 중
+
 ## [0.4.6] - 2026-10-21
 - `value`: 현재 설정값 단일 텍스트 출력(스크립트 치환용) 및 키 목록 확인 커맨드 추가 (`yunhee value [KEY]`, `--list`, `--keys`, `--raw` 지원). 대소문자 및 별칭(`asis-src`, `work-dir`, `local-db` 등) 유연 매칭.
+- `config`: 독립 설치(`uv tool install`) 환경에서도 `YUNHEE_DIR`(`.env.local` 및 `data/`)를 자동 탐지(`_find_yunhee_dir`)하도록 개선하여, 개발 중 소스 변경이 전역 CLI에 영향을 주지 않도록 독립 배포 지원.
 
 ## [0.4.5] - 2026-10-20
 수정사항 041 (매퍼 XML 정형 검사, 기동 실패 감지, deploy 명령 후 자동 헬스체크) 반영.

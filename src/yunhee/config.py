@@ -3,9 +3,40 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+
 # config.py 기준 2단계 위 = yunhee-cli 프로젝트 루트 (설치 위치, .env.local이 있는 곳)
 # WORK_DIR(작업 대상 프로젝트)과 구분하기 위해 YUNHEE_DIR로 명명한다.
-YUNHEE_DIR = Path(__file__).resolve().parents[2]
+def _find_yunhee_dir() -> Path:
+    """yunhee 자체 설정/데이터가 위치한 디렉토리(YUNHEE_DIR)를 탐색한다.
+
+    1. YUNHEE_DIR 환경변수 우선
+    2. 소스 트리 기준 (editable 설치 또는 개발 환경: parents[2]에 pyproject.toml이나 .env.local 존재)
+    3. 일반 패키지(site-packages)로 설치된 경우:
+       - ~/.yunhee/.env.local 이 존재하면 ~/.yunhee
+       - /home/kdy987/work/yunhee-cli (기본 개발 저장소)가 존재하면 해당 디렉터리
+    4. fallback: parents[2]
+    """
+    if env_dir := os.getenv("YUNHEE_DIR"):
+        p = Path(env_dir).resolve()
+        if p.is_dir():
+            return p
+
+    source_root = Path(__file__).resolve().parents[2]
+    if (source_root / "pyproject.toml").is_file() or (source_root / ".env.local").is_file():
+        return source_root
+
+    home_yunhee = Path.home() / ".yunhee"
+    if (home_yunhee / ".env.local").is_file():
+        return home_yunhee
+
+    dev_root = Path("/home/kdy987/work/yunhee-cli")
+    if dev_root.is_dir():
+        return dev_root
+
+    return source_root
+
+
+YUNHEE_DIR = _find_yunhee_dir()
 ENV_FILE = YUNHEE_DIR / ".env.local"
 
 # yunhee가 어느 디렉토리에서 실행됐는지 = 작업 대상 프로젝트 루트.

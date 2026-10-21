@@ -57,7 +57,7 @@ uv run tools/parse_mapper.py     # ASIS mapper XML → sqlite mapper_index 빌�
 uv run pytest                    # 테스트 실행
 uv run ruff check .              # lint 검사
 
-uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (다른 프로젝트 폴더에서 yunhee로 바로 실행하기 위함)
+uv tool install --force --reinstall . # yunhee 안정 버전을 전역 PATH에 독립 설치 (개발 중 소스 변경 영향 차단)
 ```
 
 ### 동작 전제
@@ -74,9 +74,9 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 - `src/yunhee/config.py`: 설정의 단일 진입점.
   - 패키지 임포트 시점(`__init__.py`)에 `YUNHEE_DIR/.env.local`을 `load_dotenv()`로 로드.
   - **`YUNHEE_DIR` vs `WORK_DIR` 구분**:
-    - `YUNHEE_DIR`: yunhee-cli 설치 경로(`.env.local` 위치, `__file__` 기준 고정).
+    - `YUNHEE_DIR`: yunhee-cli 자체 리소스 경로(`.env.local` 및 `data/` 위치, `_find_yunhee_dir()`로 자동 탐지).
     - `WORK_DIR`: 실행된 현재 작업 디렉토리(cwd, 작업 대상 프로젝트 루트).
-    - `uv tool install --editable`로 설치해 다른 프로젝트 폴더(예: `framework-sprt`)에서 실행해도 설정과 작업 대상이 분리된다. 작업 대상을 다루는 tool은 반드시 `WORK_DIR`을 기준으로 동작해야 한다.
+    - `uv tool install`로 설치해 다른 프로젝트 폴더(예: `framework-sprt`)에서 실행해도 설정과 작업 대상이 분리된다. 작업 대상을 다루는 tool은 반드시 `WORK_DIR`을 기준으로 동작해야 한다.
   - **`YUNHEE_OLLAMA_URL`**: 서버 바인드 변수(`OLLAMA_HOST=0.0.0.0`)와의 충돌을 피하기 위해 `YUNHEE_` 접두사를 사용.
   - **`NUM_CTX` (`YUNHEE_NUM_CTX`, 기본 16384)**: Ollama 요청 시 `options.num_ctx`로 전달. 넘기지 않으면 Ollama 기본값(4096)이 적용되어 긴 프롬프트 앞부분이 잘리므로 필수.
   - **`SCHEMA_ENV` (`YUNHEE_SCHEMA_ENV`, 기본 `LOCAL_DB`)**: 스키마 기본 스냅샷 이름.
