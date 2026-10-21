@@ -25,6 +25,7 @@ uv run yunhee vec "텍스트"        # bge-m3 임베딩 확인
 uv run yunhee index "텍스트"      # chromadb에 텍스트 저장
 uv run yunhee search "쿼리" -n 3  # 저장된 텍스트 중 유사 검색
 uv run yunhee config             # 현재 설정(작업폴더, ASIS소스, DB, Ollama 등) 조회
+uv run yunhee value [KEY]        # 현재 설정값 단일 텍스트 출력(스크립트용) 또는 전체 키 목록 테이블 출력 (예: yunhee value YUNHEE_ASIS_SRC_DIR)
 uv run yunhee make-dbml LOCAL_DB # 환경변수의 PostgreSQL 스키마 → ./LOCAL_DB-dbml.md + data/schema/LOCAL_DB.json 스냅샷 (dbml과 동일). --output/-o, --schema(반복 가능)
 uv run yunhee outline src/main/java/.../SysService.java # Java/XML/TS 클래스·메서드 시그니처와 줄 번호 추출 (LLM 없음)
 uv run yunhee table act01_account_code 'sys0*'   # 스냅샷에서 해당 테이블만 DBML로 (stdout은 DBML만, 안내는 stderr)
@@ -99,6 +100,7 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 - `src/yunhee/cli.py`: Typer 진입점.
   - 서브커맨드 없이 실행 시 REPL 실행. `--version` eager 콜백 지원.
   - `config`: 현재 환경 설정(작업 대상 폴더 WORK_DIR, ASIS 소스 폴더, DB 접속 정보 마스킹, Ollama URL 등) 조회.
+  - `value`: 현재 설정값 단일 텍스트 출력 (`yunhee value YUNHEE_ASIS_SRC_DIR`, 별칭 `asis-src` 등 지원, 스크립트 치환용) 및 인자 생략 시 전체 키 목록/설명/현재값 테이블 출력 (`--list`, `--keys` 지원).
   - `make-dbml` (`dbml`): 환경변수 이름 지정 PostgreSQL 카탈로그 추출 → DBML md 및 JSON 스냅샷 저장. 비밀번호 마스킹.
   - `table`: 스냅샷에서 지정한 테이블/glob/페이지 연관 테이블 DBML 출력.
   - `run` (`exec`): 외부 명령어 실행, 로그 격리 저장(`.yunhee/runs/<run_id>.log`) 및 성공 시 1줄 / 실패 시 Qwen 14B 에러 압축 리포트.

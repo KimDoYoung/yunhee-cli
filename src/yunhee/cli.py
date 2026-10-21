@@ -147,6 +147,81 @@ def config_cmd():
     typer.echo(f"소스 브랜치: {cfg['asis-branch']}")
 
 
+@app.command(name="value")
+def value_cmd(
+    key: Annotated[
+        str | None,
+        typer.Argument(
+            help="조회할 설정 키 (예: YUNHEE_ASIS_SRC_DIR, asis-src, LOCAL_DB). 생략 시 전체 키 목록 출력",
+        ),
+    ] = None,
+    list_keys: Annotated[
+        bool,
+        typer.Option("--list", "-l", help="사용 가능한 설정 키 목록 및 현재 값 테이블 출력"),
+    ] = False,
+    only_keys: Annotated[
+        bool,
+        typer.Option("--keys", "-k", help="설정 키 이름만 한 줄씩 출력 (스크립트/자동완성용)"),
+    ] = False,
+    raw: Annotated[
+        bool,
+        typer.Option("--raw", help="비밀번호나 DB URL을 마스킹하지 않고 실제 값 출력 (단일 키 조회 시 기본 true)"),
+    ] = True,
+):
+    """현재 설정값 조회 (단일 키 조회 또는 전체 설정 키 목록 표시)"""
+    from rich.console import Console
+    from rich.table import Table
+
+    from yunhee import config
+
+    # 1. --keys 플래그: 키 이름만 한 줄씩 출력
+    if only_keys:
+        for item in config.get_config_items():
+            typer.echo(item.key)
+        return
+
+    # 2. 키가 주어지지 않았거나 --list 플래그인 경우: 전체 목록 테이블 출력
+    if key is None or list_keys:
+        table = Table(title="yunhee 설정 키 목록")
+        table.add_column("설정 키 (환경변수)", style="cyan bold", no_wrap=True)
+        table.add_column("별칭", style="dim")
+        table.add_column("현재 설정값", style="green", overflow="fold")
+        table.add_column("설명", style="white")
+
+        for item in config.get_config_items():
+            val_display = item.get_value(raw=False)
+            if not val_display:
+                val_display = "[dim](not set)[/dim]"
+            aliases_str = ", ".join(item.aliases)
+            table.add_row(item.key, aliases_str, val_display, item.description)
+
+        console = Console()
+        console.print(table)
+        console.print("\n[bold]사용법:[/bold]")
+        console.print("  yunhee value <KEY>          설정값을 단일 텍스트로 출력 (스크립트/치환용)")
+        console.print("  yunhee value --list (-l)    전체 설정 키 목록 및 현재 값 테이블 출력")
+        console.print("  yunhee value --keys (-k)    설정 키 이름만 한 줄씩 출력")
+        console.print("\n[dim]예시:[/dim]")
+        console.print("  yunhee value YUNHEE_ASIS_SRC_DIR")
+        console.print("  yunhee value asis-src")
+        console.print("  export ASIS_DIR=$(yunhee value asis-src)")
+        return
+
+    # 3. 특정 키 조회
+    val = config.get_config_value(key, raw=raw)
+    if val is None:
+        typer.secho(f"오류: 알 수 없는 설정 키입니다: '{key}'", fg=typer.colors.RED, err=True)
+        typer.secho(
+            "사용 가능한 키 목록을 확인하려면 'yunhee value' 또는 'yunhee value --list'를 실행하세요.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    typer.echo(val)
+
+
+
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
