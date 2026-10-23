@@ -7,6 +7,20 @@ from yunhee.config import WORK_DIR
 
 PROJECT_DIR = WORK_DIR / ".yunhee"
 PROJECT_FILE = PROJECT_DIR / "project.json"
+MCP_FILE = PROJECT_DIR / "mcp.json"
+
+DEFAULT_MCP_CONFIG = {
+    "mcpServers": {
+        "time": {
+            "command": "uvx",
+            "args": ["mcp-server-time"],
+        },
+        "fetch": {
+            "command": "uvx",
+            "args": ["mcp-server-fetch"],
+        },
+    }
+}
 
 
 def find_project_root(start_dir: Path | None = None) -> Path:
@@ -70,10 +84,11 @@ def status(root: Path | None = None) -> str:
 
 
 def init(root: Path | None = None) -> dict:
-    """.yunhee/project.json을 새로 만들거나(최초) 현재 버전으로 갱신한다."""
+    """.yunhee/project.json을 새로 만들거나(최초) 현재 버전으로 갱신하며, .yunhee/mcp.json을 기본 생성한다."""
     effective_root = root or WORK_DIR
     pdir = effective_root / ".yunhee"
     pfile = pdir / "project.json"
+    mfile = pdir / "mcp.json"
     data = load(effective_root) or {}
     now = datetime.now(UTC).isoformat()
     data.setdefault("name", effective_root.name)
@@ -83,4 +98,15 @@ def init(root: Path | None = None) -> dict:
 
     pdir.mkdir(parents=True, exist_ok=True)
     pfile.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    # .yunhee/mcp.json 기본 생성 (미존재 시)
+    if not mfile.exists():
+        mfile.write_text(
+            json.dumps(DEFAULT_MCP_CONFIG, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        data["mcp_created"] = True
+    else:
+        data["mcp_created"] = False
+
     return data

@@ -19,6 +19,9 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
     def name(self) -> str:
         return "ollama_bge_m3"
 
+    def get_config(self) -> dict:
+        return {}
+
     def __call__(self, input: Documents) -> Embeddings:
         return [embed(text) for text in input]
 

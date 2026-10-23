@@ -27,6 +27,7 @@ from yunhee.agent.tools.domain_helper import (
     lookup_config,
     read_recent_errors,
 )
+from yunhee.agent.tools.mcp_adapter import MCPManager
 
 
 @dataclass
@@ -42,6 +43,7 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, ToolDefinition] = {}
+        self.mcp_manager: MCPManager | None = None
 
     def register(
         self,
@@ -96,8 +98,8 @@ class ToolRegistry:
             return f"error in {name}: {e}"
 
 
-def create_default_registry() -> ToolRegistry:
-    """기본 Core 파일 시스템 및 실행 도구가 등록된 ToolRegistry 인스턴스 생성."""
+def create_default_registry(load_mcp: bool = True) -> ToolRegistry:
+    """기본 Core 파일 시스템, 장기 기억, 도메인 헬퍼 및 MCP 도구가 등록된 ToolRegistry 인스턴스 생성."""
     reg = ToolRegistry()
 
     # 1. list_files
@@ -368,5 +370,16 @@ def create_default_registry() -> ToolRegistry:
             },
         },
     )
+
+    # 13. MCP 도구 동적 로드 (mcp.json 존재 시)
+    if load_mcp:
+        try:
+            mcp_mgr = MCPManager()
+            if mcp_mgr.config_path.is_file():
+                mcp_mgr.connect_all()
+                mcp_mgr.register_tools_to_registry(reg)
+                reg.mcp_manager = mcp_mgr
+        except Exception:  # noqa: BLE001, S110
+            pass
 
     return reg

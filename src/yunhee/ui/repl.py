@@ -233,8 +233,12 @@ def run_repl(model: str = OLLAMA_MODEL) -> None:
                 console.print(
                     f"[green]등록 완료[/green] {project.PROJECT_FILE}\n"
                     f"  name           {data['name']}\n"
-                    f"  yunhee_version {data['yunhee_version']}\n"
+                    f"  yunhee_version {data['yunhee_version']}"
                 )
+                if data.get("mcp_created"):
+                    mcp_path = Path(config.WORK_DIR) / ".yunhee" / "mcp.json"
+                    console.print(f"  [cyan]mcp.json 생성[/cyan]  {mcp_path} (기본: time, fetch)")
+                console.print()
                 continue
 
             if cmd == "memory":
