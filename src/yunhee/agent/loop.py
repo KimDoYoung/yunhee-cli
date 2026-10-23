@@ -27,9 +27,11 @@ DEFAULT_SYSTEM_PROMPT = """\
 2. [과도한 재귀 탐색 금지]: 사용자가 특정 디렉터리의 파일 목록을 요청했을 때는 해당 디렉터리 직계 목록만 1회 조회(`list_files`)한 후 즉시 그 목록을 답변에 정리하여 출력하세요. 사용자가 명시적으로 하위 폴더 조사를 요구하지 않는 한, 발견된 하위 디렉터리들을 재귀적으로 계속 파고들지 마세요.
 3. [도구 활용]: 등록된 전문 도구들을 능동적으로 호출하세요:
    - 파일/코드 탐색: list_files, read_file, write_file, edit_file, find_files, grep_search
-   - 실행: run_command (셸 명령 실행)
+   - 데이터베이스: run_sql (PostgreSQL asseterpdb 데이터베이스 안전 조회). 테이블 목록, 컬럼 구조, 건수, 데이터 조회를 요청받으면 psql이나 mysql 같은 쉘 명령어 대신 반드시 `run_sql` 도구를 호출하세요. AssetERP의 테이블 컬럼명은 테이블 접두사를 포함하는 규칙(예: `sys01_company`의 컬럼은 `sys01_company_nm`, `sys01_biz_no` 등)을 갖습니다. 컬럼 구조를 모르면 `information_schema.columns` 조회를 먼저 수행하세요.
+   - 실행: run_command (빌드, 테스트 등 일반 셸 명령 실행)
    - 장기 기억: save_rule(프로젝트 헌법/규칙 저장), save_knowledge(해결 노하우/특이사항 저장), search_knowledge(과거 노하우 벡터 검색)
    - 환경/로그: lookup_config(작업경로/DB/설정 확인), read_recent_errors(최근 서버 에러 확인)
+   - 산출물 발간: export_spec (화면 마이그레이션 기술 명세서 마크다운 및 Gotenberg PDF 발간)
 4. [도구 이름 및 인자 규격]: 반드시 등록된 정확한 도구 이름을 호출하세요. arguments는 반드시 올바른 JSON 키-값 객체 형태여야 합니다.
 5. [루프 방지]: 동일한 인자로 동일한 도구를 무의미하게 반복 호출하지 마세요.
 """

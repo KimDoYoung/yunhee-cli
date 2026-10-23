@@ -23,6 +23,7 @@ from yunhee.agent.tools.core_fs import (
     read_file,
     write_file,
 )
+from yunhee.agent.tools.db_sql import execute_sql
 from yunhee.agent.tools.domain_helper import (
     lookup_config,
     read_recent_errors,
@@ -393,7 +394,28 @@ def create_default_registry(load_mcp: bool = True) -> ToolRegistry:
         },
     )
 
-    # 14. MCP 도구 동적 로드 (mcp.json 존재 시)
+    # 14. run_sql (PostgreSQL 안전 조회)
+    reg.register(
+        name="run_sql",
+        func=execute_sql,
+        description="PostgreSQL 데이터베이스(asseterpdb)에서 SELECT 쿼리를 안전하게 실행하여 테이블 목록, 컬럼 구조, 건수, 데이터를 조회합니다. (읽기 전용, DDL/임의COMMIT 차단)",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "실행할 SELECT SQL 쿼리문 (예: 'SELECT count(*) FROM information_schema.tables WHERE table_schema = \\'public\\'', 'SELECT * FROM sys01_company LIMIT 5')",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "최대 조회 행 수 (기본값 20)",
+                },
+            },
+            "required": ["query"],
+        },
+    )
+
+    # 15. MCP 도구 동적 로드 (mcp.json 존재 시)
     if load_mcp:
         try:
             mcp_mgr = MCPManager()
