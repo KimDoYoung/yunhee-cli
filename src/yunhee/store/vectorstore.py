@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import uuid
 from datetime import UTC, datetime
 
@@ -21,6 +23,10 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
 
     def get_config(self) -> dict:
         return {}
+
+    @staticmethod
+    def build_from_config(config: dict) -> OllamaEmbeddingFunction:
+        return OllamaEmbeddingFunction()
 
     def __call__(self, input: Documents) -> Embeddings:
         return [embed(text) for text in input]

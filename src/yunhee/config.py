@@ -59,6 +59,9 @@ NUM_CTX = int(os.getenv("YUNHEE_NUM_CTX", "16384"))
 CHROMA_HOST = os.getenv("YUNHEE_CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("YUNHEE_CHROMA_PORT", "8000"))
 
+# Gotenberg PDF 변환 서비스 (docs/docker-compose.yml 및 examples/default.conf 참고)
+GOTENBERG_URL = os.getenv("YUNHEE_GOTENBERG_URL", "http://jskn.iptime.org/gotenberg")
+
 # AssetERP 테스트/로컬 DB (읽기 전용 조회용, docs/yunhee-cli-설계.md 참고)
 TEST_DB = os.getenv("TEST_DB")
 LOCAL_DB = os.getenv("LOCAL_DB")
@@ -155,6 +158,7 @@ def summary() -> dict[str, str]:
         "num-ctx": str(NUM_CTX),
         "chroma-host": CHROMA_HOST,
         "chroma-port": str(CHROMA_PORT),
+        "gotenberg-url": GOTENBERG_URL,
         "test-db": redact(TEST_DB),
         "local-db": redact(LOCAL_DB),
         "schema-env": SCHEMA_ENV,
@@ -295,6 +299,12 @@ CONFIG_ITEMS: list[ConfigItem] = [
         aliases=["CHROMA_PORT", "chroma-port", "chroma_port"],
         getter=lambda: str(CHROMA_PORT),
         description="ChromaDB 포트",
+    ),
+    ConfigItem(
+        key="YUNHEE_GOTENBERG_URL",
+        aliases=["GOTENBERG_URL", "gotenberg-url", "gotenberg_url"],
+        getter=lambda: GOTENBERG_URL,
+        description="Gotenberg PDF 변환 서비스 URL",
     ),
     ConfigItem(
         key="YUNHEE_API_BASE_URL",

@@ -28,6 +28,7 @@ from yunhee.agent.tools.domain_helper import (
     read_recent_errors,
 )
 from yunhee.agent.tools.mcp_adapter import MCPManager
+from yunhee.agent.tools.screen_scout import export_spec_tool
 
 
 @dataclass
@@ -371,7 +372,28 @@ def create_default_registry(load_mcp: bool = True) -> ToolRegistry:
         },
     )
 
-    # 13. MCP 도구 동적 로드 (mcp.json 존재 시)
+    # 13. export_spec (마이그레이션 명세서 및 PDF 발간)
+    reg.register(
+        name="export_spec",
+        func=export_spec_tool,
+        description="화면 코드(예: 'sys01') 또는 마크다운 파일로부터 종합 기술 명세서를 마크다운 또는 Gotenberg PDF로 자동 발간합니다.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "분석할 화면 코드(예: 'sys01', 'Ast01_Trade') 또는 마크다운 파일 경로",
+                },
+                "format": {
+                    "type": "string",
+                    "description": "발간 포맷: 'markdown' (기본값) 또는 'pdf'",
+                },
+            },
+            "required": ["target"],
+        },
+    )
+
+    # 14. MCP 도구 동적 로드 (mcp.json 존재 시)
     if load_mcp:
         try:
             mcp_mgr = MCPManager()

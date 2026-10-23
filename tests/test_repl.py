@@ -86,6 +86,8 @@ def test_help_text_contains_essential_commands():
     assert "/session" in text
     assert "/memory" in text
     assert "/knowledge" in text
+    assert "/out" in text
+    assert "/out:pdf" in text
     assert "/table" in text
     assert "/clear" in text
     assert "ESC 2회" in text
@@ -96,6 +98,10 @@ def test_command_lists():
     assert "/tools" in BUILTIN_COMMANDS
     assert "/memory" in BUILTIN_COMMANDS
     assert "/knowledge" in BUILTIN_COMMANDS
+    assert "/out" in BUILTIN_COMMANDS
+    assert "/out:pdf" in BUILTIN_COMMANDS
+    assert "/out:markdown" in BUILTIN_COMMANDS
+    assert "/out:md" in BUILTIN_COMMANDS
     assert "/table" in HYBRID_COMMANDS
     for cmd in BUILTIN_COMMANDS:
         assert cmd in ALL_AUTOCOMPLETE_COMMANDS

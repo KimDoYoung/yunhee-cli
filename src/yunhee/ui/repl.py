@@ -18,6 +18,11 @@ from yunhee.agent import (
     search_knowledge,
 )
 from yunhee.agent.tools.core_exec import run_command
+from yunhee.agent.tools.ext_gotenberg import (
+    convert_markdown_to_pdf,
+    export_pdf_from_file,
+)
+from yunhee.agent.tools.screen_scout import build_screen_spec_markdown
 from yunhee.config import OLLAMA_MODEL
 from yunhee.ui.components import (
     format_tool_call_status,
@@ -40,6 +45,10 @@ BUILTIN_COMMANDS = [
     "/session",
     "/memory",
     "/knowledge",
+    "/out",
+    "/out:pdf",
+    "/out:markdown",
+    "/out:md",
 ]
 
 HYBRID_COMMANDS = [
@@ -70,6 +79,9 @@ def _help_text() -> str:
   [green]/session[/green]         현재 세션 기록(마크다운/JSONL) 파일 경로 확인
   [green]/memory[/green]          프로젝트 핵심 규칙(.yunhee/memory.md) 조회 (추가: /memory add <규칙>)
   [green]/knowledge <검색어>[/green] ChromaDB 지식 베이스(bge-m3) 즉시 검색
+  [green]/out <화면|파일>[/green]    마이그레이션 종합 마크다운 명세서 작성 (== /out:markdown, /out:md)
+  [green]/out:pdf <화면|파일>[/green] Gotenberg 스타일링 공식 PDF 명세서 원클릭 발간
+  [green]/out:pdf session[/green]        현재까지의 전체 대화 기록을 예쁜 PDF 대화록으로 발간
 
 [bold]하이브리드 CLI 명령어 (실행 결과를 현재 대화 맥락에 자동 주입)[/bold]
   [cyan]/table <테이블명>[/cyan]   특정 테이블 스키마 DBML 즉시 조회
@@ -258,6 +270,85 @@ def run_repl(model: str = OLLAMA_MODEL) -> None:
                     console.print(f"[dim]ChromaDB 지식 검색 중: '{query}'...[/dim]")
                     res = search_knowledge(query, limit=3)
                     console.print(f"{res}\n")
+                continue
+
+            if cmd in ("out", "out:pdf", "out:markdown", "out:md"):
+                format_type = "pdf" if cmd == "out:pdf" else "markdown"
+                target = arg.strip()
+
+                if not target:
+                    console.print(
+                        "[yellow]사용법:[/yellow]\n"
+                        "  [green]/out <화면코드>[/green]          - 화면 마크다운 명세서 작성 (== /out:markdown, /out:md)\n"
+                        "  [green]/out:pdf <화면코드>[/green]      - 화면 마크다운 작성 및 Gotenberg 공식 PDF 발간\n"
+                        "  [green]/out:pdf <파일.md>[/green]       - 기존 마크다운 문서를 PDF로 변환 발간\n"
+                        "  [green]/out:pdf session[/green]        - 현재 대화 세션 전체를 PDF 대화록으로 발간\n"
+                    )
+                    continue
+
+                # Case 1: 세션 대화록 출력 (target == "session")
+                if target.lower() == "session":
+                    if not loop.session_logger:
+                        console.print("[dim]세션 로거가 비활성화되어 있습니다.[/dim]\n")
+                        continue
+                    sess_md = loop.session_logger.md_path
+                    if not sess_md.is_file():
+                        console.print("[dim]기록된 세션 대화가 아직 없습니다.[/dim]\n")
+                        continue
+
+                    if format_type == "markdown":
+                        console.print(f"✔ 현재 세션 마크다운 파일: [cyan]{sess_md}[/cyan]\n")
+                    else:
+                        pdf_out = Path(config.WORK_DIR) / "docs" / "pdf" / f"session_{loop.session_logger.session_id}.pdf"
+                        console.print(f"[dim yellow]⚡ Gotenberg PDF 발간 중: {sess_md.name} -> {pdf_out.name}...[/dim yellow]")
+                        ok, msg = convert_markdown_to_pdf(
+                            sess_md.read_text(encoding="utf-8"),
+                            pdf_out,
+                            title=f"yunhee 대화 세션 기록 ({loop.session_logger.session_id})",
+                        )
+                        if ok:
+                            console.print(f"[bold green]{msg}[/bold green]\n")
+                        else:
+                            console.print(f"[bold red]{msg}[/bold red]\n")
+                    continue
+
+                # Case 2: 기존 마크다운 파일인 경우
+                target_path = Path(target).resolve()
+                if target_path.is_file() and target_path.suffix.lower() == ".md":
+                    if format_type == "markdown":
+                        console.print(f"✔ 지정한 마크다운 파일: [cyan]{target_path}[/cyan]\n")
+                    else:
+                        pdf_out = Path(config.WORK_DIR) / "docs" / "pdf" / f"{target_path.stem}.pdf"
+                        console.print(f"[dim yellow]⚡ Gotenberg PDF 변환 중: {target_path.name}...[/dim yellow]")
+                        ok, msg = export_pdf_from_file(target_path, pdf_out)
+                        if ok:
+                            console.print(f"[bold green]{msg}[/bold green]\n")
+                        else:
+                            console.print(f"[bold red]{msg}[/bold red]\n")
+                    continue
+
+                # Case 3: 화면 코드인 경우 (정적 분석 ➜ 명세서 생성 ➜ [PDF 발간])
+                console.print(f"[dim yellow]⚡ 화면 분석 및 마이그레이션 명세서 작성 중: '{target}'...[/dim yellow]")
+                try:
+                    md_content, spec_path = build_screen_spec_markdown(target)
+                    console.print(f"✔ 마크다운 명세서 작성 완료: [cyan]{spec_path}[/cyan]")
+
+                    if format_type == "pdf":
+                        pdf_out = Path(config.WORK_DIR) / "docs" / "pdf" / f"{spec_path.stem}.pdf"
+                        console.print(f"[dim yellow]⚡ Gotenberg PDF 발간 중: {pdf_out.name}...[/dim yellow]")
+                        ok, msg = convert_markdown_to_pdf(
+                            md_content,
+                            pdf_out,
+                            title=f"마이그레이션 기술 명세서: {spec_path.stem}",
+                        )
+                        if ok:
+                            console.print(f"[bold green]{msg}[/bold green]\n")
+                        else:
+                            console.print(f"[bold red]{msg}[/bold red]\n")
+                    else:
+                        console.print()
+                except Exception as e:  # noqa: BLE001
+                    console.print(f"[bold red]명세서 작성 중 오류 발생:[/bold red] {e}\n")
                 continue
 
             # 하이브리드 CLI 커맨드 처리 (예: /table, /outline, /log 등)
