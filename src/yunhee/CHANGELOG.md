@@ -2,6 +2,15 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.5.0] - 2026-10-23
+자율 에이전트 하네스(Agentic Harness), 하이브리드 장기 기억, Gotenberg 산출물 발간 및 단일 DB 자율 질의 통합 메이저 릴리즈.
+- **Agentic Harness & REPL 자율 루프**: `yunhee` 서브커맨드 없이 실행 시 진입하는 대화형 REPL 에이전트 하네스 구축. Rich 라이브 스피너, ESC 2회 즉시 취소, 모델-도구 자율 루프 및 자기 수정(Self-correction) 지원.
+- **하이브리드 장기 기억 (L1 Rules + L2 Semantic Knowledge)**: L1 규칙(.yunhee/memory.md, 40줄 가드) 자동 프롬프트 주입 및 L2 ChromaDB(bge-m3) 벡터 스토어 연동 에러 해결 노하우/지식 축적 및 시맨틱 프리페치 지원.
+- **MCP (Model Context Protocol) 확장**: `/init` 시 `.yunhee/mcp.json` 자동 생성 (time, fetch 기본 내장), 백그라운드 이벤트 루프 스레드 기반 `MCPManager`로 MCP 서버 도구 동적 확장.
+- **마이그레이션 기술 명세서 및 Gotenberg PDF 발간 (`/out`, `/out:pdf`)**: 화면 코드로부터 UI 이벤트, AG Grid Spec, 버튼 JSX, DBML 테이블 스키마, 소스 Outline을 자동 집약한 명세서 마크다운 생성 및 Gotenberg Chromium 연동 공식 PDF 원클릭 발간. `/out:pdf session`으로 전체 대화록 PDF 발간 지원.
+- **자율 DB 쿼리 및 통합 객체 정의 조회 (`run_sql`, `get_db_definition`)**: PostgreSQL(`YUNHEE_DB`) 안전한 읽기 전용 쿼리 실행, 테이블 DDL(DBML)과 스토어드 함수/프로시저(341개) PL/pgSQL 본체 소스코드, 뷰 정의를 한 번에 조회하는 통합 도구 추가. `\d`, `\df+`, `\sf` 등 psql 메타 커맨드 자동 라우팅.
+- **설정 단순화 및 단일 DB 고정**: `.env.yunhee` 우선 로드 (`.env.yunhee.sample` 템플릿 제공, `.gitignore` 완비), `YUNHEE_DB` 단일 고정 및 `LOCAL_DB` 100% 하위 호환.
+
 ## [0.4.7] - 2026-10-21
 - 개발 작업 진행 중
 
