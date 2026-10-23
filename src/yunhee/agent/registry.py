@@ -23,7 +23,7 @@ from yunhee.agent.tools.core_fs import (
     read_file,
     write_file,
 )
-from yunhee.agent.tools.db_sql import execute_sql
+from yunhee.agent.tools.db_sql import execute_sql, get_table_schema
 from yunhee.agent.tools.domain_helper import (
     lookup_config,
     read_recent_errors,
@@ -415,7 +415,24 @@ def create_default_registry(load_mcp: bool = True) -> ToolRegistry:
         },
     )
 
-    # 15. MCP 도구 동적 로드 (mcp.json 존재 시)
+    # 15. get_table_schema (테이블 DDL / DBML 스키마 조회)
+    reg.register(
+        name="get_table_schema",
+        func=get_table_schema,
+        description="지정한 테이블의 DDL 스키마(DBML: 컬럼 목록, 데이터 타입, PK/FK/인덱스, 한글 주석)를 조회합니다. 테이블 구조나 컬럼 구성을 확인할 때 최우선으로 호출하세요.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "table_name": {
+                    "type": "string",
+                    "description": "조회할 테이블 이름 (예: 'sys06_menu', 'sys01_company')",
+                },
+            },
+            "required": ["table_name"],
+        },
+    )
+
+    # 16. MCP 도구 동적 로드 (mcp.json 존재 시)
     if load_mcp:
         try:
             mcp_mgr = MCPManager()

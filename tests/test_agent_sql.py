@@ -57,3 +57,47 @@ def test_registry_has_run_sql():
         )
         res = reg.dispatch("run_sql", {"query": "SELECT 1"})
         assert "| val |" in res
+
+
+def test_get_table_schema_from_snapshot():
+    from yunhee.agent.tools.db_sql import get_table_schema
+
+    with (
+        patch("yunhee.tools.schema_snapshot.load_snapshot") as mock_load,
+        patch("yunhee.tools.schema_snapshot.slice_tables") as mock_slice,
+    ):
+        mock_load.return_value = ToolResult(ok=True, data={"tables": {}})
+        mock_slice.return_value = ToolResult(ok=True, data={"dbml": 'Table "public"."sys06_menu" { id numeric }'})
+        res = get_table_schema("sys06_menu")
+
+    assert "```dbml" in res
+    assert 'Table "public"."sys06_menu"' in res
+
+
+def test_execute_sql_intercepts_backslash_d():
+    with patch("yunhee.agent.tools.db_sql.get_table_schema") as mock_schema:
+        mock_schema.return_value = '```dbml\nTable "public"."sys06_menu" {}\n```'
+        res = execute_sql(r"\d sys06_menu")
+        assert 'Table "public"."sys06_menu"' in res
+        mock_schema.assert_called_once_with("sys06_menu")
+
+    with patch("yunhee.agent.tools.db_sql.get_table_schema") as mock_schema:
+        mock_schema.return_value = '```dbml\nTable "public"."sys06_menu" {}\n```'
+        res = execute_sql("DESCRIBE sys06_menu;")
+        assert 'Table "public"."sys06_menu"' in res
+        mock_schema.assert_called_once_with("sys06_menu")
+
+
+def test_registry_has_get_table_schema():
+    reg = create_default_registry(load_mcp=False)
+    assert reg.has_tool("get_table_schema")
+
+    tool_def = reg.get("get_table_schema")
+    assert tool_def is not None
+    assert "DBML" in tool_def.description
+    assert "table_name" in tool_def.parameters["properties"]
+
+    res = reg.dispatch("get_table_schema", {"table_name": "sys06_menu"})
+    assert 'Table "public"."sys06_menu"' in res
+
+
