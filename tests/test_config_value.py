@@ -28,6 +28,8 @@ def test_get_config_item_lookup():
     # 다른 주요 키들
     assert config.get_config_item("work-dir") is not None
     assert config.get_config_item("WORK_DIR") is not None
+    assert config.get_config_item("YUNHEE_DB") is not None
+    assert config.get_config_item("yunhee-db") is not None
     assert config.get_config_item("LOCAL_DB") is not None
     assert config.get_config_item("local-db") is not None
     assert config.get_config_item("TEST_DB") is not None

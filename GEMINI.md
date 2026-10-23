@@ -199,10 +199,10 @@ uv tool install --force --reinstall . # yunhee 안정 버전을 전역 PATH에 �
 
 ## 주의사항
 
-- **보안 및 자격 증명**: `.env.local`에는 실제 DB 계정 정보가 포함되어 있으므로 절대 git에 커밋하지 않는다 (`.gitignore`에 포함됨).
-- **환경변수 규칙**: 새로운 환경변수 추가 시 반드시 `.env.local.sample`에도 설명과 함께 추가하며, 시스템 환경변수 충돌 방지를 위해 `YUNHEE_` 접두사를 사용한다.
+- **보안 및 자격 증명**: `.env.yunhee` 및 `.env.local`에는 실제 DB 계정 정보가 포함되어 있으므로 절대 git에 커밋하지 않는다 (`.gitignore`에 포함됨).
+- **환경변수 규칙**: 새로운 환경변수 추가 시 반드시 `.env.yunhee.sample`에도 설명과 함께 추가하며, 시스템 환경변수 충돌 방지를 위해 `YUNHEE_` 접두사를 사용한다 (단일 DB 접속 변수는 `YUNHEE_DB`).
 - **경로 참조 원칙**:
-  - `yunhee` 자체 리소스(설정, 로컬 SQLite DB, 스키마 스냅샷 등)는 `config.YUNHEE_DIR` 기준.
+  - `yunhee` 자체 리소스(설정 `.env.yunhee`, 로컬 SQLite DB, 스키마 스냅샷 등)는 `config.YUNHEE_DIR` 기준.
   - 마이그레이션 작업 대상 소스 파일이나 타겟 출력물은 반드시 `config.WORK_DIR` 기준.
   - ASIS 레거시 소스는 `config.ASIS_SRC_DIR` 기준.
 

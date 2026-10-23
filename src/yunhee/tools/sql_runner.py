@@ -306,7 +306,13 @@ def get_connection_string(db_name: str | None = None) -> str | None:
     if db_name:
         db_url = os.getenv(db_name) or (db_name if "://" in db_name else None)
     if not db_url:
-        db_url = config.LOCAL_DB or os.getenv("LOCAL_DB") or os.getenv("TEST_DB")
+        db_url = (
+            config.YUNHEE_DB
+            or config.LOCAL_DB
+            or os.getenv("YUNHEE_DB")
+            or os.getenv("LOCAL_DB")
+            or os.getenv("TEST_DB")
+        )
     return db_url
 
 
@@ -360,7 +366,7 @@ def run_sql(
     if not db_url:
         return ToolResult(
             ok=False,
-            error="DB 접속 URL이 설정되지 않았습니다. .env.local의 LOCAL_DB를 확인하세요.",
+            error="DB 접속 URL이 설정되지 않았습니다. .env.yunhee의 YUNHEE_DB를 확인하세요.",
         )
 
     stmts = split_statements(raw_script)

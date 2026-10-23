@@ -10,6 +10,8 @@ wheels/
 .venv
 .env*
 !.env.local.sample
+!.env.yunhee.sample
+
 
 # Local runtime data (sqlite db, etc.)
 data/

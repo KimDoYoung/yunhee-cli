@@ -127,13 +127,13 @@ def config_cmd():
 
     cfg = config.summary()
     table.add_row("Target (Work Dir)", cfg["work-dir"], "현재 터미널 작업 디렉터리 (cd로 이동하여 변경)")
-    table.add_row("Source (ASIS)", cfg["asis-src"], ".env.local의 YUNHEE_ASIS_SRC_DIR")
+    table.add_row("Source (ASIS)", cfg["asis-src"], "설정 파일의 YUNHEE_ASIS_SRC_DIR")
     table.add_row("소스 브랜치", cfg["asis-branch"], "원격 추적 브랜치(origin/<branch>) 대비 상태 (읽기 전용)")
-    table.add_row("Local DB", cfg["local-db"], ".env.local의 LOCAL_DB")
-    table.add_row("Test DB", cfg["test-db"], ".env.local의 TEST_DB")
-    table.add_row("Schema Snapshot", cfg["schema-env"], ".env.local의 YUNHEE_SCHEMA_ENV")
+    table.add_row("Yunhee DB", cfg.get("yunhee-db", cfg["local-db"]), "설정 파일(.env.yunhee)의 YUNHEE_DB")
+    table.add_row("Local DB (호환)", cfg["local-db"], "YUNHEE_DB 하위 호환 별칭")
+    table.add_row("Schema Snapshot", cfg["schema-env"], "설정 파일의 YUNHEE_SCHEMA_ENV")
     table.add_row("Yunhee Home", cfg["yunhee-dir"], "yunhee-cli 설치 경로")
-    table.add_row("Env File", cfg["env-file"], "설정 파일 (.env.local)")
+    table.add_row("Env File", cfg["env-file"], "설정 파일 (.env.yunhee / .env.local)")
     table.add_row("Ollama URL", cfg["ollama-url"], ".env.local의 YUNHEE_OLLAMA_URL")
     table.add_row("Ollama Model", cfg["ollama-model"], ".env.local의 YUNHEE_OLLAMA_MODEL")
     table.add_row("API Base URL", cfg["api-base"], ".env.local의 YUNHEE_API_BASE_URL")
@@ -672,7 +672,7 @@ def sql_cmd(
     limit: Annotated[int | None, typer.Option("--limit", "-n", help="출력할 최대 행 수 (table 기본 5, tsv/csv/json 기본 제한 없음)")] = None,
     timeout: Annotated[float, typer.Option("--timeout", help="statement_timeout 타임아웃(초) (기본: 10)")] = 10.0,
     var: Annotated[list[str] | None, typer.Option("--var", help="변수 설정 key=val 또는 key=\"select ...\" (반복 가능)")] = None,
-    db: Annotated[str | None, typer.Option("--db", help="대상 데이터베이스 환경변수 이름 또는 연결 URL (기본: LOCAL_DB)")] = None,
+    db: Annotated[str | None, typer.Option("--db", help="대상 데이터베이스 환경변수 이름 또는 연결 URL (기본: YUNHEE_DB)")] = None,
     output: Annotated[str, typer.Option("--output", "-o", help="출력 형식: table(기본) | tsv | csv | json")] = "table",
     no_header: Annotated[bool, typer.Option("--no-header", help="tsv·csv 출력 시 헤더 줄 생략")] = False,
     null: Annotated[str, typer.Option("--null", help="tsv·csv에서 NULL 값을 표기할 문자열 (기본: 빈 칸)")] = "",

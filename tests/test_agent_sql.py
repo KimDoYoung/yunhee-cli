@@ -66,8 +66,10 @@ def test_get_table_schema_from_snapshot():
         patch("yunhee.tools.schema_snapshot.load_snapshot") as mock_load,
         patch("yunhee.tools.schema_snapshot.slice_tables") as mock_slice,
     ):
-        mock_load.return_value = ToolResult(ok=True, data={"tables": {}})
-        mock_slice.return_value = ToolResult(ok=True, data={"dbml": 'Table "public"."sys06_menu" { id numeric }'})
+        mock_load.return_value = ToolResult(ok=True, data={"tables": []})
+        mock_slice.return_value = ToolResult(
+            ok=True, data={"dbml": 'Table "public"."sys06_menu" { id numeric }', "tables": ["sys06_menu"]}
+        )
         res = get_table_schema("sys06_menu")
 
     assert "```dbml" in res
@@ -75,17 +77,17 @@ def test_get_table_schema_from_snapshot():
 
 
 def test_execute_sql_intercepts_backslash_d():
-    with patch("yunhee.agent.tools.db_sql.get_table_schema") as mock_schema:
-        mock_schema.return_value = '```dbml\nTable "public"."sys06_menu" {}\n```'
+    with patch("yunhee.agent.tools.db_sql.get_db_definition") as mock_def:
+        mock_def.return_value = '```dbml\nTable "public"."sys06_menu" {}\n```'
         res = execute_sql(r"\d sys06_menu")
         assert 'Table "public"."sys06_menu"' in res
-        mock_schema.assert_called_once_with("sys06_menu")
+        mock_def.assert_called_once_with("sys06_menu")
 
-    with patch("yunhee.agent.tools.db_sql.get_table_schema") as mock_schema:
-        mock_schema.return_value = '```dbml\nTable "public"."sys06_menu" {}\n```'
+    with patch("yunhee.agent.tools.db_sql.get_db_definition") as mock_def:
+        mock_def.return_value = '```dbml\nTable "public"."sys06_menu" {}\n```'
         res = execute_sql("DESCRIBE sys06_menu;")
         assert 'Table "public"."sys06_menu"' in res
-        mock_schema.assert_called_once_with("sys06_menu")
+        mock_def.assert_called_once_with("sys06_menu")
 
 
 def test_registry_has_get_table_schema():
@@ -94,10 +96,41 @@ def test_registry_has_get_table_schema():
 
     tool_def = reg.get("get_table_schema")
     assert tool_def is not None
-    assert "DBML" in tool_def.description
+    assert "DDL" in tool_def.description
     assert "table_name" in tool_def.parameters["properties"]
 
     res = reg.dispatch("get_table_schema", {"table_name": "sys06_menu"})
     assert 'Table "public"."sys06_menu"' in res
+
+
+def test_get_db_definition_routine():
+    from yunhee.agent.tools.db_sql import get_db_definition
+
+    mock_routine_data = {
+        "routines": [
+            {
+                "name": "act02_journal_backup",
+                "schema": "public",
+                "definition": "CREATE OR REPLACE FUNCTION public.act02_journal_backup() RETURNS trigger ...",
+                "comment": "저널 백업 트리거",
+            }
+        ]
+    }
+    with patch("yunhee.tools.schema_snapshot.load_snapshot") as mock_load:
+        mock_load.return_value = ToolResult(ok=True, data=mock_routine_data)
+        out = get_db_definition("act02_journal_backup")
+
+    assert "act02_journal_backup" in out
+    assert "RETURNS trigger" in out
+
+
+def test_registry_has_get_db_definition():
+    reg = create_default_registry(load_mcp=False)
+    assert reg.has_tool("get_db_definition")
+
+    tool_def = reg.get("get_db_definition")
+    assert tool_def is not None
+    assert "name" in tool_def.parameters["properties"]
+
 
 

@@ -38,7 +38,7 @@ def find_project_root(start_dir: Path | None = None) -> Path:
     for p in parents:
         if (p / ".yunhee.toml").is_file():
             return p
-        if (p / ".env.local").is_file():
+        if (p / ".env.yunhee").is_file() or (p / ".env.local").is_file():
             return p
         if (p / "CLAUDE.md").is_file():
             return p

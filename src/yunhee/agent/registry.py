@@ -23,7 +23,11 @@ from yunhee.agent.tools.core_fs import (
     read_file,
     write_file,
 )
-from yunhee.agent.tools.db_sql import execute_sql, get_table_schema
+from yunhee.agent.tools.db_sql import (
+    execute_sql,
+    get_db_definition,
+    get_table_schema,
+)
 from yunhee.agent.tools.domain_helper import (
     lookup_config,
     read_recent_errors,
@@ -415,24 +419,41 @@ def create_default_registry(load_mcp: bool = True) -> ToolRegistry:
         },
     )
 
-    # 15. get_table_schema (테이블 DDL / DBML 스키마 조회)
+    # 15. get_db_definition (DB 객체 DDL / 함수 본체 소스 / 뷰 정의 조회)
+    reg.register(
+        name="get_db_definition",
+        func=get_db_definition,
+        description="PostgreSQL DB 객체(스토어드 함수/프로시저 소스 본체, 테이블 DBML DDL, 뷰 정의 등)의 전체 소스 코드 및 DDL을 조회합니다. 테이블 DDL뿐 아니라 DB 함수(f_..., fn_... 등)의 본체 소스코드를 확인할 때 최우선으로 호출하세요.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "조회할 DB 객체 이름 (예: 'act02_journal_backup', 'f_ast_class_tree_nm', 'sys06_menu')",
+                },
+            },
+            "required": ["name"],
+        },
+    )
+
+    # 16. get_table_schema (하위 호환)
     reg.register(
         name="get_table_schema",
         func=get_table_schema,
-        description="지정한 테이블의 DDL 스키마(DBML: 컬럼 목록, 데이터 타입, PK/FK/인덱스, 한글 주석)를 조회합니다. 테이블 구조나 컬럼 구성을 확인할 때 최우선으로 호출하세요.",
+        description="지정한 테이블 또는 DB 객체의 DDL 스키마를 조회합니다.",
         parameters={
             "type": "object",
             "properties": {
                 "table_name": {
                     "type": "string",
-                    "description": "조회할 테이블 이름 (예: 'sys06_menu', 'sys01_company')",
+                    "description": "조회할 테이블 또는 DB 객체 이름 (예: 'sys06_menu', 'sys01_company')",
                 },
             },
             "required": ["table_name"],
         },
     )
 
-    # 16. MCP 도구 동적 로드 (mcp.json 존재 시)
+    # 17. MCP 도구 동적 로드 (mcp.json 존재 시)
     if load_mcp:
         try:
             mcp_mgr = MCPManager()

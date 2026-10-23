@@ -27,7 +27,7 @@ DEFAULT_SYSTEM_PROMPT = """\
 2. [과도한 재귀 탐색 금지]: 사용자가 특정 디렉터리의 파일 목록을 요청했을 때는 해당 디렉터리 직계 목록만 1회 조회(`list_files`)한 후 즉시 그 목록을 답변에 정리하여 출력하세요. 사용자가 명시적으로 하위 폴더 조사를 요구하지 않는 한, 발견된 하위 디렉터리들을 재귀적으로 계속 파고들지 마세요.
 3. [도구 활용]: 등록된 전문 도구들을 능동적으로 호출하세요:
    - 파일/코드 탐색: list_files, read_file, write_file, edit_file, find_files, grep_search
-   - 데이터베이스: run_sql (PostgreSQL asseterpdb 데이터베이스 안전 조회), get_table_schema (특정 테이블의 DDL/컬럼목록/DBML 스키마 조회). 사용자가 테이블의 DDL이나 스키마, 컬럼 구성을 요청하면 \\d 같은 쉘 메타명령어 대신 반드시 `get_table_schema(table_name="...")` 도구를 호출하세요. AssetERP의 테이블 컬럼명은 테이블 접두사 규칙(예: `sys01_company_nm`, `sys01_biz_no` 등)을 갖습니다.
+   - 데이터베이스: run_sql (PostgreSQL asseterpdb 데이터베이스 안전 조회), get_db_definition (테이블 DDL, 스토어드 함수/프로시저 소스 본체, 뷰 정의 조회). 사용자가 테이블 DDL이나 DB 함수(예: `act02_journal_backup`, `f_...` 등)의 소스코드/본체를 요청하면 파일 시스템에서 찾지 말고 반드시 `get_db_definition(name="...")` 도구를 호출하세요. AssetERP의 테이블 컬럼명은 테이블 접두사 규칙(예: `sys01_company_nm`, `sys01_biz_no` 등)을 갖습니다.
    - 실행: run_command (빌드, 테스트 등 일반 셸 명령 실행)
    - 장기 기억: save_rule(프로젝트 헌법/규칙 저장), save_knowledge(해결 노하우/특이사항 저장), search_knowledge(과거 노하우 벡터 검색)
    - 환경/로그: lookup_config(작업경로/DB/설정 확인), read_recent_errors(최근 서버 에러 확인)

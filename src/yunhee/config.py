@@ -4,15 +4,15 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
-# config.py 기준 2단계 위 = yunhee-cli 프로젝트 루트 (설치 위치, .env.local이 있는 곳)
+# config.py 기준 2단계 위 = yunhee-cli 프로젝트 루트 (설치 위치, .env.yunhee / .env.local이 있는 곳)
 # WORK_DIR(작업 대상 프로젝트)과 구분하기 위해 YUNHEE_DIR로 명명한다.
 def _find_yunhee_dir() -> Path:
     """yunhee 자체 설정/데이터가 위치한 디렉토리(YUNHEE_DIR)를 탐색한다.
 
     1. YUNHEE_DIR 환경변수 우선
-    2. 소스 트리 기준 (editable 설치 또는 개발 환경: parents[2]에 pyproject.toml이나 .env.local 존재)
+    2. 소스 트리 기준 (editable 설치 또는 개발 환경: parents[2]에 pyproject.toml이나 .env.yunhee/.env.local 존재)
     3. 일반 패키지(site-packages)로 설치된 경우:
-       - ~/.yunhee/.env.local 이 존재하면 ~/.yunhee
+       - ~/.yunhee/.env.yunhee 또는 ~/.yunhee/.env.local 이 존재하면 ~/.yunhee
        - /home/kdy987/work/yunhee-cli (기본 개발 저장소)가 존재하면 해당 디렉터리
     4. fallback: parents[2]
     """
@@ -22,11 +22,15 @@ def _find_yunhee_dir() -> Path:
             return p
 
     source_root = Path(__file__).resolve().parents[2]
-    if (source_root / "pyproject.toml").is_file() or (source_root / ".env.local").is_file():
+    if (
+        (source_root / "pyproject.toml").is_file()
+        or (source_root / ".env.yunhee").is_file()
+        or (source_root / ".env.local").is_file()
+    ):
         return source_root
 
     home_yunhee = Path.home() / ".yunhee"
-    if (home_yunhee / ".env.local").is_file():
+    if (home_yunhee / ".env.yunhee").is_file() or (home_yunhee / ".env.local").is_file():
         return home_yunhee
 
     dev_root = Path("/home/kdy987/work/yunhee-cli")
@@ -36,14 +40,25 @@ def _find_yunhee_dir() -> Path:
     return source_root
 
 
+def _find_env_file(yunhee_dir: Path) -> Path:
+    """설정 파일 경로를 결정한다 (.env.yunhee 우선, 없으면 .env.local)."""
+    env_yunhee = yunhee_dir / ".env.yunhee"
+    if env_yunhee.is_file():
+        return env_yunhee
+    env_local = yunhee_dir / ".env.local"
+    if env_local.is_file():
+        return env_local
+    return env_yunhee
+
+
 YUNHEE_DIR = _find_yunhee_dir()
-ENV_FILE = YUNHEE_DIR / ".env.local"
+ENV_FILE = _find_env_file(YUNHEE_DIR)
 
 # yunhee가 어느 디렉토리에서 실행됐는지 = 작업 대상 프로젝트 루트.
 # grep/파일 검색 등 "작업 대상"을 다루는 tool들은 전부 이 값을 기준으로 동작해야 한다.
 WORK_DIR = Path.cwd()
 
-# `uv tool install --editable`로 어디서 실행하든 항상 이 프로젝트의 .env.local을 읽는다.
+# 어디서 실행하든 항상 YUNHEE_DIR의 설정 파일(.env.yunhee 또는 .env.local)을 읽는다.
 load_dotenv(ENV_FILE)
 
 # OLLAMA_HOST는 Ollama 서버 자체의 bind address 환경변수와 이름이 겹치므로
@@ -62,11 +77,14 @@ CHROMA_PORT = int(os.getenv("YUNHEE_CHROMA_PORT", "8000"))
 # Gotenberg PDF 변환 서비스 (docs/docker-compose.yml 및 examples/default.conf 참고)
 GOTENBERG_URL = os.getenv("YUNHEE_GOTENBERG_URL", "http://jskn.iptime.org/gotenberg")
 
-# AssetERP 테스트/로컬 DB (읽기 전용 조회용, docs/yunhee-cli-설계.md 참고)
-TEST_DB = os.getenv("TEST_DB")
-LOCAL_DB = os.getenv("LOCAL_DB")
-# `table`/`prepare`가 기본으로 읽을 스키마 스냅샷(`make-dbml <ENV>`로 생성)의 환경변수 이름
-SCHEMA_ENV = os.getenv("YUNHEE_SCHEMA_ENV", "LOCAL_DB")
+# AssetERP 단일 데이터베이스 접속 URL (읽기 전용 조회용, PostgreSQL)
+# 1순위: YUNHEE_DB, 하위 호환: LOCAL_DB, TEST_DB
+YUNHEE_DB = os.getenv("YUNHEE_DB") or os.getenv("LOCAL_DB") or os.getenv("TEST_DB")
+LOCAL_DB = YUNHEE_DB  # 하위 호환 별칭
+TEST_DB = os.getenv("TEST_DB") or YUNHEE_DB  # 하위 호환
+
+# `table`/`prepare`/`get_db_definition`이 기본으로 읽을 스키마 스냅샷 이름
+SCHEMA_ENV = os.getenv("YUNHEE_SCHEMA_ENV") or ("YUNHEE_DB" if os.getenv("YUNHEE_DB") else "LOCAL_DB")
 
 # ASIS(AssetERP, GWT/GXT) 소스 루트 - yunhee가 레거시 페이지/매퍼를 찾는 기준
 ASIS_SRC_DIR = Path(os.getenv("YUNHEE_ASIS_SRC_DIR", "/home/kdy987/oms-data/src/Asset-ERP"))
@@ -159,6 +177,7 @@ def summary() -> dict[str, str]:
         "chroma-host": CHROMA_HOST,
         "chroma-port": str(CHROMA_PORT),
         "gotenberg-url": GOTENBERG_URL,
+        "yunhee-db": redact(YUNHEE_DB),
         "test-db": redact(TEST_DB),
         "local-db": redact(LOCAL_DB),
         "schema-env": SCHEMA_ENV,
@@ -167,7 +186,7 @@ def summary() -> dict[str, str]:
         "api-base": (
             f"{API_BASE_URL} (from {TOML_FILE.name})"
             if TOML_FILE and _api_conf.get("base")
-            else f"{API_BASE_URL} (from .env.local)"
+            else f"{API_BASE_URL} (from {ENV_FILE.name})"
         ),
         "api-tenant": (
             f"{API_DEFAULT_TENANT} (from {TOML_FILE.name})"
@@ -242,13 +261,20 @@ CONFIG_ITEMS: list[ConfigItem] = [
         key="ENV_FILE",
         aliases=["env-file", "env_file"],
         getter=lambda: str(ENV_FILE),
-        description="설정 파일 (.env.local) 경로",
+        description="설정 파일 (.env.yunhee / .env.local) 경로",
+    ),
+    ConfigItem(
+        key="YUNHEE_DB",
+        aliases=["yunhee-db", "yunhee_db", "LOCAL_DB", "local-db", "local_db"],
+        getter=lambda: YUNHEE_DB or "",
+        description="AssetERP 단일 PostgreSQL DB 접속 URL",
+        is_url=True,
     ),
     ConfigItem(
         key="LOCAL_DB",
         aliases=["local-db", "local_db"],
         getter=lambda: LOCAL_DB or "",
-        description="로컬 PostgreSQL DB 접속 URL",
+        description="로컬 PostgreSQL DB 접속 URL (YUNHEE_DB 하위 호환)",
         is_url=True,
     ),
     ConfigItem(

@@ -34,6 +34,13 @@ def save_snapshot(env_name: str, schema: dict) -> Path:
 def load_snapshot(env_name: str) -> ToolResult:
     path = snapshot_path(env_name)
     if not path.exists():
+        # YUNHEE_DB <-> LOCAL_DB 상호 fallback
+        if env_name == "YUNHEE_DB" and (SNAPSHOT_DIR / "LOCAL_DB.json").exists():
+            path = SNAPSHOT_DIR / "LOCAL_DB.json"
+        elif env_name == "LOCAL_DB" and (SNAPSHOT_DIR / "YUNHEE_DB.json").exists():
+            path = SNAPSHOT_DIR / "YUNHEE_DB.json"
+
+    if not path.exists():
         return ToolResult(
             ok=False, error=f"스키마 스냅샷이 없습니다: {path} (먼저 'yunhee make-dbml {env_name}' 실행)"
         )
