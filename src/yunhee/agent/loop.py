@@ -12,6 +12,8 @@ from typing import Any
 from openai import AsyncOpenAI, OpenAI
 
 from yunhee import config
+from yunhee.agent.knowledge import prefetch_relevant_knowledge
+from yunhee.agent.memory import get_rules_prompt_section
 from yunhee.agent.parser import extract_tool_calls_from_text
 from yunhee.agent.registry import ToolRegistry, create_default_registry
 from yunhee.agent.session import SessionLogger
@@ -23,10 +25,22 @@ DEFAULT_SYSTEM_PROMPT = """\
 [핵심 행동 지침]
 1. [결과 전달 필수]: 사용자가 파일 목록, 디렉터리 구조, 파일 내용, 명령어 실행 결과 등을 물어보거나 조회를 요청한 경우, 절대로 "확인했습니다"나 "조회했습니다"라는 단순 확인 멘트로만 끝내지 마십시오. 도구를 통해 얻은 실제 내용(파일명 목록, 읽은 코드 내용, 명령어 출력 등)을 사용자 답변 본문에 마크다운 목록이나 코드블록으로 빠짐없이 정리하여 보여주어야 합니다.
 2. [과도한 재귀 탐색 금지]: 사용자가 특정 디렉터리의 파일 목록을 요청했을 때는 해당 디렉터리 직계 목록만 1회 조회(`list_files`)한 후 즉시 그 목록을 답변에 정리하여 출력하세요. 사용자가 명시적으로 하위 폴더 조사를 요구하지 않는 한, 발견된 하위 디렉터리들을 재귀적으로 계속 파고들지 마세요.
-3. [도구 활용]: 필요한 도구(list_files, read_file, write_file, edit_file, run_command, find_files, grep_search)를 능동적으로 호출하여 작업을 완수하세요. 특정 키워드나 함수/클래스를 찾을 때는 무작정 파일을 열지 말고 grep_search를 먼저 활용하세요. 특정 이름의 파일을 찾을 때는 find_files를 활용하세요.
-4. [도구 이름 및 인자 규격]: 반드시 등록된 정확한 도구 이름(grep_search, find_files 등)을 호출하세요. grep이나 find 같은 리눅스 명령어를 도구 이름으로 호출하지 마세요. arguments는 반드시 {"query": "검색어"}와 같은 키-값 객체 형태여야 합니다.
+3. [도구 활용]: 등록된 전문 도구들을 능동적으로 호출하세요:
+   - 파일/코드 탐색: list_files, read_file, write_file, edit_file, find_files, grep_search
+   - 실행: run_command (셸 명령 실행)
+   - 장기 기억: save_rule(프로젝트 헌법/규칙 저장), save_knowledge(해결 노하우/특이사항 저장), search_knowledge(과거 노하우 벡터 검색)
+   - 환경/로그: lookup_config(작업경로/DB/설정 확인), read_recent_errors(최근 서버 에러 확인)
+4. [도구 이름 및 인자 규격]: 반드시 등록된 정확한 도구 이름을 호출하세요. arguments는 반드시 올바른 JSON 키-값 객체 형태여야 합니다.
 5. [루프 방지]: 동일한 인자로 동일한 도구를 무의미하게 반복 호출하지 마세요.
 """
+
+
+def build_system_prompt(base_prompt: str = DEFAULT_SYSTEM_PROMPT) -> str:
+    """기본 시스템 프롬프트에 .yunhee/memory.md의 L1 핵심 규칙을 자동 주입합니다."""
+    rules_section = get_rules_prompt_section()
+    if rules_section:
+        return f"{base_prompt.strip()}\n\n{rules_section}".strip()
+    return base_prompt.strip()
 
 
 class AgentLoop:
@@ -61,6 +75,10 @@ class AgentLoop:
         self._async_client = AsyncOpenAI(base_url=self.v1_url, api_key="ollama")
         self._sync_client = OpenAI(base_url=self.v1_url, api_key="ollama")
 
+    def get_active_system_prompt(self) -> str:
+        """기본 시스템 프롬프트에 동적 L1 규칙을 주입한 최종 프롬프트 반환."""
+        return build_system_prompt(self.system_prompt)
+
     def run(
         self,
         user_message: str,
@@ -80,9 +98,13 @@ class AgentLoop:
         if messages_history:
             messages = list(messages_history)
         else:
-            messages.append({"role": "system", "content": self.system_prompt})
+            messages.append({"role": "system", "content": self.get_active_system_prompt()})
 
-        messages.append({"role": "user", "content": user_message})
+        # L2 시맨틱 지식 사전 검색 (Prefetch RAG)
+        context_knowledge = prefetch_relevant_knowledge(user_message)
+        effective_message = f"{context_knowledge}{user_message}" if context_knowledge else user_message
+
+        messages.append({"role": "user", "content": effective_message})
 
         if self.session_logger:
             self.session_logger.log_user_message(user_message)
@@ -222,9 +244,13 @@ class AgentLoop:
         if messages_history:
             messages = list(messages_history)
         else:
-            messages.append({"role": "system", "content": self.system_prompt})
+            messages.append({"role": "system", "content": self.get_active_system_prompt()})
 
-        messages.append({"role": "user", "content": user_message})
+        # L2 시맨틱 지식 사전 검색 (Prefetch RAG)
+        context_knowledge = prefetch_relevant_knowledge(user_message)
+        effective_message = f"{context_knowledge}{user_message}" if context_knowledge else user_message
+
+        messages.append({"role": "user", "content": effective_message})
 
         if self.session_logger:
             self.session_logger.log_user_message(user_message)

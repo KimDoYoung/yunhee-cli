@@ -26,6 +26,19 @@ TOOL_ALIASES: dict[str, str] = {
     "terminal": "run_command",
     "write": "write_file",
     "edit": "edit_file",
+    "memory": "save_rule",
+    "save_memory": "save_rule",
+    "rule": "save_rule",
+    "remember": "save_rule",
+    "knowledge": "save_knowledge",
+    "store_knowledge": "save_knowledge",
+    "find_knowledge": "search_knowledge",
+    "query_knowledge": "search_knowledge",
+    "config": "lookup_config",
+    "get_config": "lookup_config",
+    "errors": "read_recent_errors",
+    "get_errors": "read_recent_errors",
+    "recent_errors": "read_recent_errors",
 }
 
 

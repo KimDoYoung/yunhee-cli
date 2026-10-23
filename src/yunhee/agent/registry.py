@@ -9,6 +9,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from yunhee.agent.knowledge import (
+    save_knowledge,
+    search_knowledge,
+)
+from yunhee.agent.memory import save_rule
 from yunhee.agent.tools.core_exec import run_command
 from yunhee.agent.tools.core_fs import (
     edit_file,
@@ -17,6 +22,10 @@ from yunhee.agent.tools.core_fs import (
     list_files,
     read_file,
     write_file,
+)
+from yunhee.agent.tools.domain_helper import (
+    lookup_config,
+    read_recent_errors,
 )
 
 
@@ -258,6 +267,105 @@ def create_default_registry() -> ToolRegistry:
                 },
             },
             "required": ["query"],
+        },
+    )
+
+    # 8. save_rule (L1 메모리)
+    reg.register(
+        name="save_rule",
+        func=save_rule,
+        description="프로젝트 영구 코딩 컨벤션이나 핵심 규칙을 .yunhee/memory.md에 저장합니다 (최대 40줄 제한).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "rule": {
+                    "type": "string",
+                    "description": "기억할 핵심 규칙 한 문장 (예: 'DTO는 항상 Java Record로 작성한다')",
+                },
+            },
+            "required": ["rule"],
+        },
+    )
+
+    # 9. save_knowledge (L2 시맨틱 지식)
+    reg.register(
+        name="save_knowledge",
+        func=save_knowledge,
+        description="에러 해결 노하우, 비즈니스 특이사항, 코드 포팅 팁 등 재사용 가능한 지식을 ChromaDB 벡터 스토어에 영구 저장합니다.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "지식의 핵심 요약 제목",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "지식의 상세 내용 및 해결 방법",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "지식 카테고리 (예: 'mybatis', 'react', 'api', 'db', 기본값 'general')",
+                },
+                "screen_id": {
+                    "type": "string",
+                    "description": "연관된 화면 코드(예: 'sys01', 생략 가능)",
+                },
+            },
+            "required": ["title", "content"],
+        },
+    )
+
+    # 10. search_knowledge (L2 시맨틱 지식)
+    reg.register(
+        name="search_knowledge",
+        func=search_knowledge,
+        description="과거에 축적된 지식 베이스(ChromaDB)에서 현재 작업과 유사한 노하우 및 해결 사례를 벡터 검색합니다.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "검색할 질문 또는 키워드",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "가져올 최대 지식 개수 (기본 3)",
+                },
+            },
+            "required": ["query"],
+        },
+    )
+
+    # 11. lookup_config (도메인 헬퍼)
+    reg.register(
+        name="lookup_config",
+        func=lookup_config,
+        description="yunhee의 현재 환경 설정(작업 폴더 WORK_DIR, ASIS 소스 폴더, DB 접속 정보, Ollama/ChromaDB 설정 등)을 확인합니다.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": "조회할 특정 설정 키 (생략 시 전체 설정 요약)",
+                },
+            },
+        },
+    )
+
+    # 12. read_recent_errors (도메인 헬퍼)
+    reg.register(
+        name="read_recent_errors",
+        func=read_recent_errors,
+        description="서버 로그에서 최근 발생한 WARN 및 ERROR 로그들을 요약하여 확인합니다.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "최대 에러 묶음 개수 (기본 5)",
+                },
+            },
         },
     )
 
