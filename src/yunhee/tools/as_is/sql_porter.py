@@ -87,7 +87,7 @@ def java_params(body: str) -> str:
 
 
 def split_depth0_commas(s: str) -> list[str]:
-    """괄호·따옴표·CASE/END 깊이 0에 있는 쉼표로만 분리한다."""
+    """괄호·따옴표·주석·CASE/END 깊이 0에 있는 쉼표로만 분리한다."""
     tokens: list[str] = []
     depth = 0
     case_depth = 0
@@ -108,6 +108,25 @@ def split_depth0_commas(s: str) -> list[str]:
             cur.append(ch)
             i += 1
             continue
+        # 블록 주석 /* ... */ 및 XML 주석 <!-- ... --> 건너뛰기
+        if s.startswith("/*", i):
+            end_c = s.find("*/", i + 2)
+            end_c = n if end_c < 0 else end_c + 2
+            cur.append(s[i:end_c])
+            i = end_c
+            continue
+        if s.startswith("<!--", i):
+            end_c = s.find("-->", i + 4)
+            end_c = n if end_c < 0 else end_c + 3
+            cur.append(s[i:end_c])
+            i = end_c
+            continue
+        if s.startswith("--", i):
+            end_c = s.find("\n", i + 2)
+            end_c = n if end_c < 0 else end_c
+            cur.append(s[i:end_c])
+            i = end_c
+            continue
         if ch in ("'", '"'):
             in_q = ch
             cur.append(ch)
@@ -118,9 +137,9 @@ def split_depth0_commas(s: str) -> list[str]:
         elif ch == ")":
             if depth > 0:
                 depth -= 1
-        elif s[i : i + 4].upper() == "CASE" and (i == 0 or not s[i - 1].isalnum()) and (i + 4 == n or not s[i + 4].isalnum()):
+        elif s[i : i + 4].upper() == "CASE" and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] == "_")) and (i + 4 == n or not (s[i + 4].isalnum() or s[i + 4] == "_")):
             case_depth += 1
-        elif s[i : i + 3].upper() == "END" and (i == 0 or not s[i - 1].isalnum()) and (i + 3 == n or not s[i + 3].isalnum()):
+        elif s[i : i + 3].upper() == "END" and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] == "_")) and (i + 3 == n or not (s[i + 3].isalnum() or s[i + 3] == "_")):
             if case_depth > 0:
                 case_depth -= 1
         elif ch == "," and depth == 0 and case_depth == 0:
@@ -397,17 +416,73 @@ def get_model_calculated_getters(
 
 
 
-def determine_java_type(col_name: str, db_type: str = "", is_calculated: bool = False, expr: str = "") -> str:
-    """컬럼명 및 DB 타입/식에서 Java 레코드 DTO 타입을 결정한다."""
+def get_model_field_types(
+    model_class_or_path: str,
+    src_root: Path | None = None,
+) -> dict[str, str]:
+    """Model.java에서 선언된 필드명 -> Java 타입 맵을 추출한다."""
+    if not model_class_or_path:
+        return {}
+    roots = []
+    if src_root and src_root.is_dir():
+        roots.append(src_root)
+    if ASIS_SRC_DIR and Path(ASIS_SRC_DIR).is_dir():
+        roots.append(Path(ASIS_SRC_DIR))
+    roots.append(WORK_DIR)
+
+    model_file_name = model_class_or_path.split(".")[-1] + ".java"
+    java_file: Path | None = None
+    for r in roots:
+        for p in r.rglob(model_file_name):
+            if "target" not in p.parts:
+                java_file = p
+                break
+        if java_file:
+            break
+
+    if not java_file or not java_file.is_file():
+        return {}
+
+    try:
+        text = java_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+
+    no_comm, _ = strip_java(text)
+    field_types: dict[str, str] = {}
+    for line in no_comm.splitlines():
+        m_field = re.search(r"(?:private|protected)\s+([\w<>\[\], ?]+)\s+(\w+)\s*;", line)
+        if m_field:
+            field_types[m_field.group(2)] = m_field.group(1).strip()
+    return field_types
+
+
+def determine_java_type(
+    col_name: str,
+    db_type: str = "",
+    is_calculated: bool = False,
+    expr: str = "",
+    model_type: str = "",
+) -> str:
+    """컬럼명 및 DB 타입/식/모델 필드 타입에서 Java 레코드 DTO 타입을 결정한다."""
     col_lower = col_name.lower()
     expr_upper = expr.upper()
 
     if is_calculated:
-        if "COUNT(" in expr_upper:
+        if model_type in ("Long", "Integer", "Double", "BigDecimal", "Boolean"):
+            return model_type
+        if "COUNT(" in expr_upper or "ROW_NUMBER(" in expr_upper:
             return "Long"
+        if any(col_lower.endswith(sfx) for sfx in ("_id", "_seq", "_no", "_cnt", "_count", "_num", "id", "seq")):
+            return "Long"
+        if any(col_lower.endswith(sfx) for sfx in ("_rt", "_rate", "_ratio", "_pct", "_percent")):
+            return "Double" if "100.0" in expr_upper else "BigDecimal"
         if "SUM(" in expr_upper or "AVG(" in expr_upper:
             return "BigDecimal"
         return "String"
+
+    if not db_type and model_type in ("Long", "Integer", "Double", "BigDecimal", "Boolean"):
+        return model_type
 
     db_type_lower = db_type.lower()
     if "numeric" in db_type_lower or "decimal" in db_type_lower or not db_type_lower:
@@ -434,6 +509,119 @@ def determine_java_type(col_name: str, db_type: str = "", is_calculated: bool = 
         return "Boolean"
 
     return "String"
+
+
+_SQL_KEYWORDS = {
+    "END", "NULL", "TRUE", "FALSE", "ASC", "DESC", "FROM", "WHERE", "AND", "OR", "ELSE", "THEN", "WHEN",
+}
+
+
+def _extract_subquery_body(after_from: str) -> str | None:
+    """FROM 절이 '( SELECT ... ) alias' 인라인 뷰로 시작하면 괄호 안 본문을 반환한다."""
+    from yunhee.tools.as_is.mybatis_render import mask_sql_preserve
+
+    masked_af = mask_sql_preserve(after_from)
+    m_open = re.match(r"^\s*\(", masked_af)
+    if not m_open:
+        return None
+    open_pos = m_open.end() - 1
+    depth = 0
+    for i in range(open_pos, len(masked_af)):
+        if masked_af[i] == "(":
+            depth += 1
+        elif masked_af[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return after_from[open_pos + 1 : i]
+    return None
+
+
+def _parse_subquery_items(
+    sub_body: str,
+    wc_prefix: str,
+    tbl_prefix: str,
+    rm_mappings: list[tuple[str, str]],
+    table_cols: set[str] | None,
+    cols: list[str] | None,
+) -> list[dict[str, Any]]:
+    """인라인 뷰(서브쿼리)의 최상위 SELECT 열을 파싱하여 바깥 쿼리의 와일드카드(t.*) 확장 항목을 만든다."""
+    from yunhee.tools.as_is.mybatis_render import mask_sql_preserve
+    from yunhee.tools.as_is.sql_checker import _depth0_matches
+
+    masked_sub = mask_sql_preserve(sub_body)
+    sel_matches = _depth0_matches(masked_sub, r"\bSELECT\b")
+    if not sel_matches:
+        return []
+    main_sel = sel_matches[0]
+    from_matches = [m for m in _depth0_matches(masked_sub, r"\bFROM\b") if m.start() > main_sel.end()]
+    if not from_matches:
+        return []
+
+    sub_select_raw = sub_body[main_sel.end() : from_matches[0].start()].strip()
+    sub_after_from = sub_body[from_matches[0].end() :].strip()
+
+    sub_tokens = split_depth0_commas(sub_select_raw)
+    result_items: list[dict[str, Any]] = []
+
+    for sub_tok in sub_tokens:
+        clean_sub = _strip_sql_noise(sub_tok).strip()
+        if not clean_sub:
+            continue
+        m_wc = re.match(r"^(?:(\w+)\.)?\*$", clean_sub)
+        if m_wc:
+            inner_sub_body = _extract_subquery_body(sub_after_from)
+            if inner_sub_body is not None:
+                result_items.extend(
+                    _parse_subquery_items(inner_sub_body, wc_prefix, tbl_prefix, rm_mappings, table_cols, cols)
+                )
+            else:
+                # 서브쿼리 안의 테이블 와일드카드 (예: SELECT tdm51_chck_org.*, ... FROM tdm51_chck_org)
+                for c, p in rm_mappings:
+                    if table_cols is not None and c.lower() not in table_cols:
+                        continue
+                    snake_alias = c[len(tbl_prefix) :] if (tbl_prefix and c.startswith(tbl_prefix)) else re.sub(r"^[a-z]+\d*_", "", c)
+                    camel_prop = p or col_to_tobe_prop(c, tbl_prefix)
+                    result_items.append({
+                        "expr": f"{wc_prefix}{c}",
+                        "alias": snake_alias,
+                        "prop": camel_prop,
+                        "col": c,
+                        "is_calc": False,
+                        "calc_expr": "",
+                    })
+            continue
+
+        as_m = re.search(r"^(.*?)\bAS\s+([a-zA-Z0-9_]+)\s*$", clean_sub, re.IGNORECASE | re.DOTALL)
+        if not as_m:
+            as_m = re.search(r"^(.*?[\w\)])\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*$", clean_sub, re.DOTALL)
+            if as_m and as_m.group(2).upper() in _SQL_KEYWORDS:
+                as_m = None
+
+        if as_m:
+            inner_expr = as_m.group(1).strip()
+            inner_alias = as_m.group(2).strip()
+            is_calc = True
+        else:
+            inner_expr = clean_sub
+            inner_alias = clean_sub.split(".")[-1].strip()
+            is_calc = False
+
+        snake_alias = (
+            inner_alias[len(tbl_prefix) :]
+            if (tbl_prefix and inner_alias.startswith(tbl_prefix))
+            else re.sub(r"^[a-z]+\d*_", "", inner_alias)
+        )
+        camel_prop = col_to_tobe_prop(inner_alias, tbl_prefix)
+        result_items.append({
+            "expr": f"{wc_prefix}{inner_alias}",
+            "alias": snake_alias,
+            "prop": camel_prop,
+            "col": inner_alias,
+            "is_calc": is_calc,
+            "calc_expr": inner_expr,
+        })
+
+    return result_items
 
 
 def parse_select_elements(xml_text: str) -> tuple[dict[str, str], dict[str, str], dict[str, dict[str, Any]]]:
@@ -526,6 +714,8 @@ def port_sql(
 
     model_cls = rm_info["model"] if rm_info else ""
     rm_mappings = rm_info["mappings"] if rm_info else []
+    rm_col_to_prop = {c.lower(): p for c, p in rm_mappings}
+    model_field_types = get_model_field_types(model_cls, src_root) if model_cls else {}
     getter_map = get_model_getter_defaults(model_cls, src_root) if (getter_defaults and model_cls) else {}
     calc_getters = get_model_calculated_getters(model_cls, src_root, rm_mappings) if model_cls else {}
 
@@ -570,14 +760,32 @@ def port_sql(
     # SELECT 컬럼 항목 목록 조립
     # 결과 항목: {"expr": str, "alias": str, "prop": str, "col": str, "is_calc": bool}
     items: list[dict[str, Any]] = []
+    subquery_expand_failed = False
 
     # 1. raw_select_items에서 계산식이나 개별 컬럼 분리
     tokens = split_depth0_commas(raw_select_items)
 
     for token in tokens:
-        # token 예: sys04_role.* 또는 *
-        if re.search(r"(?:\b\w+\.)?\*", token):
-            # 와일드카드 전개: cols가 주어지면 cols에 매핑되는 컬럼만 전개
+        clean_token = _strip_sql_noise(token).strip()
+        if not clean_token:
+            continue
+        # token 예: sys04_role.* 또는 t.* 또는 *
+        m_wc = re.match(r"^(?:(\w+)\.)?\*$", clean_token)
+        if m_wc:
+            wc_alias = m_wc.group(1)
+            wc_prefix = f"{wc_alias}." if wc_alias else ""
+            sub_body = _extract_subquery_body(after_from)
+            if sub_body is not None:
+                sub_items = _parse_subquery_items(
+                    sub_body, wc_prefix, tbl_prefix, rm_mappings, table_cols, cols
+                )
+                if not sub_items:
+                    subquery_expand_failed = True
+                else:
+                    items.extend(sub_items)
+                continue
+
+            # 일반 테이블 와일드카드 전개: cols가 주어지면 cols에 매핑되는 컬럼만 전개
             if cols:
                 cols_norm_map: dict[str, str] = {}
                 for u in cols:
@@ -621,7 +829,11 @@ def port_sql(
                     })
         else:
             # 개별 표현식 (예: f_get_company_nm(sys04_company_id) as sys04_company_nm)
-            as_m = re.search(r"^(.*?)\bAS\s+([a-zA-Z0-9_]+)$", token, re.IGNORECASE | re.DOTALL)
+            as_m = re.search(r"^(.*?)\bAS\s+([a-zA-Z0-9_]+)\s*$", clean_token, re.IGNORECASE | re.DOTALL)
+            if not as_m:
+                as_m = re.search(r"^(.*?[\w\)])\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*$", clean_token, re.DOTALL)
+                if as_m and as_m.group(2).upper() in _SQL_KEYWORDS:
+                    as_m = None
             if as_m:
                 expr_part = as_m.group(1).strip()
                 raw_alias = as_m.group(2).strip()
@@ -635,7 +847,7 @@ def port_sql(
                     "is_calc": True,
                 })
             else:
-                col_name = token.strip()
+                col_name = clean_token
                 snake_alias = col_name[len(tbl_prefix):] if (tbl_prefix and col_name.startswith(tbl_prefix)) else re.sub(r"^[a-z]+\d*_", "", col_name)
                 camel_prop = col_to_tobe_prop(col_name, tbl_prefix)
                 items.append({
@@ -645,6 +857,12 @@ def port_sql(
                     "col": col_name,
                     "is_calc": False,
                 })
+
+    if subquery_expand_failed:
+        return ToolResult(
+            ok=False,
+            error="⚠ 서브쿼리 t.* 확장 실패 — 수동 작성 필요",
+        )
 
     # 중복 제거 (alias 기준)
     seen_aliases: set[str] = set()
@@ -736,7 +954,12 @@ def port_sql(
                 it["alias"] = snake_alias
                 it["prop"] = u_clean
                 db_type = col_types_map.get(it["col"], "")
-                jtype = determine_java_type(it["col"], db_type=db_type, is_calculated=it["is_calc"], expr=it["expr"])
+                m_prop = rm_col_to_prop.get(it["col"].lower()) or u_clean
+                m_type = model_field_types.get(m_prop) or model_field_types.get(u_clean, "")
+                calc_expr = it.get("calc_expr") or it["expr"]
+                jtype = determine_java_type(
+                    it["col"], db_type=db_type, is_calculated=it["is_calc"], expr=calc_expr, model_type=m_type
+                )
                 dto_fields.append(f"        {jtype} {u_clean}")
                 matched_items.append(it)
             elif u_clean in calc_getters:
@@ -757,7 +980,12 @@ def port_sql(
     else:
         for it in items:
             db_type = col_types_map.get(it["col"], "")
-            jtype = determine_java_type(it["col"], db_type=db_type, is_calculated=it["is_calc"], expr=it["expr"])
+            m_prop = rm_col_to_prop.get(it["col"].lower()) or it["prop"]
+            m_type = model_field_types.get(m_prop, "")
+            calc_expr = it.get("calc_expr") or it["expr"]
+            jtype = determine_java_type(
+                it["col"], db_type=db_type, is_calculated=it["is_calc"], expr=calc_expr, model_type=m_type
+            )
             dto_fields.append(f"        {jtype} {it['prop']}")
 
     # 1. 매퍼 조각 렌더링 (SELECT 열 전체 보존)
@@ -842,6 +1070,7 @@ def port_save(
     id_col: str | None = None,
     company_via: str | None = None,
     src_root: Path | None = None,
+    insert_only_cols: list[str] | None = None,
 ) -> ToolResult:
     """UpdateDataModel 대신 사용할 명시 INSERT, UPDATE, DELETE SQL 및 부수효과 SQL을 생성한다."""
     tbl_pfx_m = re.match(r"^([a-z]+\d*)_", table)
@@ -933,10 +1162,23 @@ def port_save(
         prop_name = col_to_tobe_prop(db_col, tbl_prefix)
         norm_cols.append((db_col, prop_name))
 
+    # insert_only_cols 정규화 (--insert-cols: INSERT에만 들어가고 UPDATE SET에는 제외)
+    norm_insert_only: list[tuple[str, str]] = []
+    for c in insert_only_cols or []:
+        c_clean = c.strip()
+        if not c_clean:
+            continue
+        db_col = c_clean
+        if tbl_prefix and not db_col.startswith(tbl_prefix) and table_cols and f"{tbl_prefix}{db_col}" in table_cols:
+            db_col = f"{tbl_prefix}{db_col}"
+        prop_name = col_to_tobe_prop(db_col, tbl_prefix)
+        if db_col not in {col for col, _ in norm_cols} and db_col not in {id_col, company_col}:
+            norm_insert_only.append((db_col, prop_name))
+
     # 화면 insertRow()의 setter 후보 탐색 (선택)
     insert_candidates: list[str] = []
     if table_cols:
-        norm_col_names = {c for c, _ in norm_cols} | {id_col, company_col}
+        norm_col_names = {c for c, _ in norm_cols} | {c for c, _ in norm_insert_only} | {id_col, company_col}
         common_cols = {"reg_date", "reg_dt", "mod_date", "mod_dt", "created_at", "updated_at"}
         for tc in table_cols:
             if (
@@ -947,7 +1189,8 @@ def port_save(
                 base_c = tc[len(tbl_prefix):] if (tbl_prefix and tc.startswith(tbl_prefix)) else tc
                 insert_candidates.append(base_c)
     if insert_candidates:
-        warnings.append(f"INSERT 후보 열: {', '.join(insert_candidates)} — 화면이 채움, 서버가 넣을 값인지 확인")
+        cand_str = ", ".join(insert_candidates)
+        warnings.append(f"INSERT 후보 열: {cand_str} — 화면이 채움, 서버가 넣을 값인지 확인 (--insert-cols {cand_str})")
 
     plural_title = to_plural(entity_title)
     plural_prop = to_plural(id_prop)
@@ -959,20 +1202,21 @@ def port_save(
     </select>"""
 
     # 2. insert{Entity}
+    all_insert_Pairs = norm_insert_only + norm_cols
     if has_company and company_col:
         if id_col == company_col:
-            insert_cols = [id_col] + [c for c, _ in norm_cols]
-            insert_vals = [f"#{{{id_prop}}}"] + [f"#{{{p}}}" for _, p in norm_cols]
+            insert_cols = [id_col] + [c for c, _ in all_insert_Pairs]
+            insert_vals = [f"#{{{id_prop}}}"] + [f"#{{{p}}}" for _, p in all_insert_Pairs]
             update_where = f"         WHERE {id_col} = #{{{id_prop}}}"
             delete_where = f"         WHERE {id_col} IN"
         else:
-            insert_cols = [id_col, company_col] + [c for c, _ in norm_cols]
-            insert_vals = [f"#{{{id_prop}}}", f"#{{{company_prop}}}"] + [f"#{{{p}}}" for _, p in norm_cols]
+            insert_cols = [id_col, company_col] + [c for c, _ in all_insert_Pairs]
+            insert_vals = [f"#{{{id_prop}}}", f"#{{{company_prop}}}"] + [f"#{{{p}}}" for _, p in all_insert_Pairs]
             update_where = f"         WHERE {id_col}    = #{{{id_prop}}}\n           AND {company_col} = #{{{company_prop}}}"
             delete_where = f"         WHERE {company_col} = #{{{company_prop}}}\n           AND {id_col} IN"
     else:
-        insert_cols = [id_col] + [c for c, _ in norm_cols]
-        insert_vals = [f"#{{{id_prop}}}"] + [f"#{{{p}}}" for _, p in norm_cols]
+        insert_cols = [id_col] + [c for c, _ in all_insert_Pairs]
+        insert_vals = [f"#{{{id_prop}}}"] + [f"#{{{p}}}" for _, p in all_insert_Pairs]
         if subquery_condition:
             update_where = f"         WHERE {id_col} = #{{{id_prop}}}\n           {subquery_condition}"
             where_first = subquery_condition.strip()
@@ -1031,74 +1275,93 @@ def port_save(
         warnings.append(f"id 중복: {base} → {new_id}")
         return new_id
 
-    # 5. 저장 시 부수 효과 검사
+    # 5. 저장 시 부수 효과 검사 및 UpdateDataModel 자동 채움 열 확인
+    auto_fill_parts: list[str] = []
+    if table_cols:
+        upd_nm_col = f"{tbl_prefix}upd_nm" if tbl_prefix else "upd_nm"
+        upd_date_col = f"{tbl_prefix}upd_date" if tbl_prefix else "upd_date"
+        if upd_nm_col in table_cols:
+            auto_fill_parts.append(f"{upd_nm_col} = 로그인 사용자 이름")
+        if upd_date_col in table_cols:
+            auto_fill_parts.append(f"{upd_date_col} = 현재 시각")
+
     app_root = None
     if src_root and src_root.is_dir():
         app_root = find_app(src_root)
     elif ASIS_SRC_DIR and ASIS_SRC_DIR.is_dir():
         app_root = find_app(ASIS_SRC_DIR)
 
+    tbl_effects = None
     if app_root:
         side_effects = parse_update_data_model(app_root)
         tbl_effects = side_effects.get(table)
+
+    if tbl_effects or auto_fill_parts:
         if tbl_effects:
-            fragments.append(f"\n    <!-- === {table} 저장 시 부수 효과 (UpdateDataModel L{tbl_effects['start_line']}-{tbl_effects['end_line']}) === -->")
-            step = 1
-            for item in tbl_effects["items"]:
-                call = item["call"]
-                kind, _op1, op2, line = call
-                if kind == "proc":
-                    # 프로시저 호출 (예: call dcr01_import_from_admin(?))
-                    proc_name = op2
-                    proc_id = unique_id(to_camel_case(proc_name))
-                    proc_body = f"        CALL {proc_name}(#{{{company_prop}}})"
-                    proc_sql = f"""    <!-- {step}. AS-IS call {proc_name}(?) (L{line}) -->
+            header = f"\n    <!-- === {table} 저장 시 부수 효과 (UpdateDataModel L{tbl_effects['start_line']}-{tbl_effects['end_line']}) === -->"
+        else:
+            header = f"\n    <!-- === {table} 저장 시 부수 효과 (UpdateDataModel) === -->"
+        if auto_fill_parts:
+            header += f"\n    <!-- 자동 채움: {', '.join(auto_fill_parts)} -->"
+        fragments.append(header)
+
+    if tbl_effects:
+        step = 1
+        for item in tbl_effects["items"]:
+            call = item["call"]
+            kind, _op1, op2, line = call
+            if kind == "proc":
+                # 프로시저 호출 (예: call dcr01_import_from_admin(?))
+                proc_name = op2
+                proc_id = unique_id(to_camel_case(proc_name))
+                proc_body = f"        CALL {proc_name}(#{{{company_prop}}})"
+                proc_sql = f"""    <!-- {step}. AS-IS call {proc_name}(?) (L{line}) -->
     <update id="{proc_id}">
 {proc_body}
     </update>"""
-                    fragments.append(proc_sql)
-                    stmts.append((proc_id, "update", proc_body))
-                    step += 1
-                elif kind == "sql":
-                    sql_ref = op2
-                    if sql_ref in ("dbConfig.getSeq", "getSeq"):
-                        continue
-                    ref_ns, ref_id = sql_ref.split(".", 1) if "." in sql_ref else ("", sql_ref)
-                    ref_xml = find_mapper_file(ref_ns, src_root) if ref_ns else None
-                    found_tag = None
-                    if ref_xml:
-                        try:
-                            ref_text = ref_xml.read_text(encoding="utf-8", errors="replace")
-                            m_tag = re.search(rf'<(insert|update|delete|select)\s+id="{re.escape(ref_id)}"[^>]*>(.*?)</\1>', ref_text, re.DOTALL)
-                            if m_tag:
-                                tag_body = m_tag.group(2)
-                                # INSERT를 <select>로 쓴 AS-IS가 있으므로 태그는 본문 첫 키워드로 정한다 (resultMap 등 속성은 버림).
-                                tag_name = statement_tag(tag_body, m_tag.group(1))
-                                # 파라미터 변환: ${companyId} -> #{companyId}
-                                tag_body = re.sub(r"\$\{\s*companyId\s*\}", f"#{{{company_prop}}}", tag_body)
-                                tag_body = re.sub(r"\$\{\s*inCompanyId\s*\}", f"#{{{company_prop}}}", tag_body)
-                                # sequenceNextVal 등 펼치기
-                                tag_body = re.sub(r'<include\s+refid="[^"]*sequenceNextVal"[^/]*/>', "f_create_seq()", tag_body)
-                                # 원본 Java가 map.put으로 넣던 고정값을 SQL에 넣는다 (TOBE 호출부는 companyId만 넘김).
-                                tag_body, fixed = inline_fixed_params(tag_body, item.get("puts", []))
-                                # 남은 ${값}은 문자열 치환이라 TOBE에서는 바인딩(#{값})으로 바꾼다.
-                                tag_body = re.sub(r"\$\{\s*(\w+)\s*\}", r"#{\1}", tag_body)
-                                tobe_id = unique_id(to_camel_case(ref_ns) + ref_id[:1].upper() + ref_id[1:])
-                                fixed_comment = (
-                                    f"\n    <!-- 고정값 (UpdateDataModel): {', '.join(fixed)} -->" if fixed else ""
-                                )
-                                found_tag = f"""    <!-- {step}. AS-IS {sql_ref} (L{line}) -->{fixed_comment}
+                fragments.append(proc_sql)
+                stmts.append((proc_id, "update", proc_body))
+                step += 1
+            elif kind == "sql":
+                sql_ref = op2
+                if sql_ref in ("dbConfig.getSeq", "getSeq"):
+                    continue
+                ref_ns, ref_id = sql_ref.split(".", 1) if "." in sql_ref else ("", sql_ref)
+                ref_xml = find_mapper_file(ref_ns, src_root) if ref_ns else None
+                found_tag = None
+                if ref_xml:
+                    try:
+                        ref_text = ref_xml.read_text(encoding="utf-8", errors="replace")
+                        m_tag = re.search(rf'<(insert|update|delete|select)\s+id="{re.escape(ref_id)}"[^>]*>(.*?)</\1>', ref_text, re.DOTALL)
+                        if m_tag:
+                            tag_body = m_tag.group(2)
+                            # INSERT를 <select>로 쓴 AS-IS가 있으므로 태그는 본문 첫 키워드로 정한다 (resultMap 등 속성은 버림).
+                            tag_name = statement_tag(tag_body, m_tag.group(1))
+                            # 파라미터 변환: ${companyId} -> #{companyId}
+                            tag_body = re.sub(r"\$\{\s*companyId\s*\}", f"#{{{company_prop}}}", tag_body)
+                            tag_body = re.sub(r"\$\{\s*inCompanyId\s*\}", f"#{{{company_prop}}}", tag_body)
+                            # sequenceNextVal 등 펼치기
+                            tag_body = re.sub(r'<include\s+refid="[^"]*sequenceNextVal"[^/]*/>', "f_create_seq()", tag_body)
+                            # 원본 Java가 map.put으로 넣던 고정값을 SQL에 넣는다 (TOBE 호출부는 companyId만 넘김).
+                            tag_body, fixed = inline_fixed_params(tag_body, item.get("puts", []))
+                            # 남은 ${값}은 문자열 치환이라 TOBE에서는 바인딩(#{값})으로 바꾼다.
+                            tag_body = re.sub(r"\$\{\s*(\w+)\s*\}", r"#{\1}", tag_body)
+                            tobe_id = unique_id(to_camel_case(ref_ns) + ref_id[:1].upper() + ref_id[1:])
+                            fixed_comment = (
+                                f"\n    <!-- 고정값 (UpdateDataModel): {', '.join(fixed)} -->" if fixed else ""
+                            )
+                            found_tag = f"""    <!-- {step}. AS-IS {sql_ref} (L{line}) -->{fixed_comment}
     <{tag_name} id="{tobe_id}">
 {tag_body.rstrip()}
     </{tag_name}>"""
-                                stmts.append((tobe_id, tag_name, tag_body))
-                        except OSError:
-                            pass
-                    if not found_tag:
-                        found_tag = f"""    <!-- {step}. AS-IS {sql_ref} (L{line}) -->
+                            stmts.append((tobe_id, tag_name, tag_body))
+                    except OSError:
+                        pass
+                if not found_tag:
+                    found_tag = f"""    <!-- {step}. AS-IS {sql_ref} (L{line}) -->
     <!-- 매퍼 XML에서 <insert/update id="{ref_id}"> 확인 필요 -->"""
-                    fragments.append(found_tag)
-                    step += 1
+                fragments.append(found_tag)
+                step += 1
 
     # 6. Mapper 인터페이스 메서드 목록 (XML id와 이름을 맞추기 위함)
     method_lines = []

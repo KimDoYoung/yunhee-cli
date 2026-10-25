@@ -238,3 +238,64 @@ def test_030_port_save_company_col_prefix_and_foreach_id():
     # INSERT 후보 열 경고 확인
     assert any("INSERT 후보 열" in w for w in res.data["warnings"])
 
+
+def test_042_port_sql_subquery_t_star():
+    """042-1: 서브쿼리 FROM ( SELECT ... ) t 를 감싼 바깥 SELECT의 t.* 확장 및 계산 열/동적 분기/타입 보존."""
+    res = sql_porter.port_sql(
+        "tdm51_chck_org.selectDashboardExct",
+        cols=[
+            "exctName",
+            "roleName",
+            "progRate",
+            "monthCheckCnt",
+            "monthManlUndoneCnt",
+            "monthCheck1Cnt",
+            "monthCheck2Cnt",
+            "monthCheck9Cnt",
+        ],
+        dto_package="kr.co.kfs.asseterp.biz.tdm.dto",
+    )
+    assert res.ok
+    assert len(res.data["warnings"]) == 0
+    frag = res.data["mapper_fragment"]
+    dto = res.data["record_dto"]
+
+    # 바깥 SELECT에 t.* 확장 열과 계산 열(prog_rate, chck_org_id) 모두 포함
+    assert "t.tdm51_exct_nm" in frag
+    assert "AS exct_name" in frag
+    assert "AS prog_rate" in frag
+    assert "AS chck_org_id" in frag
+    assert '<when test="exctId != null">' in frag
+
+    # DTO record 8개 필드 및 정확한 타입 검증
+    assert "String exctName" in dto
+    assert "String roleName" in dto
+    assert "Double progRate" in dto
+    assert "Long monthCheckCnt" in dto
+    assert "Long monthManlUndoneCnt" in dto
+    assert "Long monthCheck1Cnt" in dto
+    assert "Long monthCheck2Cnt" in dto
+    assert "Long monthCheck9Cnt" in dto
+    assert "SQL 열 없음" not in dto
+
+
+def test_042_port_save_insert_cols_and_upd_auto():
+    """042-11: port-save --insert-cols 지원 및 UpdateDataModel 자동 채움(upd_nm, upd_date) 안내."""
+    res = sql_porter.port_save(
+        "tdm03_add_title",
+        cols=["tdm03_add_title_nm", "tdm03_start_date", "tdm03_close_date"],
+        company_col="tdm03_company_id",
+        insert_only_cols=["person_id"],
+    )
+    assert res.ok
+    out = res.data["output"]
+    # INSERT에는 tdm03_person_id 포함, UPDATE에는 미포함
+    assert "tdm03_person_id" in res.data["insert_sql"]
+    assert "#{personId}" in res.data["insert_sql"]
+    assert "tdm03_person_id" not in res.data["update_sql"]
+    # person_id를 --insert-cols로 지정했으므로 INSERT 후보 열 경고 없어야 함
+    assert not any("INSERT 후보 열" in w for w in res.data["warnings"])
+    # 자동 채움 안내 포함
+    assert "자동 채움: tdm03_upd_nm = 로그인 사용자 이름, tdm03_upd_date = 현재 시각" in out
+
+

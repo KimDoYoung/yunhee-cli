@@ -303,3 +303,154 @@ const buildGrid = () => [
         assert "필드 비교 못 함 (행 0건)" in res.data["summary"]
         assert "API rows=0, SQL rows=0 ✅" in res.data["summary"]
 
+
+def test_042_compare_branch_params_and_string_type_binding(monkeypatch):
+    """수정사항042 #2, #14: choose/when 분기 제외 변수 요구 방지, admin orgId=0 미주입, 문자열 코드 바인딩(s:, managerType)."""
+    from unittest import mock
+
+    from yunhee.tools.as_is.mybatis_render import render_from_xml_with_meta
+
+    # 1. #14: managerType=21 자동 문자열 바인딩 및 s:/n: 접두사 검증
+    xml_emp = """
+    <mapper namespace="emp12_manager">
+        <select id="selectByPosition">
+            SELECT * FROM emp12_manager
+            WHERE emp12_company_id = #{companyId}
+            AND emp12_manager_type = #{managerType}
+            AND emp12_seq = #{seq}
+        </select>
+    </mapper>
+    """
+    sql1, missing1, _ = render_from_xml_with_meta(
+        xml_emp,
+        "selectByPosition",
+        {"companyId": "28000", "managerType": "21", "seq": "s:10"},
+    )
+    assert not missing1
+    assert "emp12_company_id = 28000" in sql1
+    assert "emp12_manager_type = '21'" in sql1
+    assert "emp12_seq = '10'" in sql1
+
+    sql2, _, _ = render_from_xml_with_meta(
+        xml_emp,
+        "selectByPosition",
+        {"companyId": "28000", "managerType": "n:21", "seq": "10"},
+    )
+    assert "emp12_manager_type = 21" in sql2
+
+    # 2. #2: admin 로그인 시 user_info(org_id=0)가 choose/when orgId 분기를 잘못 켜지 않는지 검증
+    xml_tdm = """
+    <mapper namespace="tdm99_mock">
+        <select id="selectDashboardUndone">
+            SELECT tdm51_chck_id FROM tdm51_chck
+            WHERE tdm51_company_id = #{companyId}
+            <choose>
+                <when test="exctId != null">
+                    AND tdm51_exct_id = #{exctId}
+                </when>
+                <when test="orgId != null">
+                    AND tdm51_org_id = f_get_org(#{orgId}, #{retrieveType})
+                </when>
+            </choose>
+        </select>
+    </mapper>
+    """
+    from yunhee.tools.as_is import mybatis_render
+
+    monkeypatch.setattr(mybatis_render, "get_all_statements", lambda *a, **kw: {})
+    monkeypatch.setattr(comparator, "find_mapper_file", lambda ns, sr=None: comparator.Path("mock.xml"))
+    monkeypatch.setattr(comparator.Path, "read_text", lambda self, **kw: xml_tdm)
+
+    with mock.patch("yunhee.tools.comparator.request_api") as mock_api, \
+         mock.patch("yunhee.tools.comparator.psycopg.connect") as mock_conn:
+        mock_api.return_value = comparator.ToolResult(
+            ok=True,
+            data={
+                "status": 200,
+                "text": json.dumps({"success": True, "data": [{"chckId": 1}, {"chckId": 2}, {"chckId": 3}]}),
+                "user_info": {"user_id": 0, "org_id": 0, "company_id": 28000},
+            },
+        )
+        mock_cursor = mock.MagicMock()
+        mock_cursor.fetchall.return_value = [(1,), (2,), (3,)]
+        mock_cursor.description = [("tdm51_chck_id",)]
+        mock_conn.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+        res = comparator.compare_api_sql(
+            "GET",
+            "/api/v1/tdm/check-manuals/dashboard-undone",
+            "tdm99_mock.selectDashboardUndone",
+            sql_params={"companyId": "28000", "exctId": "1018"},
+            as_user="admin",
+        )
+        assert res.ok
+        assert "API rows=3, SQL rows=3 ✅" in res.data["summary"]
+        assert "branch: exctId ON, orgId OFF" in res.data["summary"]
+        assert "retrieveType" not in res.data["summary"]
+
+
+def test_042_compare_naming_rule_diff_and_paging(monkeypatch):
+    """수정사항042 #7, #20: 가짜 열(new) 제외, 범용 모델(string02) 이름 대조 생략, PageRes(rows/total) 및 --total-sql 검증."""
+    from unittest import mock
+
+    # 1. #7: new 가짜 열 제외 확인
+    bullet_text = """
+- 그리드 `grid` (buildGrid()):
+  - new 100 "그룹헤더" HeaderGroupMap
+  - string02 120 "성명" Text
+  - long01 80 "합계" Number
+"""
+    grids = comparator._extract_all_grids(bullet_text, "Emp10_Tab_Print")
+    assert len(grids) == 1
+    assert "new" not in grids[0]["cols"]
+    assert "string02" in grids[0]["cols"]
+    assert "long01" in grids[0]["cols"]
+
+    # 2. #7 & #20: PageRes 응답 + 범용 모델 컬럼(string02, long01) 비교 시 이름 대조 생략 및 total SQL 검증
+    monkeypatch.setattr(
+        comparator,
+        "find_screen_grid_info",
+        lambda *a, **kw: {"cols": {"string02", "long01"}, "label": "Emp10_Tab_Print#buildGrid", "not_found": False},
+    )
+
+    page_rows = [{"empKorNm": f"사원{i}", "totCnt": i, "deptNm": "운용"} for i in range(5)]
+    with mock.patch("yunhee.tools.comparator.request_api") as mock_api, \
+         mock.patch("yunhee.tools.comparator.psycopg.connect") as mock_conn:
+        mock_api.return_value = comparator.ToolResult(
+            ok=True,
+            data={
+                "status": 200,
+                "text": json.dumps({"success": True, "data": {"total": 390, "rows": page_rows}}),
+            },
+        )
+        mock_cursor = mock.MagicMock()
+        # 첫 번째 호출: 페이지 SQL (5건), 두 번째 호출: total SQL (390)
+        mock_cursor.fetchall.return_value = [(f"사원{i}", i, "운용") for i in range(5)]
+        mock_cursor.fetchone.return_value = (390,)
+        mock_cursor.description = [("string02",), ("long01",), ("string03",)]
+        mock_conn.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+        # (a) --total-sql 미지정 시
+        res_page = comparator.compare_api_sql(
+            "GET",
+            "/api/v1/apr/download-histories",
+            "sys04_role.selectByName",
+            sql_params={"roleName": "%", "companyId": "0"},
+        )
+        assert res_page.ok
+        assert "API rows=5 (total 390), SQL rows=5 ✅" in res_page.data["summary"]
+        assert "ℹ 이름 규칙 차이로 이름 대조 생략 (그리드 열 2개, API 필드 3개)" in res_page.data["summary"]
+        assert "⚠️" not in res_page.data["summary"]
+
+        # (b) --total-sql 지정 시
+        res_total = comparator.compare_api_sql(
+            "GET",
+            "/api/v1/apr/download-histories",
+            "sys04_role.selectByName",
+            sql_params={"roleName": "%", "companyId": "0"},
+            sql_total_ref="sys04_role.selectByName",
+        )
+        assert res_total.ok
+        assert "API rows=5 (total 390), SQL rows=5 ✅, total SQL 390 ✅" in res_total.data["summary"]
+
+

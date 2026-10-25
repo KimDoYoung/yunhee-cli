@@ -570,6 +570,7 @@ def api(
     tenant: Annotated[str | None, typer.Option("--tenant", "-t", help="테넌트 식별자 (세션 분리 및 X-Tenant-Id 헤더)")] = None,
     param: Annotated[list[str] | None, typer.Option("--param", "-p", help="쿼리 파라미터 key=val (반복 가능)")] = None,
     body: Annotated[str | None, typer.Option("--body", "-b", help="JSON 요청 본문")] = None,
+    form: Annotated[list[str] | None, typer.Option("--form", "-F", help="멀티파트 폼 필드 name=@파일경로[;type=MIME] 또는 name=값 (반복 가능)")] = None,
     raw: Annotated[bool, typer.Option("--raw", help="압축 요약 대신 원본 JSON 본문 출력")] = False,
     timeout: Annotated[float | None, typer.Option("--timeout", help="요청 타임아웃(초) (기본: .env.local의 YUNHEE_API_TIMEOUT 또는 15)")] = None,
     log: Annotated[bool, typer.Option("--log", help="호출 후 서버 로그(trace) 요약 출력")] = False,
@@ -585,6 +586,10 @@ def api(
 
     from yunhee import config
     from yunhee.tools import api_client
+
+    if body and form:
+        typer.echo("오류: --body(-b)와 --form(-F) 옵션은 함께 사용할 수 없습니다.", err=True)
+        raise typer.Exit(code=1)
 
     params_dict = {}
     if param:
@@ -622,6 +627,7 @@ def api(
         as_role=as_role,
         params=params_dict or None,
         json_body=json_body,
+        form_fields=form,
         timeout=timeout,
         mask=not no_mask,
         wait_deploy=wait_deploy,
@@ -750,6 +756,7 @@ def port_sql_cmd(
 def port_save_cmd(
     table: Annotated[str, typer.Argument(help="대상 테이블명 (예: sys04_role)")],
     cols: Annotated[str, typer.Option("--cols", help="INSERT/UPDATE 대상 컬럼 목록 (쉼표 구분)")],
+    insert_cols: Annotated[str | None, typer.Option("--insert-cols", help="INSERT에만 포함할 컬럼 목록 (쉼표 구분, UPDATE SET 제외)")] = None,
     company_col: Annotated[str | None, typer.Option("--company-col", help="회사 ID 컬럼명")] = None,
     id_col: Annotated[str | None, typer.Option("--id-col", help="PK ID 컬럼명")] = None,
     company_via: Annotated[str | None, typer.Option("--company-via", help="회사 조건 서브쿼리 경로 (예: emp01_person.emp01_person_id=emp03_person_id)")] = None,
@@ -759,6 +766,7 @@ def port_save_cmd(
     from yunhee.tools.as_is.sql_porter import port_save
 
     col_list = [c.strip() for c in cols.split(",") if c.strip()]
+    insert_col_list = [c.strip() for c in insert_cols.split(",") if c.strip()] if insert_cols else None
     res = port_save(
         table=table,
         cols=col_list,
@@ -766,6 +774,7 @@ def port_save_cmd(
         id_col=id_col,
         company_via=company_via,
         src_root=src,
+        insert_only_cols=insert_col_list,
     )
     if not res.ok:
         typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
@@ -790,7 +799,7 @@ def compare_cmd(
     src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
     grid: Annotated[str | None, typer.Option("--grid", help="대조할 화면/그리드 클래스 (예: Sys05_Page_UserRole)")] = None,
     as_user: Annotated[str, typer.Option("--as", "-u", help="로그인 계정/역할 (사원 ID, 로그인 ID, admin)")] = "admin",
-    sql_total: Annotated[str | None, typer.Option("--sql-total", help="페이징 총건수 검증용 AS-IS SQL ID (예: apr40_download_history.selectByTextPagingTotal)")] = None,
+    sql_total: Annotated[str | None, typer.Option("--total-sql", "--sql-total", help="페이징 총건수 검증용 AS-IS SQL ID (예: apr40_download_history.selectByTextPagingTotal)")] = None,
     from_log: Annotated[bool, typer.Option("--from-log", help="최근 로그 trace에서 매퍼 파라미터를 읽어 기본값으로 사용")] = False,
 ) -> None:
     """조회 API와 AS-IS SQL 행 수 및 그리드 컬럼 커버리지 비교"""
@@ -1585,6 +1594,10 @@ def analysis_cmd(
         str | None,
         typer.Argument(help="분석 대상 (클래스, 메서드, SQL ID, 화면명, 실행 ID 등)"),
     ] = None,
+    extra_targets: Annotated[
+        list[str] | None,
+        typer.Argument(help="추가 분석 대상 (예: analysis method <클래스> <메서드1> <메서드2>)"),
+    ] = None,
     list_types_flag: Annotated[
         bool,
         typer.Option("--list", help="지원하는 모든 분석 유형 목록 출력"),
@@ -1721,6 +1734,14 @@ def analysis_cmd(
         str,
         typer.Option("--unreachable", help="도달 불가 이벤트 처리: count(기본) | ignore"),
     ] = "count",
+    raw: Annotated[
+        bool,
+        typer.Option("--raw", help="메서드 분석 시 요약과 함께 원문 코드 출력"),
+    ] = False,
+    layout_flag: Annotated[
+        bool,
+        typer.Option("--layout", help="ui 분석 시 폼 레이아웃 상세 함께 출력"),
+    ] = False,
 ):
     """AS-IS·TOBE 통합 분석 (method/sql/model/grid/screen/ui/tobe/run)
 
@@ -1821,6 +1842,9 @@ def analysis_cmd(
         "type": file_type,
         "branch": branch or [],
         "unreachable": unreachable,
+        "extra_targets": extra_targets or [],
+        "raw": raw,
+        "layout": layout_flag,
     }
 
     try:

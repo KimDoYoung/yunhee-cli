@@ -68,6 +68,149 @@ def _tobe_event_ids(text: str) -> tuple[set[int], set[int]]:
     return impl, skipped
 
 
+def _extract_screen_containers(java_text: str) -> list[str]:
+    """Java 소스에서 화면 레이아웃(BorderLayout 영역/크기/split, TabPanel 탭 구성, 모달 크기)을 추출한다 (#3)."""
+    info: list[str] = []
+
+    # 1. 모달/창 크기 (setPixelSize, setWidth, setHeight - this. 또는 단독 호출)
+    for m_px in re.finditer(r"(?:this\.|window\.|dialog\.)?\bsetPixelSize\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", java_text):
+        info.append(f"창 크기: {m_px.group(1)}×{m_px.group(2)} (setPixelSize)")
+        break
+
+    # 2. BorderLayoutData 변수별 설정 수집
+    bld_map: dict[str, dict[str, Any]] = {}
+    for m_bld in re.finditer(
+        r"\bBorderLayoutData\s+(\w+)\s*=\s*new\s+BorderLayoutData\s*\(\s*([^)]*)\)",
+        java_text,
+    ):
+        var_n = m_bld.group(1)
+        sz = m_bld.group(2).strip() or "auto"
+        bld_map[var_n] = {"size": sz, "split": False, "collapsible": False, "min": None}
+
+    for var_n, meta in bld_map.items():
+        if re.search(rf"\b{re.escape(var_n)}\.setSplit\s*\(\s*true\s*\)", java_text):
+            meta["split"] = True
+        if re.search(rf"\b{re.escape(var_n)}\.setCollapsible\s*\(\s*true\s*\)", java_text):
+            meta["collapsible"] = True
+        m_min = re.search(rf"\b{re.escape(var_n)}\.setMinSize\s*\(\s*(\d+)\s*\)", java_text)
+        if m_min:
+            meta["min"] = m_min.group(1)
+
+    # 3. BorderLayoutContainer 영역 배치 (North/South/East/West/Center)
+    regions: list[str] = []
+    for m_reg in re.finditer(
+        r"\bset(North|South|East|West|Center)Widget\s*\(\s*([^,)]+)(?:\s*,\s*([^)]+))?\)",
+        java_text,
+    ):
+        reg_name = m_reg.group(1)
+        widget_expr = m_reg.group(2).strip()
+        data_expr = (m_reg.group(3) or "").strip()
+        detail_parts = []
+        if data_expr in bld_map:
+            bm = bld_map[data_expr]
+            detail_parts.append(f"size={bm['size']}")
+            if bm["split"]:
+                detail_parts.append("split")
+            if bm["collapsible"]:
+                detail_parts.append("collapsible")
+            if bm["min"]:
+                detail_parts.append(f"min={bm['min']}")
+        elif data_expr:
+            m_in = re.search(r"new\s+BorderLayoutData\s*\(\s*([^)]+)\)", data_expr)
+            if m_in:
+                detail_parts.append(f"size={m_in.group(1).strip()}")
+        det_str = f" ({', '.join(detail_parts)})" if detail_parts else ""
+        regions.append(f"{reg_name}: `{widget_expr}`{det_str}")
+
+    if regions:
+        info.append(f"BorderLayout: {' | '.join(regions)}")
+
+    # 4. TabPanel 탭 구성
+    tab_vars: set[str] = set()
+    for m_tp in re.finditer(r"\b(?:TabPanel|PlainTabPanel)\s+(\w+)\s*=", java_text):
+        tab_vars.add(m_tp.group(1))
+    tabs: list[str] = []
+    for m_add in re.finditer(
+        r"\b(\w+)\.add\s*\(\s*([^,]+)\s*,\s*(?:new\s+TabItemConfig\s*\(\s*\"([^\"]+)\"[^)]*\)|\"([^\"]+)\")\s*\)",
+        java_text,
+    ):
+        c_var = m_add.group(1)
+        if tab_vars and c_var not in tab_vars and "tab" not in c_var.lower():
+            continue
+        w_expr = m_add.group(2).strip()
+        t_label = m_add.group(3) or m_add.group(4) or ""
+        tabs.append(f"`{t_label}`({w_expr})")
+    if tabs:
+        info.append(f"TabPanel: {', '.join(tabs)}")
+
+    return info
+
+
+def _extract_toolbar_widgets(java_text: str) -> list[str]:
+    """조회바/툴바 및 화면의 비버튼 입력 위젯(ComboBox, DateField, Radio, CheckBox, Lookup, TextField 등)을 순서대로 추출한다 (#8)."""
+    from yunhee.tools.analysis.method import _extract_combo_options
+
+    combo_opts = _extract_combo_options(java_text)
+
+    # FieldLabel 매핑: fieldVar -> label
+    field_labels: dict[str, str] = {}
+    for m_fl in re.finditer(r"new\s+FieldLabel\s*\(\s*(\w+)\s*,\s*\"([^\"]+)\"\s*\)", java_text):
+        field_labels[m_fl.group(1)] = m_fl.group(2)
+
+    # setBoxLabel / setText 매핑
+    for m_bl in re.finditer(r"\b(\w+)\.set(?:BoxLabel|Text)\s*\(\s*\"([^\"]+)\"\s*\)", java_text):
+        field_labels.setdefault(m_bl.group(1), m_bl.group(2))
+
+    # Enter 키 바인딩 여부
+    enter_vars: set[str] = set()
+    for m_kd in re.finditer(r"\b(\w+)\.addKeyDownHandler\s*\(", java_text):
+        enter_vars.add(m_kd.group(1))
+
+    # 초기값 setValue
+    init_vals: dict[str, str] = {}
+    for m_sv in re.finditer(r"\b(\w+)\.setValue\s*\(\s*([^)]+)\)", java_text):
+        v_name = m_sv.group(1)
+        v_arg = m_sv.group(2).strip()
+        if v_name not in init_vals and len(v_arg) <= 40:
+            init_vals[v_name] = v_arg
+
+    widgets: list[str] = []
+    seen_vars: set[str] = set()
+    w_re = re.compile(
+        r"\b(CodeComboBox|SimpleComboBox|ComboBoxField|CommonComboBoxField|ComboBox|"
+        r"DateField|MyDateField|Radio|ToggleButton|CheckBox|LookupTriggerField|"
+        r"TextField|MyTextField|NumberField|DoubleField|IntegerField)"
+        r"(?:<[^>]+>)?\s+(\w+)\s*=\s*new\s+\w+(?:<[^>]*>)?\s*\(([^;]*)\)"
+    )
+    for m_w in w_re.finditer(java_text):
+        w_type = m_w.group(1)
+        w_var = m_w.group(2)
+        if w_var in seen_vars:
+            continue
+        seen_vars.add(w_var)
+        ctor_args = m_w.group(3).strip()
+
+        lbl = field_labels.get(w_var, "")
+        if not lbl and ctor_args:
+            m_str = re.search(r'"([^"]+)"', ctor_args)
+            if m_str and w_type in ("Radio", "ToggleButton", "CheckBox"):
+                lbl = m_str.group(1)
+
+        parts = [f"`{w_var}` ({w_type})"]
+        if lbl:
+            parts.append(f"라벨=\"{lbl}\"")
+        if w_var in combo_opts:
+            opts_str = ", ".join(f'"{o}"' for o in combo_opts[w_var])
+            parts.append(f"옵션=[{opts_str}]")
+        if w_var in init_vals:
+            parts.append(f"초기값={init_vals[w_var]}")
+        if w_var in enter_vars:
+            parts.append("[Enter키 바인딩]")
+        widgets.append(" · ".join(parts))
+
+    return widgets
+
+
 def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     """화면 파일 및 TOBE 디렉터리에서 UI 통계를 추출한다."""
     src_root, src_index = resolve_as_is_paths(src=opts.get("src"), src_index=opts.get("src_index"))
@@ -106,6 +249,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         classes.append({"name": screen_file.stem, "text": text})
 
     unreachable_opt = str(opts.get("unreachable") or "count").lower()
+    want_layout = bool(opts.get("layout", False))
     as_is_stats: dict[str, dict[str, Any]] = {}
     for c in classes:
         c_text = c["text"]
@@ -113,22 +257,34 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         ev_matches = re.findall(r"\[E(\d+)\]", c_text)
         unreach_matches = re.findall(r"\[E(\d+)\].*?(?:도달\s*불가|⚠\s*도달\s*불가)", c_text)
 
-        if not ev_matches and src_root:
-            c_files = list(src_root.rglob(f"{c['name']}.java"))
+        containers_info: list[str] = []
+        widgets_info: list[str] = []
+        form_layout_str: str = ""
+        if src_root:
+            c_files = [f for f in src_root.rglob(f"{c['name']}.java") if "target" not in f.parts]
             if c_files:
                 try:
                     java_text = c_files[0].read_text(encoding="utf-8", errors="replace")
-                    from yunhee.tools.as_is.events import (
-                        extract_buttons,
-                        extract_events_and_methods,
-                    )
+                    containers_info = _extract_screen_containers(java_text)
+                    widgets_info = _extract_toolbar_widgets(java_text)
+                    if want_layout:
+                        from yunhee.tools.analysis.layout import parse_layout
 
-                    ev_list, _ = extract_events_and_methods(java_text, c_files[0])
-                    ev_matches = [e.id.replace("E", "") for e in ev_list]
-                    unreach_matches = [e.id.replace("E", "") for e in ev_list if e.is_unreachable]
-                    if btn_cnt == 0:
-                        btn_list = extract_buttons(java_text, events=ev_list, file_path=c_files[0])
-                        btn_cnt = len(btn_list)
+                        fl = parse_layout(java_text)
+                        if not fl.startswith("레이아웃 없음"):
+                            form_layout_str = fl
+                    if not ev_matches:
+                        from yunhee.tools.as_is.events import (
+                            extract_buttons,
+                            extract_events_and_methods,
+                        )
+
+                        ev_list, _ = extract_events_and_methods(java_text, c_files[0])
+                        ev_matches = [e.id.replace("E", "") for e in ev_list]
+                        unreach_matches = [e.id.replace("E", "") for e in ev_list if e.is_unreachable]
+                        if btn_cnt == 0:
+                            btn_list = extract_buttons(java_text, events=ev_list, file_path=c_files[0])
+                            btn_cnt = len(btn_list)
                 except Exception:  # noqa: BLE001, S110
                     pass
 
@@ -145,6 +301,9 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             "unreach_ids": unreach_ids,
             "grids": grid_cnt,
             "grid_warn": grid_warn,
+            "containers": containers_info,
+            "widgets": widgets_info,
+            "form_layout": form_layout_str,
         }
 
     # 연결 컴포넌트 탐색 (같은 도메인만 포함)
@@ -200,22 +359,34 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         ev_matches = re.findall(r"\[E(\d+)\]", comp_text)
         unreach_matches = re.findall(r"\[E(\d+)\].*?(?:도달\s*불가|⚠\s*도달\s*불가)", comp_text)
 
-        if not ev_matches and src_root:
-            c_files = list(src_root.rglob(f"{comp_name}.java"))
+        containers_info = []
+        widgets_info = []
+        form_layout_str = ""
+        if src_root:
+            c_files = [f for f in src_root.rglob(f"{comp_name}.java") if "target" not in f.parts]
             if c_files:
                 try:
                     java_text = c_files[0].read_text(encoding="utf-8", errors="replace")
-                    from yunhee.tools.as_is.events import (
-                        extract_buttons,
-                        extract_events_and_methods,
-                    )
+                    containers_info = _extract_screen_containers(java_text)
+                    widgets_info = _extract_toolbar_widgets(java_text)
+                    if want_layout:
+                        from yunhee.tools.analysis.layout import parse_layout
 
-                    ev_list, _ = extract_events_and_methods(java_text, c_files[0])
-                    ev_matches = [e.id.replace("E", "") for e in ev_list]
-                    unreach_matches = [e.id.replace("E", "") for e in ev_list if e.is_unreachable]
-                    if btn_cnt == 0:
-                        btn_list = extract_buttons(java_text, events=ev_list, file_path=c_files[0])
-                        btn_cnt = len(btn_list)
+                        fl = parse_layout(java_text)
+                        if not fl.startswith("레이아웃 없음"):
+                            form_layout_str = fl
+                    if not ev_matches:
+                        from yunhee.tools.as_is.events import (
+                            extract_buttons,
+                            extract_events_and_methods,
+                        )
+
+                        ev_list, _ = extract_events_and_methods(java_text, c_files[0])
+                        ev_matches = [e.id.replace("E", "") for e in ev_list]
+                        unreach_matches = [e.id.replace("E", "") for e in ev_list if e.is_unreachable]
+                        if btn_cnt == 0:
+                            btn_list = extract_buttons(java_text, events=ev_list, file_path=c_files[0])
+                            btn_cnt = len(btn_list)
                 except Exception:  # noqa: BLE001, S110
                     pass
 
@@ -235,6 +406,9 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             "grid_warn": grid_warn,
             "is_linked": True,
             "same_domain": True,
+            "containers": containers_info,
+            "widgets": widgets_info,
+            "form_layout": form_layout_str,
         }
 
     # TOBE 통계 파싱 (지정된 경우)
@@ -433,6 +607,31 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     valid_total = [n for n in all_cls_names if not (as_is[n].get("is_linked") and not as_is[n].get("same_domain", True))]
     tot_b, tot_e, tot_g = calc_sum(all_cls_names)
     lines.append(f"| **전체 합계** | **{len(valid_total)}** | **{tot_b}** | **{tot_e}** | **{tot_g}** |")
+
+    # 컨테이너 구조 (#3), 조회바·입력 위젯 (#8), 폼 레이아웃 (#18) 출력
+    has_containers = any(as_is[c].get("containers") for c in all_cls_names)
+    if has_containers:
+        lines.append("\n#### 컨테이너·분할·탭 구조")
+        for c in all_cls_names:
+            c_list = as_is[c].get("containers") or []
+            for item in c_list:
+                lines.append(f"- **{c}**: {item}")
+
+    has_widgets = any(as_is[c].get("widgets") for c in all_cls_names)
+    if has_widgets:
+        lines.append("\n#### 조회바·입력 위젯")
+        for c in all_cls_names:
+            w_list = as_is[c].get("widgets") or []
+            if w_list:
+                lines.append(f"- **{c}**: {', '.join(w_list)}")
+
+    has_layouts = any(as_is[c].get("form_layout") for c in all_cls_names)
+    if has_layouts:
+        lines.append("\n### 폼 레이아웃 (`--layout`)")
+        for c in all_cls_names:
+            fl_str = as_is[c].get("form_layout") or ""
+            if fl_str:
+                lines.append(f"\n**{c}**:\n{fl_str}")
 
     return "\n".join(lines)
 

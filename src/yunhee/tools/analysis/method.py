@@ -187,9 +187,74 @@ def _find_caller_event(src_index: Path | None, cls_name: str, meth_name: str) ->
     return None
 
 
+def _extract_combo_options(file_text: str) -> dict[str, list[str]]:
+    """클래스 전체 소스에서 콤보박스 변수별 .add(...) 선택지 및 CodeComboBox 코드 키를 수집한다 (#17)."""
+    combo_opts: dict[str, list[str]] = {}
+    if not file_text:
+        return combo_opts
+
+    # 1. comboVar = new CodeComboBox / CommonComboBoxField / SimpleComboBox
+    for m_decl in re.finditer(
+        r"(\w+)\s*=\s*new\s+(?:CodeComboBox|CommonComboBoxField|ComboBoxField|SimpleComboBox)\w*(?:<[^>]*>)?\s*\(([^;]*)\)",
+        file_text,
+    ):
+        var_name = m_decl.group(1)
+        args_raw = m_decl.group(2)
+        str_lits = re.findall(r'"([^"]+)"', args_raw)
+        if str_lits:
+            combo_opts.setdefault(var_name, []).extend(
+                [f"코드:{s}" if idx == 0 and len(str_lits) >= 1 and s.isupper() else s for idx, s in enumerate(str_lits)]
+            )
+
+    # 2. comboVar.add("...") 호출 수집
+    for m_add in re.finditer(r"(?:this\.)?(\w+)\.add\s*\(\s*\"([^\"]+)\"\s*\)", file_text):
+        var_name, opt_val = m_add.group(1), m_add.group(2)
+        if var_name in ("list", "result", "params", "sql", "sb", "buffer"):
+            continue
+        opts_list = combo_opts.setdefault(var_name, [])
+        if opt_val not in opts_list:
+            opts_list.append(opt_val)
+
+    return combo_opts
+
+
 def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
-    """대상 메서드를 찾아 해석한다."""
+    """대상 메서드를 찾아 해석한다 (다중 메서드 지정 지원)."""
     target_clean = target.strip()
+    extra_targets: list[str] = list(opts.get("extra_targets") or [])
+
+    # 1) "ClassName m1 m2" 또는 "ClassName.m1 m2" 또는 "ClassName.m1,m2" 처리
+    if "." not in target_clean and extra_targets:
+        cls_prefix = target_clean
+        meth_list = []
+        for et in extra_targets:
+            meth_list.extend([x.strip() for x in et.split(",") if x.strip()])
+        if len(meth_list) == 1:
+            target_clean = f"{cls_prefix}.{meth_list[0]}"
+            extra_targets = []
+        elif len(meth_list) > 1:
+            sub_opts = {**opts, "extra_targets": []}
+            resolved_items = [resolve(f"{cls_prefix}.{m}", sub_opts) for m in meth_list]
+            return {
+                **resolved_items[0],
+                "multi_methods": resolved_items,
+            }
+    elif "." in target_clean and ("," in target_clean.split(".")[-1] or extra_targets):
+        prefix_part, last_part = target_clean.rsplit(".", 1)
+        meth_list = [x.strip() for x in last_part.split(",") if x.strip()]
+        for et in extra_targets:
+            meth_list.extend([x.strip() for x in et.split(",") if x.strip()])
+        if len(meth_list) > 1:
+            sub_opts = {**opts, "extra_targets": []}
+            resolved_items = [
+                resolve(m if "." in m else f"{prefix_part}.{m}", sub_opts)
+                for m in meth_list
+            ]
+            return {
+                **resolved_items[0],
+                "multi_methods": resolved_items,
+            }
+
     idx_choice = None
     if "#" in target_clean:
         target_clean, num_str = target_clean.split("#", 1)
@@ -518,6 +583,8 @@ def _summarize_body(
     class_constants = dict(
         re.findall(r'(?:private|protected|public)?\s*String\s+(\w+)\s*=\s*"([^"]+)"', file_text)
     )
+    combo_options_map = _extract_combo_options(file_text) if not is_server else {}
+    reported_combos: set[str] = set()
 
     in_callback = False
     callback_depth = 0
@@ -545,13 +612,32 @@ def _summarize_body(
                 if s.count("{") > 0:
                     seen_callback_brace = True
 
+        # 0. 콤보박스 선택지 (.add("...")) 및 참조된 콤보 필드 선택지 (#17)
+        if not is_server:
+            m_combo_add = re.search(r'(?:this\.)?(\w+)\.add\s*\(\s*"([^"]+)"\s*\)', s)
+            if m_combo_add:
+                c_var = m_combo_add.group(1)
+                if c_var not in ("list", "result", "params", "sql", "sb", "buffer") and c_var not in reported_combos:
+                    reported_combos.add(c_var)
+                    opts_vals = combo_options_map.get(c_var) or re.findall(
+                        rf'(?:this\.)?{re.escape(c_var)}\.add\s*\(\s*"([^"]+)"\s*\)', body
+                    )
+                    if opts_vals:
+                        add_item(f"콤보 선택지 {c_var}: [{', '.join(repr(v) for v in opts_vals)}] (L{line_num})")
+                continue
+
+            for c_var, opts_vals in combo_options_map.items():
+                if c_var not in reported_combos and re.search(rf"\b{re.escape(c_var)}\b", s):
+                    reported_combos.add(c_var)
+                    add_item(f"콤보 선택지 {c_var}: [{', '.join(repr(v) for v in opts_vals)}]")
+
         # 1. editDriver.flush()
         if not is_server and "editDriver.flush()" in s:
             add_item(f"editDriver.flush() (L{line_num})")
             continue
 
         # 2. 메시지 / alert
-        m_msg = re.search(r'new\s+SimpleMessage\s*\(\s*"([^"]+)"', s)
+        m_msg = re.search(r'new\s+(?:SimpleMessage|AlertMessageBox)\s*\(\s*"([^"]+)"', s)
         if m_msg:
             add_item(f'SimpleMessage "{m_msg.group(1)}" (L{line_num})')
             continue
@@ -595,8 +681,26 @@ def _summarize_body(
                 add_item(f"분기: if ({cond_clean}) (L{line_num})")
                 continue
 
-        # 4. 클라이언트 콜백 / 폼 / 스토어 관련
+        # 4. 클라이언트 콜백 / 폼 / 스토어 / 이벤트 발화 / 팝업 관련
         if not is_server:
+            # fireEvent(new XxxEvent(...))
+            m_fire = re.search(r'fireEvent\s*\(\s*new\s+(\w+Event)\s*\(([^)]*)\)', s)
+            if m_fire:
+                add_item(f"fireEvent: new {m_fire.group(1)}({m_fire.group(2).strip()}) (L{line_num})")
+                continue
+
+            # 팝업/모달 open/show
+            m_open = re.search(r'(?:this\.)?(\w+)\.(open|show)\s*\(([^)]*)\)', s)
+            if m_open and m_open.group(1) not in ("this", "super", "window", "Window"):
+                add_item(f"{m_open.group(1)}.{m_open.group(2)}({m_open.group(3).strip()}) (L{line_num})")
+                continue
+
+            # executeService / callService 래퍼 호출
+            m_exec = re.search(r'\b(executeService|callService)\s*\(([^;]+)\)', s)
+            if m_exec:
+                add_item(f"{m_exec.group(1)}({m_exec.group(2).strip()}) (L{line_num})")
+                continue
+
             # result.getResult(\d+) / result.getResult()
             m_get_res = re.search(r'result\.getResult\s*\(\s*(\d*)\s*\)', s)
             if m_get_res:
@@ -622,10 +726,16 @@ def _summarize_body(
                 add_item(f"{full_call} (L{line_num})")
                 continue
 
-            # (\w+)\.setValue\(\s*"([^"]*)"\s*\) (this. 제거)
-            m_set_v = re.search(r'(?:this\.)?(\w+)\.setValue\s*\(\s*"([^"]*)"\s*\)', s)
+            # (\w+)\.setValue\(\s*([^)]+)\s*\) (this. 제거)
+            m_set_v = re.search(r'(?:this\.)?(\w+)\.setValue\s*\(\s*([^)]+)\s*\)', s)
             if m_set_v:
-                add_item(f'{m_set_v.group(1)}.setValue("{m_set_v.group(2)}") (L{line_num})')
+                add_item(f'{m_set_v.group(1)}.setValue({m_set_v.group(2).strip()}) (L{line_num})')
+                continue
+
+            # 위젯 값 읽기: var = widget.getValue()
+            m_get_v = re.search(r'(\w+)\s*=\s*(?:this\.)?(\w+)\.getValue\s*\(\s*\)', s)
+            if m_get_v:
+                add_item(f"{m_get_v.group(1)} ← {m_get_v.group(2)}.getValue() (L{line_num})")
                 continue
 
             # ^(\w+)\s*=\s*"([^"]*)"\s*; (지역 변수에 문자열 리터럴 대입)
@@ -830,6 +940,13 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     if opts is None:
         opts = {}
 
+    if obj.get("multi_methods"):
+        blocks = [
+            render({k: v for k, v in item.items() if k != "multi_methods"}, fmt=fmt, opts=opts)
+            for item in obj["multi_methods"]
+        ]
+        return "\n\n".join(blocks)
+
     rel_file = obj["rel"]
     start_line = obj["start"]
     end_line = obj["end"]
@@ -874,5 +991,8 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         first_lines = [line.strip() for line in body.splitlines()[1:4] if line.strip()]
         for l in first_lines:
             out.append(f"- {l}")
+
+    if opts.get("raw"):
+        out.append(f"\n#### 원문 코드 (`{rel_file}:{start_line}-{end_line}`)\n```java\n{body}\n```")
 
     return "\n".join(out)

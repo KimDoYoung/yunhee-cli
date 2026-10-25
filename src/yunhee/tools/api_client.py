@@ -258,6 +258,7 @@ def summarize_response(
     path: str = "",
     user_info: dict[str, Any] | None = None,
     notice: str | None = None,
+    upload_info: list[str] | None = None,
 ) -> str:
     """응답을 토큰 절약형 1~4줄 요약으로 가공한다."""
     def _finalize(s: str) -> str:
@@ -280,6 +281,8 @@ def summarize_response(
         lines.append(f"user={u_id} org={o_id} company={c_id}")
 
     lines.append(f"HTTP {status_code} ({duration_sec})")
+    if upload_info:
+        lines.append(f"Upload: {', '.join(upload_info)}")
     if status_code == 404 and "No static resource" in text and path and not path.startswith("/api"):
         lines.append("💡 '/api' 접두가 필요한가요?")
     if notice:
@@ -346,6 +349,60 @@ def _timeout_message(timeout: float, method: str, path: str) -> str:
     )
 
 
+_EXT_MIME_FALLBACK = {
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".csv": "text/csv",
+    ".pdf": "application/pdf",
+    ".json": "application/json",
+    ".txt": "text/plain",
+    ".zip": "application/zip",
+}
+
+
+def _prepare_multipart(
+    form_fields: list[str],
+) -> tuple[dict[str, str], list[tuple[str, tuple[str, bytes, str]]], list[str], str | None]:
+    """-F/--form 인자 목록을 파싱하여 (data_dict, files_list, upload_info, error)를 반환한다."""
+    import mimetypes
+
+    data_dict: dict[str, str] = {}
+    files_list: list[tuple[str, tuple[str, bytes, str]]] = []
+    upload_info: list[str] = []
+
+    for item in form_fields:
+        if "=" not in item:
+            return {}, [], [], f"잘못된 -F/--form 형식 (name=value 또는 name=@파일경로 필요): {item}"
+        name, val = item.split("=", 1)
+        name = name.strip()
+        if not name:
+            return {}, [], [], f"빈 필드 이름: {item}"
+        if val.startswith("@"):
+            file_spec = val[1:]
+            explicit_mime = None
+            if ";type=" in file_spec:
+                path_str, explicit_mime = file_spec.split(";type=", 1)
+                explicit_mime = explicit_mime.strip()
+            else:
+                path_str = file_spec
+            fpath = Path(path_str.strip()).expanduser()
+            if not fpath.is_file():
+                return {}, [], [], f"업로드할 파일을 찾을 수 없습니다: {path_str}"
+            mime_type = (
+                explicit_mime
+                or mimetypes.guess_type(fpath.name)[0]
+                or _EXT_MIME_FALLBACK.get(fpath.suffix.lower())
+                or "application/octet-stream"
+            )
+            fbytes = fpath.read_bytes()
+            files_list.append((name, (fpath.name, fbytes, mime_type)))
+            upload_info.append(f"{fpath.name} ({len(fbytes)}B)")
+        else:
+            data_dict[name] = val
+
+    return data_dict, files_list, upload_info, None
+
+
 def request_api(
     method: str,
     path: str,
@@ -356,6 +413,7 @@ def request_api(
     tenant: str | None = None,
     params: dict[str, Any] | None = None,
     json_body: Any | None = None,
+    form_fields: list[str] | None = None,
     auto_login: bool = True,
     timeout: float | None = None,
     mask: bool = True,
@@ -369,6 +427,20 @@ def request_api(
     - 재로그인이 실패하면 즉시 실패로 중단하여 계정 잠금(5회 실패 락) 위험 원천 차단.
     """
     import time
+
+    if json_body is not None and form_fields:
+        return ToolResult(ok=False, error="--body(-b)와 --form(-F) 옵션은 함께 사용할 수 없습니다.")
+
+    form_data: dict[str, str] | None = None
+    form_files: list[tuple[str, tuple[str, bytes, str]]] | None = None
+    upload_info: list[str] = []
+    if form_fields:
+        d_dict, f_list, u_info, err_msg = _prepare_multipart(form_fields)
+        if err_msg:
+            return ToolResult(ok=False, error=err_msg)
+        form_data = d_dict or None
+        form_files = f_list or None
+        upload_info = u_info
 
     if wait_deploy:
         from yunhee.tools.log_reader import check_app_starting_after_deploy
@@ -415,9 +487,21 @@ def request_api(
     cookies = (session or {}).get("cookies", {})
     headers = dict((session or {}).get("headers", {}))
     headers.update(_tenant_headers(base_url, tenant))
+    if form_fields:
+        headers.pop("Content-Type", None)
+        headers.pop("content-type", None)
 
     if timeout is None:
         timeout = config.API_TIMEOUT
+
+    req_kwargs: dict[str, Any] = {}
+    if form_fields:
+        if form_data:
+            req_kwargs["data"] = form_data
+        if form_files:
+            req_kwargs["files"] = form_files
+    elif json_body is not None:
+        req_kwargs["json"] = json_body
 
     start = time.perf_counter()
     try:
@@ -425,10 +509,10 @@ def request_api(
             method=method.upper(),
             url=url,
             params=params,
-            json=json_body,
             cookies=cookies,
             headers=headers,
             timeout=timeout,
+            **req_kwargs,
         )
         duration_ms = int((time.perf_counter() - start) * 1000)
     except httpx.TimeoutException:
@@ -457,16 +541,19 @@ def request_api(
             user_info = session.get("user_info")
         new_headers = dict(session.get("headers", {}))
         new_headers.update(_tenant_headers(base_url, tenant))
+        if form_fields:
+            new_headers.pop("Content-Type", None)
+            new_headers.pop("content-type", None)
 
         try:
             resp = httpx.request(
                 method=method.upper(),
                 url=url,
                 params=params,
-                json=json_body,
                 cookies=session.get("cookies", {}),
                 headers=new_headers,
                 timeout=timeout,
+                **req_kwargs,
             )
             duration_ms = int((time.perf_counter() - start) * 1000)
         except httpx.TimeoutException:
@@ -500,10 +587,10 @@ def request_api(
                         method=method.upper(),
                         url=corrected_url,
                         params=params,
-                        json=json_body,
                         cookies=cookies,
                         headers=headers,
                         timeout=timeout,
+                        **req_kwargs,
                     )
                     duration_ms = int((time.perf_counter() - start2) * 1000)
                     resp = resp2
@@ -527,6 +614,7 @@ def request_api(
         path=path,
         user_info=user_info,
         notice=notice,
+        upload_info=upload_info or None,
     )
     return ToolResult(
         ok=resp.is_success,

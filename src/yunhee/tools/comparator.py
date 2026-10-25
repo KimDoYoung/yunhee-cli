@@ -439,10 +439,10 @@ def _extract_all_grids(
         )
         prop_to_col, _ns, _tbl, _aliases = find_mapper_for_model(model_name, roots)
         tbl_pfx = (re.match(r"^([a-z]+\d*)_", _tbl).group(1) + "_") if (_tbl and re.match(r"^([a-z]+\d*)_", _tbl)) else ""
-        NON_DATA_PROPS = {"rownumberer", "checkboxselection", "actioncell"}
+        NON_DATA_PROPS = {"rownumberer", "checkboxselection", "actioncell", "new", "header", "headergroup", "headergroupmap"}
         tobe_props = set()
         for p in g["props"]:
-            if p.lower() in NON_DATA_PROPS or p.lower().endswith("actioncell"):
+            if p.lower() in NON_DATA_PROPS or p.lower().endswith("actioncell") or p.lower().startswith("new "):
                 continue
             col = prop_to_col.get(p, "")
             tobe_props.add(col_to_tobe_prop(col, tbl_pfx) if col else p)
@@ -450,6 +450,11 @@ def _extract_all_grids(
 
     return grids
 
+
+_GENERIC_PROP_RE = re.compile(
+    r"^(?:string|long|double|int|integer|float|decimal|date|boolean|obj|object|col|field|val|value|num)\d+$",
+    re.IGNORECASE,
+)
 
 
 def compare_api_sql(
@@ -471,13 +476,18 @@ def compare_api_sql(
     """조회 API와 AS-IS SQL의 결과 행 수 및 필드 커버리지를 비교 검증한다."""
     import sys
 
-    from yunhee.tools.as_is.mybatis_render import get_all_statements
+    from yunhee.tools.as_is.mybatis_render import (
+        extract_branch_condition_vars,
+        get_all_statements,
+        parse_xml_statements,
+        render_from_xml_with_meta,
+        render_with_meta,
+    )
     from yunhee.tools.as_is.mybatis_render import render as mr_render
 
     if not api_params:
         api_params = {}
-    if not sql_params:
-        sql_params = {}
+    sql_params = dict(sql_params) if sql_params else {}
 
     if "." not in sql_ref:
         return ToolResult(ok=False, error=f"올바른 형식(namespace.sqlId)으로 입력해 주세요: {sql_ref}")
@@ -498,14 +508,50 @@ def compare_api_sql(
     if not api_res.ok and not api_res.data:
         return ToolResult(ok=False, error=f"API 호출 실패: {api_res.error}")
 
+    # 매퍼 문장 및 조건 분기 변수 사전 파악 (#2)
+    stmts = {}
+    branch_vars: set[str] = set()
+    xml_text_fallback: str | None = None
+    try:
+        stmts = get_all_statements(src_root)
+        target_st = stmts.get(sql_ref) or next((s for s in stmts.values() if s.sid == sid), None)
+        if target_st:
+            branch_vars = extract_branch_condition_vars(target_st.node, target_st.ns, stmts)
+        else:
+            xml_path = find_mapper_file(ns, src_root)
+            if xml_path:
+                xml_text_fallback = xml_path.read_text(encoding="utf-8", errors="replace")
+                _, local_stmts = parse_xml_statements(xml_text_fallback)
+                target_st = local_stmts.get(sql_ref) or local_stmts.get(sid)
+                if target_st:
+                    branch_vars = extract_branch_condition_vars(target_st.node, target_st.ns, local_stmts)
+    except Exception:  # noqa: BLE001, S110
+        pass
+
     user_info = (api_res.data or {}).get("user_info") or {}
     if user_info:
-        if "empId" not in sql_params and user_info.get("user_id") is not None:
-            sql_params["empId"] = str(user_info["user_id"])
-        if "orgId" not in sql_params and user_info.get("org_id") is not None:
-            sql_params["orgId"] = str(user_info["org_id"])
-        if "companyId" not in sql_params and user_info.get("company_id") is not None:
-            sql_params["companyId"] = str(user_info["company_id"])
+        is_admin_user = as_user.lower() == "admin"
+        uid_val = user_info.get("user_id")
+        oid_val = user_info.get("org_id")
+        cid_val = user_info.get("company_id")
+        if (
+            "empId" not in sql_params
+            and not is_admin_user
+            and uid_val is not None
+            and str(uid_val) not in ("", "0")
+            and "empId" not in branch_vars
+        ):
+            sql_params["empId"] = str(uid_val)
+        if (
+            "orgId" not in sql_params
+            and not is_admin_user
+            and oid_val is not None
+            and str(oid_val) not in ("", "0")
+            and "orgId" not in branch_vars
+        ):
+            sql_params["orgId"] = str(oid_val)
+        if "companyId" not in sql_params and cid_val is not None and str(cid_val) != "":
+            sql_params["companyId"] = str(cid_val)
 
     # --from-log 처리
     used_params_msg = ""
@@ -521,23 +567,32 @@ def compare_api_sql(
             used_params_msg = f"\n사용한 파라미터: {', '.join(p_items)}"
 
     # 2. SQL 렌더링
-    stmts = {}
+    branch_log: list[str] = []
     try:
-        stmts = get_all_statements(src_root)
         if sql_ref in stmts or any(s.sid == sid for s in stmts.values()):
-            sql, missing = mr_render(sql_ref, params=sql_params, mode="params", statements=stmts)
+            sql, missing, branch_log = render_with_meta(
+                sql_ref, params=sql_params, mode="params", statements=stmts
+            )
             for m_p in missing:
                 sys.stderr.write(f"⚠ 값 없음: {m_p}\n")
         else:
-            xml_path = find_mapper_file(ns, src_root)
-            if not xml_path:
-                return ToolResult(ok=False, error=f"매퍼 XML을 찾을 수 없습니다: namespace={ns}")
-            xml_text = xml_path.read_text(encoding="utf-8", errors="replace")
-            sql, missing = render_mybatis_sql(xml_text, sid, sql_params)
+            if xml_text_fallback is None:
+                xml_path = find_mapper_file(ns, src_root)
+                if not xml_path:
+                    return ToolResult(ok=False, error=f"매퍼 XML을 찾을 수 없습니다: namespace={ns}")
+                xml_text_fallback = xml_path.read_text(encoding="utf-8", errors="replace")
+            sql, missing, branch_log = render_from_xml_with_meta(xml_text_fallback, sid, sql_params)
             for m_p in missing:
                 sys.stderr.write(f"⚠ 값 없음: {m_p}\n")
     except Exception as e:  # noqa: BLE001
         return ToolResult(ok=False, error=f"SQL 렌더링 실패: {e}")
+
+    sql_params_line = ""
+    if sql_params or branch_log or missing:
+        p_str = ", ".join(f"{k}={v}" for k, v in sql_params.items()) if sql_params else "(없음)"
+        b_str = f" (branch: {', '.join(branch_log)})" if branch_log else ""
+        m_str = f" (-- 필요: {', '.join(missing)})" if missing else ""
+        sql_params_line = f"SQL params: {p_str}{b_str}{m_str}"
 
     api_data = api_res.data
     raw_json = {}
@@ -603,12 +658,20 @@ def compare_api_sql(
                 sql_row_count = len(sql_rows)
                 sql_cols = [desc[0] for desc in cur.description] if cur.description else []
     except Exception as exc:  # noqa: BLE001
-        return ToolResult(ok=False, error=f"SQL 실행 실패: {exc}\n실행 SQL: {sql}")
+        err_text = str(exc)
+        type_hint = ""
+        if missing:
+            type_hint += f"\nSQL 필수 파라미터 누락 (-- 필요: {', '.join(missing)})"
+        if "character varying = integer" in err_text or "integer = character varying" in err_text:
+            type_hint += "\n힌트: 문자열 컬럼에 숫자 형태 값을 바인딩할 때는 --param <key>=s:<val> 형식을 사용하세요."
+        if sql_params_line:
+            type_hint += f"\n{sql_params_line}"
+        return ToolResult(ok=False, error=f"SQL 실행 실패: {exc}{type_hint}\n실행 SQL: {sql}")
 
-    # 페이징인 경우 총건수 대조
+    # 페이징인 경우 행 수 및 총건수 대조 (#20)
     if is_paging:
-        sql_total = None
         if sql_total_ref:
+            sql_total = None
             try:
                 ns_t, sid_t = sql_total_ref.split(".", 1) if "." in sql_total_ref else ("", sql_total_ref)
                 if sql_total_ref in stmts or any(s.sid == sid_t for s in stmts.values()):
@@ -630,30 +693,27 @@ def compare_api_sql(
                                 sql_total = int(t_row[0])
             except Exception:  # noqa: BLE001, S110
                 pass
-        elif "LIMIT" in sql.upper():
-            inner_sql = re.sub(r'\s+LIMIT\s+[0-9]+(?:\s+OFFSET\s+[0-9]+)?', '', sql, flags=re.IGNORECASE)
-            inner_sql = re.sub(r'\s+OFFSET\s+[0-9]+(?:\s+LIMIT\s+[0-9]+)?', '', inner_sql, flags=re.IGNORECASE)
-            cnt_query = f"SELECT count(*) FROM ({inner_sql}) _cnt_sub"
-            try:
-                with psycopg.connect(conn_str, autocommit=False) as conn:
-                    conn.read_only = True
-                    with conn.cursor() as cur:
-                        cur.execute(cnt_query)
-                        t_row = cur.fetchone()
-                        if t_row:
-                            sql_total = int(t_row[0])
-            except Exception:  # noqa: BLE001, S110
-                pass
-
-        if sql_total is None:
-            sql_total = sql_row_count
-
-        rows_match = (api_total == sql_total)
-        rows_mark = "✅" if rows_match else "❌"
-        if api_row_count == api_total:
-            count_part = f"API total={api_total} (rows={api_row_count}), SQL total={sql_total} {rows_mark}"
+            if sql_total is None:
+                sql_total = sql_row_count
+            page_match = (api_row_count == sql_row_count)
+            total_match = (api_total == sql_total)
+            rows_match = page_match and total_match
+            page_mark = "✅" if page_match else "❌"
+            total_mark = "✅" if total_match else "❌"
+            count_part = (
+                f"API rows={api_row_count} (total {api_total}), "
+                f"SQL rows={sql_row_count} {page_mark}, total SQL {sql_total} {total_mark}"
+            )
         else:
-            count_part = f"API total={api_total} (이번 페이지 rows={api_row_count}), SQL total={sql_total} {rows_mark}"
+            if api_row_count == sql_row_count:
+                rows_match = True
+                count_part = f"API rows={api_row_count} (total {api_total}), SQL rows={sql_row_count} ✅"
+            elif api_total == sql_row_count:
+                rows_match = True
+                count_part = f"API rows={api_row_count} (total {api_total}), SQL total={sql_row_count} ✅"
+            else:
+                rows_match = False
+                count_part = f"API rows={api_row_count} (total {api_total}), SQL rows={sql_row_count} ❌"
     else:
         rows_match = (api_row_count == sql_row_count)
         rows_mark = "✅" if rows_match else "❌"
@@ -669,6 +729,8 @@ def compare_api_sql(
         search_dir = grid_info.get("search_dir", "")
         search_suffix = f" (탐색 폴더: {search_dir})" if search_dir else ""
         summary_line = f"{count_part}  ⚠ 그리드 못 찾음: {grid_info['class_name']}{search_suffix}"
+        if sql_params_line:
+            summary_line += f"\n{sql_params_line}"
         if used_params_msg:
             summary_line += f"\n{used_params_msg.strip()}"
         return ToolResult(
@@ -699,10 +761,30 @@ def compare_api_sql(
 
     missing_fields = {f for f in expected_fields if not _field_covered(f, api_fields)}
     cols_covered = (len(missing_fields) == 0)
+
+    # #7: 범용 모델 컬럼(string01.., long01..) 또는 명명 규칙 전체 불일치 판별
+    naming_rule_diff = False
+    if not cols_covered and api_fields and len(api_fields) >= len(expected_fields):
+        all_missing_generic = all(_GENERIC_PROP_RE.match(f) for f in missing_fields)
+        any_expected_generic = any(_GENERIC_PROP_RE.match(f) for f in expected_fields)
+        zero_overlap_covered = (
+            len(expected_fields - missing_fields) == 0
+            and len(sql_cols) >= len(expected_fields)
+        )
+        if all_missing_generic or any_expected_generic or zero_overlap_covered:
+            naming_rule_diff = True
+            cols_covered = True
+            missing_fields = set()
+
     cols_mark = "✅" if cols_covered else "⚠️"
 
     if api_row_count == 0:
         summary_line = f"{count_part}  필드 비교 못 함 (행 0건){cols_desc}"
+    elif naming_rule_diff:
+        summary_line = (
+            f"{count_part}  ℹ 이름 규칙 차이로 이름 대조 생략 "
+            f"(그리드 열 {len(expected_fields)}개, API 필드 {len(api_fields)}개){cols_desc}"
+        )
     else:
         summary_parts = [
             count_part,
@@ -712,8 +794,12 @@ def compare_api_sql(
             summary_parts.append(f"(missing: {', '.join(sorted(missing_fields))})")
         summary_line = "  ".join(summary_parts)
 
+    if sql_params_line:
+        summary_line += f"\n{sql_params_line}"
     if used_params_msg:
         summary_line += f"\n{used_params_msg.strip()}"
+    if not rows_match:
+        summary_line += f"\n힌트: 파라미터·분기 확인은 yunhee analysis sql {sql_ref} --param ... 또는 yunhee mapper-run <Mapper.xml#id> --compare {sql_ref}"
 
     return ToolResult(
         ok=True,

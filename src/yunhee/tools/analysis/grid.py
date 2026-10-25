@@ -161,9 +161,83 @@ def _parse_single_grid(
     )
     has_editors = False
 
+    # 2-1. 다단 헤더 그룹 (HeaderGroupConfig / HeaderGroupMap) 추출 (#6)
+    header_groups: list[dict[str, Any]] = []
+    for m_hg in re.finditer(
+        r"addHeaderGroup\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(?:new\s+HeaderGroupConfig\s*\(\s*)?\"([^\"]+)\"\s*(?:,\s*(\d+)\s*,\s*(\d+))?",
+        grid_text,
+    ):
+        header_groups.append({
+            "title": m_hg.group(3),
+            "row": int(m_hg.group(1)),
+            "col": int(m_hg.group(2)),
+            "row_span": int(m_hg.group(4)) if m_hg.group(4) else 1,
+            "col_span": int(m_hg.group(5)) if m_hg.group(5) else 1,
+        })
+    for m_hgm in re.finditer(
+        r"new\s+HeaderGroup(?:Map|Config)\s*\(\s*\"([^\"]+)\"\s*,\s*(\d+)\s*,\s*(\d+)\s*\)",
+        grid_text,
+    ):
+        title = m_hgm.group(1)
+        if not any(h["title"] == title for h in header_groups):
+            header_groups.append({
+                "title": title,
+                "row": 0,
+                "col": int(m_hgm.group(2)),
+                "row_span": 1,
+                "col_span": int(m_hgm.group(3)),
+            })
+
+    # 2-2. 합계 행 (AggregationRowConfig / SummaryType) 추출 (#6)
+    summary_info: dict[str, Any] = {}
+    sum_cols: list[str] = []
+    count_cols: list[str] = []
+    summary_label = "합계"
+    if re.search(r"AggregationRowConfig|SummaryType|addAggregationRow|setSummaryType", grid_text):
+        m_sum_lbl = re.search(r'setHtml\s*\(\s*[^,]+,\s*"([^"]+)"\s*\)', grid_text)
+        if m_sum_lbl:
+            summary_label = m_sum_lbl.group(1)
+        for m_st in re.finditer(
+            r"setSummaryType\s*\(\s*[^.]+\.(\w+)\s*\(\s*\)\s*,\s*(?:new\s+)?SummaryType\.(\w+)",
+            grid_text,
+        ):
+            col_p, st_kind = m_st.group(1), m_st.group(2).lower()
+            if "count" in st_kind:
+                count_cols.append(col_p)
+            else:
+                sum_cols.append(col_p)
+        for m_agg in re.finditer(r"addAggregation\w*\s*\(\s*[^.]+\.(\w+)\s*\(\s*\)", grid_text):
+            col_p = m_agg.group(1)
+            if col_p not in sum_cols:
+                sum_cols.append(col_p)
+        summary_info = {
+            "label": summary_label,
+            "sumCols": sum_cols,
+            "countCols": count_cols,
+        }
+
+    # 2-3. 클래스 내 콤보박스 선택지 사전 (#6)
+    from yunhee.tools.analysis.method import _extract_combo_options
+
+    combo_opts_map = _extract_combo_options(full_text)
+
+    # 2-4. 커스텀 셀 렌더러 (setCell(new AbstractCell...)) 추출 (#6)
+    custom_renderers: dict[str, str] = {}
+    for m_cell in re.finditer(
+        r"(\w+)\.setCell\s*\(\s*new\s+AbstractCell[^{]*\{(.*?)\}\s*\)",
+        grid_text,
+        re.DOTALL,
+    ):
+        col_var = m_cell.group(1)
+        cell_body = m_cell.group(2)
+        m_ap = re.search(r"append(?:HtmlConstant|Escaped)?\s*\(([^;]+)\)", cell_body)
+        if m_ap:
+            expr = re.sub(r"\s+", " ", m_ap.group(1)).strip()
+            custom_renderers[col_var] = expr[:60]
+
     # 3. 컬럼 빌더 호출 목록 수집
     raw_cols: list[dict[str, Any]] = []
-    add_re = re.compile(rf"(?<![\w.])(?:{builder_alt})\.(add\w+)\s*\(")
+    add_re = re.compile(rf"(?:(\w+)\s*=\s*)?(?<![\w.])(?:{builder_alt})\.(add\w+)\s*\(")
 
     for i, line in enumerate(lines):
         line_num = start_line_offset + i
@@ -175,7 +249,10 @@ def _parse_single_grid(
         if not m_c:
             continue
 
-        meth = m_c.group(1)
+        col_var_lhs = m_c.group(1) or ""
+        meth = m_c.group(2)
+        if meth in ("addHeaderGroupMap", "addHeaderGroup", "addAggregationRow"):
+            continue
         close_idx = paren_end(line, m_c.end() - 1)
         if close_idx < 0:
             raw_args_str = line[m_c.end() :].rstrip(";").removesuffix(")")
@@ -188,6 +265,12 @@ def _parse_single_grid(
 
         prop_m = re.search(r"\.(\w+)\s*(?:\(\s*\))?", args[0])
         prop = prop_m.group(1) if prop_m else re.sub(r"[^\w]", "", args[0])
+        if prop in ("new", "") or prop.startswith("newHeaderGroup"):
+            continue
+
+        # addComboBox(prop, comboVar, width, label) 인자 순서 호환
+        if len(args) >= 4 and not re.search(r"^\d+$", args[1].strip()) and re.search(r"^\d+$", args[2].strip()):
+            args = [args[0], args[2], args[3], args[1]] + args[4:]
 
         w_m = re.search(r"\d+", args[1])
         width = int(w_m.group(0)) if w_m else 80
@@ -195,11 +278,26 @@ def _parse_single_grid(
         label = args[2].strip(" \t\"'")
 
         editor_kind = None
+        editor_detail = None
+        checkbox_editable: bool | None = None
         is_action_cell = (
             meth == "addCell"
             or prop == "actionCell"
             or (len(args) >= 4 and any(kw in args[3] for kw in ("ImageCell", "ActionCell", "actionCell")))
         )
+        if meth in ("addBoolean", "addBooleanHtml"):
+            # CheckBoxCell 편집 가능 여부 판정 (#6)
+            if len(args) >= 4 and args[3].strip() == "false":
+                checkbox_editable = False
+            elif len(args) >= 4 and args[3].strip() != "null":
+                checkbox_editable = True
+                editor_kind = "checkbox"
+                has_editors = True
+            else:
+                checkbox_editable = True
+                if has_cell_edit:
+                    editor_kind = "checkbox"
+
         if len(args) >= 4 and not is_action_cell:
             ed_arg = args[3].strip()
             if ed_arg and ed_arg != "null":
@@ -209,20 +307,35 @@ def _parse_single_grid(
                 elif "DateField" in ed_arg or "MyDateField" in ed_arg:
                     editor_kind = "date"
                     has_editors = True
-                elif "ComboBox" in ed_arg:
+                elif "ComboBox" in ed_arg or ed_arg in combo_opts_map:
                     editor_kind = "select"
                     has_editors = True
+                    c_var_m = re.match(r"^(?:this\.)?(\w+)$", ed_arg)
+                    c_var = c_var_m.group(1) if c_var_m else ""
+                    if c_var and c_var in combo_opts_map:
+                        editor_detail = f"select({c_var}: {', '.join(combo_opts_map[c_var][:5])})"
+                    elif c_var:
+                        editor_detail = f"select({c_var})"
                 elif "NumberField" in ed_arg or "LongField" in ed_arg or "DoubleField" in ed_arg:
                     editor_kind = "number"
                     has_editors = True
                 elif "CheckBox" in ed_arg:
                     editor_kind = "checkbox"
+                    checkbox_editable = True
                     has_editors = True
-                elif "Lookup" in ed_arg or "Search" in ed_arg:
+                elif "Lookup" in ed_arg or "Search" in ed_arg or "TriggerField" in ed_arg:
                     editor_kind = "lookup"
                     has_editors = True
+                    l_var = ed_arg.replace("this.", "").strip()
+                    editor_detail = f"lookup({l_var})"
 
         renderer_desc = SPECIAL_RENDERERS.get(meth, "")
+        if checkbox_editable is True:
+            renderer_desc = "체크박스(편집)"
+        elif checkbox_editable is False and meth in ("addBoolean", "addBooleanHtml"):
+            renderer_desc = "체크박스(표시)"
+        if col_var_lhs and col_var_lhs in custom_renderers:
+            renderer_desc = f"커스텀({custom_renderers[col_var_lhs]})"
         if is_action_cell and not renderer_desc:
             renderer_desc = "아이콘"
 
@@ -233,6 +346,8 @@ def _parse_single_grid(
             "width": width,
             "label": label,
             "editor": editor_kind,
+            "editor_detail": editor_detail,
+            "checkbox_editable": checkbox_editable,
             "renderer": renderer_desc,
         })
 
@@ -379,6 +494,8 @@ def _parse_single_grid(
         "row_num_hidden": row_num_hidden,
         "columns": final_cols,
         "hidden_calls": hidden_calls,
+        "header_groups": header_groups,
+        "summary_info": summary_info,
     }
 
 
@@ -475,6 +592,8 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         "row_num_hidden": first_g.get("row_num_hidden", False),
         "columns": first_g.get("columns", []),
         "hidden_calls": first_g.get("hidden_calls", []),
+        "header_groups": first_g.get("header_groups", []),
+        "summary_info": first_g.get("summary_info", []),
     }
 
 
@@ -488,7 +607,9 @@ def _render_grid_table(cols: list[dict[str, Any]], show_col_status: bool) -> lis
         lines.append("|:---|:---|:---|:---|:---|:---|:---|:---|")
     for c in cols:
         hid_str = "숨김" if c.get("hidden") else ""
-        ed_str = c.get("editor") or ""
+        ed_str = c.get("editor_detail") or c.get("editor") or ""
+        if c.get("meth") == "addBoolean" and c.get("checkbox_editable") is not None and not ed_str:
+            ed_str = "checkbox(편집가능)" if c["checkbox_editable"] else "checkbox(읽기전용)"
         ren_str = c.get("renderer") or ""
         if show_col_status:
             st_str = c.get("col_status") or ""
@@ -500,6 +621,29 @@ def _render_grid_table(cols: list[dict[str, Any]], show_col_status: bool) -> lis
                 f"| {c['index']} | {c['prop']} | {c['width']} | {c['label']} | {c['meth']} | {ren_str} | {ed_str} | {hid_str} |"
             )
     return lines
+
+
+def _render_grid_extra_meta(g: dict[str, Any]) -> list[str]:
+    meta_lines: list[str] = []
+    hgs = g.get("header_groups") or []
+    if hgs:
+        hg_strs = [
+            f"`{hg['title']}` (row={hg['row']}, col={hg['col']}, colspan={hg.get('col_span', hg.get('colspan', 1))}, rowspan={hg.get('row_span', hg.get('rowspan', 1))})"
+            for hg in hgs
+        ]
+        meta_lines.append(f"- **2단 헤더 그룹**: {', '.join(hg_strs)}")
+    sums = g.get("summary_info")
+    if sums:
+        if isinstance(sums, dict):
+            s_parts = [f"라벨=\"{sums.get('label', '합계')}\""]
+            if sums.get("sumCols"):
+                s_parts.append(f"합계={', '.join(sums['sumCols'])}")
+            if sums.get("countCols"):
+                s_parts.append(f"건수={', '.join(sums['countCols'])}")
+            meta_lines.append(f"- **합계/집계 행**: {' · '.join(s_parts)}")
+        elif isinstance(sums, list):
+            meta_lines.append(f"- **합계/집계 행**: {', '.join(str(x) for x in sums)}")
+    return meta_lines
 
 
 def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = None) -> str:
@@ -559,6 +703,7 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         lines = [f"### 그리드 `{cls_name}` (유형: `{grid_type}`)"]
         if g.get("checked_type"):
             lines.append(f"- **선택 모드**: `{g['checked_type']}`")
+        lines.extend(_render_grid_extra_meta(g))
         if show_col_status and g.get("sql"):
             cands = g.get("candidate_sqls") or []
             cand_note = f" (후보: {', '.join(cands)} — --sql로 지정 가능)" if len(cands) > 1 else ""
@@ -584,6 +729,7 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         lines = [f"### 그리드 `{title_name}` (유형: `{grid_type}`, 모델: `{g['model']}`)"]
         if g.get("checked_type"):
             lines.append(f"- **선택 모드**: `{g['checked_type']}`")
+        lines.extend(_render_grid_extra_meta(g))
         if show_col_status and g.get("sql"):
             cands = g.get("candidate_sqls") or []
             cand_note = f" (후보: {', '.join(cands)} — --sql로 지정 가능)" if len(cands) > 1 else ""

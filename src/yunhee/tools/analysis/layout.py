@@ -84,30 +84,75 @@ def parse_layout(java_text: str) -> str:
     """AS-IS Java 파일 내용에서 폼 레이아웃 구조를 추출한다."""
     lines = java_text.splitlines()
 
-    # 1. 레이아웃 컨테이너 검출
-    container_types: dict[str, str] = {}  # var -> 'Horizontal' | 'Vertical'
+    # 1. 레이아웃 컨테이너 검출 (Horizontal/Vertical/HBox/VBox/CssFloat)
+    container_types: dict[str, str] = {}  # var -> 'Horizontal' | 'Vertical' | 'HBox' | 'VBox'
     for line in lines:
-        for m in re.finditer(r"\b(HorizontalLayoutContainer|VerticalLayoutContainer)\s+(\w+)\s*=\s*new\b", line):
-            c_type = "Horizontal" if "Horizontal" in m.group(1) else "Vertical"
+        for m in re.finditer(
+            r"\b(HorizontalLayoutContainer|VerticalLayoutContainer|HBoxLayoutContainer|VBoxLayoutContainer|CssFloatLayoutContainer)\s+(\w+)\s*=\s*new\b",
+            line,
+        ):
+            raw_t = m.group(1)
+            if "HBox" in raw_t:
+                c_type = "HBox"
+            elif "VBox" in raw_t:
+                c_type = "VBox"
+            elif "Horizontal" in raw_t or "CssFloat" in raw_t:
+                c_type = "Horizontal"
+            else:
+                c_type = "Vertical"
             container_types[m.group(2)] = c_type
 
     if not container_types:
         return "레이아웃 없음 (폼 컨테이너를 찾지 못함)"
 
+    # 1-b. 위젯 타입, 필수 여부(setAllowBlank(false)), 읽기 전용/비활성 사전 수집
+    field_types: dict[str, str] = {}
+    for line in lines:
+        for m_ft in re.finditer(
+            r"\b(TextField|MyTextField|DateField|MyDateField|TextArea|MyTextArea|ComboBox|CodeComboBox|SimpleComboBox|ComboBoxField|CommonComboBoxField|CheckBox|Radio|LookupTriggerField|NumberField|DoubleField|IntegerField|LongField|PasswordField|FileUploadField)(?:<[^>]+>)?\s+(\w+)\s*=\s*new\b",
+            line,
+        ):
+            field_types[m_ft.group(2)] = m_ft.group(1)
+
+    required_vars: set[str] = set()
+    read_only_map: dict[str, list[str]] = {}
+    for line in lines:
+        s = line.strip()
+        m_req = re.search(r"(?:this\.)?(\w+)\.setAllowBlank\s*\(\s*false\s*\)", s)
+        if m_req:
+            required_vars.add(m_req.group(1))
+        m_ro = re.search(r"(?:this\.)?(\w+)\.setReadOnly\s*\(\s*true\s*\)", s)
+        if m_ro:
+            var = m_ro.group(1)
+            read_only_map.setdefault(var, [])
+            if "readOnly" not in read_only_map[var]:
+                read_only_map[var].append("readOnly")
+        m_dis = re.search(r"(?:this\.)?(\w+)\.(?:disable\(\)|setEnabled\s*\(\s*false\s*\))", s)
+        if m_dis:
+            var = m_dis.group(1)
+            read_only_map.setdefault(var, [])
+            if "disable" not in read_only_map[var]:
+                read_only_map[var].append("disable")
+
     # 2. LayoutData 변수 수집: (var) -> (w, h, margin_str)
     layout_data_vars: dict[str, tuple[str, str, str]] = {}
     for line in lines:
         for m in re.finditer(
-            r"\b(?:Horizontal|Vertical)LayoutData\s+(\w+)\s*=\s*new\s+(?:Horizontal|Vertical)LayoutData\s*\(([^;]+)\);",
+            r"\b(?:HorizontalLayoutData|VerticalLayoutData|BoxLayoutData|CssFloatData)\s+(\w+)\s*=\s*new\s+(?:HorizontalLayoutData|VerticalLayoutData|BoxLayoutData|CssFloatData)\s*\(([^;]+)\);",
             line,
         ):
             var_name = m.group(1)
             args = split_args(m.group(2))
-            w = args[0].strip() if len(args) > 0 else "-1"
-            h = args[1].strip() if len(args) > 1 else "-1"
-            m_str = ""
-            if len(args) > 2:
-                m_str = _parse_margins(args[2])
+            if "BoxLayoutData" in line:
+                w = "-1"
+                h = "-1"
+                m_str = _parse_margins(args[0]) if args else ""
+            else:
+                w = args[0].strip() if len(args) > 0 else "-1"
+                h = args[1].strip() if len(args) > 1 else "-1"
+                m_str = ""
+                if len(args) > 2:
+                    m_str = _parse_margins(args[2])
             layout_data_vars[var_name] = (w, h, m_str)
 
     # 3. .add() 호출 수집: container -> list of children
@@ -136,13 +181,20 @@ def parse_layout(java_text: str) -> str:
         if second_arg in layout_data_vars:
             w, h, m_str = layout_data_vars[second_arg]
         elif second_arg:
-            m_inline = re.search(r"new\s+(?:Horizontal|Vertical)LayoutData\s*\((.*)\)", second_arg)
+            m_inline = re.search(
+                r"new\s+(HorizontalLayoutData|VerticalLayoutData|BoxLayoutData|CssFloatData)\s*\((.*)\)",
+                second_arg,
+            )
             if m_inline:
-                in_args = split_args(m_inline.group(1))
-                w = in_args[0].strip() if len(in_args) > 0 else "-1"
-                h = in_args[1].strip() if len(in_args) > 1 else "-1"
-                if len(in_args) > 2:
-                    m_str = _parse_margins(in_args[2])
+                ld_type = m_inline.group(1)
+                in_args = split_args(m_inline.group(2))
+                if ld_type == "BoxLayoutData":
+                    m_str = _parse_margins(in_args[0]) if in_args else ""
+                else:
+                    w = in_args[0].strip() if len(in_args) > 0 else "-1"
+                    h = in_args[1].strip() if len(in_args) > 1 else "-1"
+                    if len(in_args) > 2:
+                        m_str = _parse_margins(in_args[2])
 
         # 첫 인자 분석
         m_fl = re.search(r"new\s+FieldLabel\s*\(\s*(\w+)\s*,\s*(.*)\)", first_arg)
@@ -151,7 +203,10 @@ def parse_layout(java_text: str) -> str:
             lbl_expr = m_fl.group(2)
             lbl_match = re.search(r'"([^"]+)"', lbl_expr)
             label = lbl_match.group(1) if lbl_match else ""
-            cell_name = f"{label}{{{field_name}}}"
+            req_mark = "*" if field_name in required_vars else ""
+            wtype = f"({field_types[field_name]})" if field_name in field_types else ""
+            ro_mark = f"[{'·'.join(read_only_map[field_name])}]" if field_name in read_only_map else ""
+            cell_name = f"{label}{req_mark}{{{field_name}}}{wtype}{ro_mark}"
             child_type = "field"
             child_var = field_name
         elif first_arg in container_types:
@@ -161,7 +216,10 @@ def parse_layout(java_text: str) -> str:
         else:
             m_ident = re.search(r"^\s*(\w+)", first_arg)
             var = m_ident.group(1) if m_ident else first_arg
-            cell_name = f"{{{var}}}"
+            req_mark = "*" if var in required_vars else ""
+            wtype = f"({field_types[var]})" if var in field_types else ""
+            ro_mark = f"[{'·'.join(read_only_map[var])}]" if var in read_only_map else ""
+            cell_name = f"{{{var}}}{req_mark}{wtype}{ro_mark}"
             child_type = "widget"
             child_var = var
 

@@ -2,6 +2,27 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.5.3] - 2026-10-25
+수정사항 042 그룹 C (`analysis ui` · `screen` · `grid` · `method` · `layout` 정적 분석 고도화) 반영.
+- `analysis ui`: 화면 컨테이너/분할/탭 구조(`BorderLayout` 영역·크기·split·collapsible·min, `TabPanel` 탭 구성, 모달 `setPixelSize`) 자동 추출 (042-3), 조회바·입력 비버튼 위젯(`CodeComboBox`, `SimpleComboBox`, `DateField`, `Radio`, `CheckBox`, `LookupTriggerField`, `TextField` 및 Enter 키 바인딩) 순서대로 추출 (042-8), `--layout` 옵션으로 클래스별 폼 레이아웃 상세 동시 출력 (042-18)
+- `analysis screen` / `events`: 메서드 표의 `-` 및 `상태 처리` 항목을 `executeService`, `GridInsertRow`/`GridUpdate`, 팝업 `.open()`/`.show()`, `fireEvent`, `editDriver.edit/flush`, 스토어 조작, 파일 입출력 등으로 구체화 및 동적 보강 (042-4), `--section methods` 일괄 상세 요약 추가 (042-5), `## 컴포넌트 간 이벤트 흐름`(`fireEvent` ──▶ `addChangeHandler`, `--section flow`) 추출 (042-9), `## Lookup 팝업 연결`(`--section lookup`) 추출 (042-16), `## 파일 입출력`(`FileUploadField`, `FormPanel MULTIPART`, `SubmitCompleteHandler`, 엑셀 입출력, `--section file`) 확장 (042-19)
+- `analysis grid`: 2단 헤더 그룹(`addHeaderGroup`, `HeaderGroupConfig`, `HeaderGroupMap`), 합계/집계 행(`AggregationRowConfig`, `SummaryType`), 커스텀 셀 렌더러(`AbstractCell`), 체크박스 편집 가능 여부(`checkbox(편집가능)` / `checkbox(읽기전용)`), 콤보박스/Lookup 편집기 상세 표시 (042-6)
+- `analysis method`: 다중 메서드 동시 조회(`analysis method <클래스> <m1> <m2>` 또는 `<클래스>.<m1>,<m2>`), `--raw` 요약+원문 동시 출력 (042-5), `SimpleComboBox.add(...)` 및 `CodeComboBox` 생성자 선택지 목록 자동 추출 (042-17)
+- `analysis layout`: `HBoxLayoutContainer`/`VBoxLayoutContainer`/`BoxLayoutData` 지원 추가 및 필드별 위젯 타입(`(TextField)` 등), 필수 입력(`*`), 읽기전용·비활성(`[readOnly]`/`[disable]`) 인라인 표기 (042-18)
+
+## [0.5.2] - 2026-10-25
+수정사항 042 그룹 B (`compare` 파라미터/분기·타입 바인딩·이름 규칙 차이·페이징 대조 개선 및 `api -F` 멀티파트 파일 업로드 지원) 반영.
+- `compare`: `admin` 계정(`org_id=0`)이거나 `<when>`/`<if>` 분기 조건 변수(`orgId`, `empId`)인데 명시하지 않은 경우 세션 `user_info` 자동 주입을 방지하여 비활성 분기 진입 및 `-- 필요: retrieveType` 오탐 해결, `SQL params: ... (branch: ...)` 분기 판정 표시 및 행 수 불일치 시 `mapper-run` 힌트 안내 (042-2)
+- `compare` / `mybatis_render`: `--param key=s:val`(문자열 강제) 및 `n:val`(숫자 강제) 구문 지원, 코드/구분 변수(`managerType` 등)에 숫자 형태 값 전달 시 문자열 리터럴(`'21'`)로 자동 바인딩하여 `character varying = integer` 타입 오류 방지 (042-14)
+- `compare` / `index-src`: `addHeaderGroupMap` 등에서 오인된 가짜 열(`new`) 제외, `Sys99_PrintModel`(`string01..`, `long01..`) 등 범용 모델 컬럼이나 명명 규칙 차이 시 `⚠️` 대신 `ℹ 이름 규칙 차이로 이름 대조 생략` 안내 (042-7)
+- `compare`: 페이징 응답(`PageRes` `{total, rows}`) 비교 시 현재 페이지 `rows` 길이와 SQL 결과 행 수를 기본 대조하고 `--total-sql`(`--sql-total`) 지정 시 페이지 행 수와 전체 건수를 함께 검증 (042-20)
+- `api`: `-F` / `--form <name>=@<파일경로>[;type=<MIME>]` 및 `<name>=<값>` 멀티파트 파일 업로드 옵션 추가, `--body`와 동시 사용 차단 및 업로드 파일명·크기 요약 출력 (042-15)
+
+## [0.5.1] - 2026-10-25
+수정사항 042 그룹 A (`port-sql` 서브쿼리 `t.*` 확장 및 계산 열 타입 추론, `port-save` `--insert-cols` 및 자동 채움 표시) 반영.
+- `port-sql`: `FROM ( SELECT ... ) t` 서브쿼리의 바깥 SELECT에 `t.*`와 계산식(`* 100.0` 등)이 함께 있을 때 곱셈 연산자 `*`를 와일드카드로 오인하던 정규식 버그 수정, 서브쿼리 내부 SELECT 별칭 목록으로 `t.*` 자동 확장, Model 필드 타입(`Double`, `Long` 등) 연동으로 DTO record 필드 타입 정밀 결정 (042-1)
+- `port-save`: INSERT 문에만 포함하고 UPDATE SET에서는 제외하는 `--insert-cols` 옵션 추가, `UpdateDataModel`이 자동으로 채우는 `*_upd_nm` / `*_upd_date` 컬럼이 테이블에 있을 때 부수 효과 절에 `자동 채움:` 안내 표시 (042-11)
+
 ## [0.5.0] - 2026-10-23
 자율 에이전트 하네스(Agentic Harness), 하이브리드 장기 기억, Gotenberg 산출물 발간 및 단일 DB 자율 질의 통합 메이저 릴리즈.
 - **Agentic Harness & REPL 자율 루프**: `yunhee` 서브커맨드 없이 실행 시 진입하는 대화형 REPL 에이전트 하네스 구축. Rich 라이브 스피너, ESC 2회 즉시 취소, 모델-도구 자율 루프 및 자기 수정(Self-correction) 지원.

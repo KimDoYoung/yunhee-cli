@@ -593,3 +593,211 @@ def test_035_sql_json_path_serializable():
     assert d["params"] == ["companyId", "personId"]
     md = sql.render(obj, fmt="md")
     assert "companyId, personId" in md and "mapper/m.xml:64" in md
+
+
+def test_042_group_c_grid_header_groups_summary_and_editors(tmp_path: Path):
+    """042-#6: grid 분석 시 2단 헤더(addHeaderGroup), 합계 행(AggregationRowConfig), 체크박스 편집 여부, 콤보 옵션 표시 검증."""
+    from yunhee.tools.analysis import grid
+
+    src_dir = tmp_path / "src"
+    client_dir = src_dir / "client" / "vi" / "apr"
+    client_dir.mkdir(parents=True, exist_ok=True)
+
+    java_code = """
+package test;
+public class Apr01_Grid_Stamp {
+    private CodeComboBox typeCombo = new CodeComboBox("STAMP_TYPE", "전체");
+    public Grid<Apr01_StampModel> buildGrid() {
+        GridBuilder<Apr01_StampModel> gb = new GridBuilder<Apr01_StampModel>();
+        gb.addBoolean(properties.useYn(), 60, "사용");
+        gb.addBoolean(properties.readOnlyYn(), 60, "조회전용", false);
+        gb.addComboBox(properties.stampType(), typeCombo, 100, "인감구분");
+        gb.addLong(properties.amt(), 120, "금액");
+        gb.addHeaderGroup(0, 1, "인감정보", 1, 2);
+        AggregationRowConfig<Apr01_StampModel> sumRow = new AggregationRowConfig<Apr01_StampModel>();
+        sumRow.setSummaryType(properties.amt(), SummaryType.SUM);
+        return gb.getGrid();
+    }
+}
+"""
+    (client_dir / "Apr01_Grid_Stamp.java").write_text(java_code, encoding="utf-8")
+
+    res = grid.resolve("Apr01_Grid_Stamp", {"src": src_dir, "check_columns": False})
+    md = grid.render(res, fmt="md", opts={"check_columns": False})
+    assert "2단 헤더 그룹" in md
+    assert "`인감정보` (row=0, col=1, colspan=2, rowspan=1)" in md
+    assert "합계/집계 행" in md
+    assert "checkbox(편집가능)" in md
+    assert "checkbox(읽기전용)" in md
+    assert "select(typeCombo:" in md
+
+
+def test_042_group_c_method_multi_and_raw_and_combos(tmp_path: Path):
+    """042-#5, #17: analysis method 다중 메서드 지정, --raw 원문 출력, 콤보박스 옵션 추출 검증."""
+    from yunhee.tools.analysis import method
+
+    src_dir = tmp_path / "src"
+    client_dir = src_dir / "client" / "vi" / "emp"
+    client_dir.mkdir(parents=True, exist_ok=True)
+
+    java_code = """
+package test;
+public class Emp02_Edit_Employee {
+    private SimpleComboBox<String> genderCombo = new SimpleComboBox<String>();
+    public void initCombo() {
+        genderCombo.add("남");
+        genderCombo.add("여");
+    }
+    public void saveEmp() {
+        if (korName.getValue() == null) {
+            new SimpleMessage("성명을 입력하세요");
+            return;
+        }
+        fireEvent(new ChangeEvent());
+    }
+}
+"""
+    (client_dir / "Emp02_Edit_Employee.java").write_text(java_code, encoding="utf-8")
+
+    res = method.resolve(
+        "Emp02_Edit_Employee",
+        {"src": src_dir, "extra_targets": ["initCombo", "saveEmp"]},
+    )
+    assert "multi_methods" in res and len(res["multi_methods"]) == 2
+    md = method.render(res, fmt="md", opts={"raw": True})
+    assert "initCombo" in md
+    assert "saveEmp" in md
+    assert '"남"' in md and '"여"' in md
+    assert "fireEvent(new ChangeEvent())" in md
+    assert "#### 원문 코드" in md
+
+
+def test_042_group_c_layout_hbox_vbox_and_widget_meta():
+    """042-#18: HBox/VBoxLayoutContainer 및 위젯 타입·필수(*)·읽기전용 인라인 표기 검증."""
+    from yunhee.tools.analysis.layout import parse_layout
+
+    java_code = """
+public class SampleForm {
+    private TextField korName = new TextField();
+    private DateField birthDate = new DateField();
+    public Widget getEditor() {
+        korName.setAllowBlank(false);
+        birthDate.setReadOnly(true);
+        VBoxLayoutContainer vlc = new VBoxLayoutContainer();
+        HBoxLayoutContainer row1 = new HBoxLayoutContainer();
+        row1.add(new FieldLabel(korName, "성명"), new BoxLayoutData(new Margins(0, 10, 0, 0)));
+        row1.add(new FieldLabel(birthDate, "생년월일"), new BoxLayoutData(new Margins(0)));
+        vlc.add(row1);
+        return vlc;
+    }
+}
+"""
+    out = parse_layout(java_code)
+    assert "VBox" in out
+    assert "성명*{korName}(TextField)" in out
+    assert "생년월일{birthDate}(DateField)[readOnly]" in out
+
+
+def test_042_group_c_ui_and_screen_sections(tmp_path: Path):
+    """042-#3, #4, #5, #8, #9, #16, #18, #19: ui 컨테이너/위젯/--layout 및 screen methods/flow/lookup/file 검증."""
+    from yunhee.tools.analysis import screen, ui
+
+    src_dir = tmp_path / "src"
+    client_dir = src_dir / "client" / "vi" / "emp"
+    client_dir.mkdir(parents=True, exist_ok=True)
+    src_index = tmp_path / "docs" / "as-is" / "src"
+    emp_screens = src_index / "emp" / "screens"
+    emp_screens.mkdir(parents=True, exist_ok=True)
+
+    java_code = """
+package test;
+public class Emp02_Tab_Detail {
+    private CodeComboBox statusCombo = new CodeComboBox("STATUS_CD", "재직");
+    private TextField searchTxt = new TextField();
+    private Emp00_Lookup_SelectSingle empLookup = new Emp00_Lookup_SelectSingle();
+    private FileUploadField uploadField = new FileUploadField();
+
+    public Emp02_Tab_Detail() {
+        this.setPixelSize(900, 650);
+        BorderLayoutData westData = new BorderLayoutData(300);
+        westData.setSplit(true);
+        westData.setCollapsible(true);
+        westData.setMinSize(150);
+        setWestWidget(treeGrid, westData);
+        setCenterWidget(mainTab);
+        mainTab.add(page1, "기본정보");
+        mainTab.add(page2, "발령정보");
+        searchTxt.addKeyDownHandler(new KeyDownHandler() {});
+        page1.addChangeHandler(new ChangeHandler() {
+            public void onChange(ChangeEvent event) {
+                retrieve();
+            }
+        });
+    }
+
+    private void openLookup() {
+        empLookup.open("EMP", new InterfaceCallback() {
+            public void execute() {
+                searchTxt.setValue("홍길동");
+            }
+        });
+    }
+
+    private void uploadFile() {
+        formPanel.setEncoding(Encoding.MULTIPART);
+        formPanel.setAction("FileUpload?fileType=empPhoto");
+        fireEvent(new ChangeEvent());
+    }
+}
+"""
+    (client_dir / "Emp02_Tab_Detail.java").write_text(java_code, encoding="utf-8")
+
+    md_content = """# Emp02_Tab_Detail
+
+- 파일: `client/vi/emp/Emp02_Tab_Detail.java`
+
+### Emp02_Tab_Detail (`client/vi/emp/Emp02_Tab_Detail.java`, 50줄)
+
+## 사용된 버튼들
+1. <Button type="search">조회</Button>
+
+## 이벤트
+- [E0] 생성자 (L10)
+
+## 메서드
+| 가시성 | 메서드 | 줄 | 호출처 | 동작 | 구분 |
+|:---|:---|:---|:---|:---|:---|
+| private | `openLookup()` | L31-37 | E1 | - | 핸들러 |
+| private | `uploadFile()` | L39-43 | E2 | 상태 처리 | 핸들러 |
+"""
+    (emp_screens / "Emp02_Tab_Detail.md").write_text(md_content, encoding="utf-8")
+
+    # 1. analysis ui 검증 (#3, #8)
+    ui_obj = ui.resolve("Emp02_Tab_Detail", {"src": src_dir, "src_index": src_index, "layout": True})
+    ui_md = ui.render(ui_obj, fmt="md")
+    assert "창 크기: 900×650" in ui_md
+    assert "West: `treeGrid` (size=300, split, collapsible, min=150)" in ui_md
+    assert "TabPanel: `기본정보`(page1), `발령정보`(page2)" in ui_md
+    assert "`statusCombo` (CodeComboBox)" in ui_md
+    assert "[Enter키 바인딩]" in ui_md
+
+    # 2. analysis screen 기본 렌더링 및 섹션별 검증 (#4, #5, #9, #16, #19)
+    sc_obj = screen.resolve("Emp02_Tab_Detail", {"src": src_dir, "src_index": src_index})
+    sc_full = screen.render(sc_obj, fmt="md")
+    assert "empLookup.open() 호출" in sc_full  # '-'가 동적 보강됨 (#4)
+    assert "이벤트 발화: ChangeEvent, 파일 업로드 submit" in sc_full  # '상태 처리'가 동적 보강됨 (#4)
+    assert "## 컴포넌트 간 이벤트 흐름" in sc_full  # (#9)
+    assert "## Lookup 팝업 연결" in sc_full  # (#16)
+
+    sc_methods = screen.render(sc_obj, fmt="md", opts={"section": "methods"})
+    assert "### 메서드별 상세 요약" in sc_methods
+    assert "openLookup" in sc_methods
+
+    sc_lookup = screen.render(sc_obj, fmt="md", opts={"section": "lookup"})
+    assert "Emp00_Lookup_SelectSingle" in sc_lookup
+    assert "searchTxt.setValue" in sc_lookup
+
+    sc_file = screen.render(sc_obj, fmt="md", opts={"section": "file"})
+    assert "FileUploadField `uploadField`" in sc_file
+    assert "FormPanel MULTIPART" in sc_file
+

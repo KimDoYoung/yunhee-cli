@@ -350,3 +350,72 @@ def test_api_and_compare_stop_without_tenant(monkeypatch):
 def test_header_tag():
     assert api_client.header_tag("http://localhost:8082/AssetERP_1", "admin", "kfstest") == "[AssetERP_1 · tenant=admin · company=kfstest]"
     assert api_client.header_tag() == ""
+
+
+def test_042_api_multipart_form_upload(monkeypatch, tmp_path: Path):
+    """수정사항042 #15: yunhee api -F/--form 멀티파트 파일 업로드, MIME 추정, --body 충돌 차단 검증."""
+    monkeypatch.setattr(api_client, "get_sessions_dir", lambda: tmp_path)
+
+    dummy_xlsx = tmp_path / "test.xlsx"
+    dummy_xlsx.write_bytes(b"PK\x03\x04dummy-excel-bytes")
+
+    captured_kwargs: dict = {}
+
+    class MockUploadResp:
+        def __init__(self):
+            self.status_code = 200
+            self.is_success = True
+            self.text = '{"success": true, "code": "OK", "data": {"uploaded": 1}}'
+            self.cookies = {}
+            self.headers = {}
+
+    def mock_request(method, url, **kwargs):
+        captured_kwargs.update(kwargs)
+        return MockUploadResp()
+
+    monkeypatch.setattr("httpx.request", mock_request)
+
+    # 1. 파일(@path) + 일반 텍스트 필드 동시 전송
+    res = api_client.request_api(
+        "POST",
+        "/api/v1/tdm/check-manuals/excel-upload",
+        form_fields=[f"file=@{dummy_xlsx}", "companyId=28000"],
+        auto_login=False,
+    )
+    assert res.ok
+    assert "Upload: test.xlsx (21B)" in res.data["summary"]
+    assert captured_kwargs["data"] == {"companyId": "28000"}
+    assert len(captured_kwargs["files"]) == 1
+    part_name, (fname, fbytes, mime) = captured_kwargs["files"][0]
+    assert part_name == "file"
+    assert fname == "test.xlsx"
+    assert fbytes == b"PK\x03\x04dummy-excel-bytes"
+    assert "spreadsheetml" in mime or "excel" in mime or mime
+
+    # 2. ;type= 명시적 MIME 지정
+    res_mime = api_client.request_api(
+        "POST",
+        "/api/v1/tdm/check-manuals/excel-upload",
+        form_fields=[f"file=@{dummy_xlsx};type=application/custom-excel"],
+        auto_login=False,
+    )
+    assert res_mime.ok
+    assert captured_kwargs["files"][0][1][2] == "application/custom-excel"
+
+    # 3. --body와 -F 동시 사용 시 에러 반환
+    runner = CliRunner()
+    cli_conflict = runner.invoke(
+        cli.app,
+        [
+            "api",
+            "POST",
+            "/api/v1/tdm/check-manuals/excel-upload",
+            "-b",
+            '{"a": 1}',
+            "-F",
+            f"file=@{dummy_xlsx}",
+        ],
+    )
+    assert cli_conflict.exit_code == 1
+    assert "함께 사용할 수 없습니다" in cli_conflict.output
+

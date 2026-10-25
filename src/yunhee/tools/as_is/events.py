@@ -580,8 +580,8 @@ def extract_events_and_methods(
         svcs = [s.group(1) for s in re.finditer(r'"([a-z]\w*\.[A-Z]\w*\.\w+)"', m_body)]
         prms = [p.group(1) for p in re.finditer(r'\.addParam\s*\(\s*"([^"]+)"', m_body)]
 
-        # 팝업 / 조회창
-        popups = re.findall(r'new\s+([A-Za-z0-9_]+(?:Edit|Lookup|Popup|Window)[A-Za-z0-9_]*)\s*\(', m_body)
+        # 팝업 / 조회창 / 모달
+        popups = re.findall(r'new\s+([A-Za-z0-9_]+(?:Edit|Lookup|Popup|Window|Modal|Dialog|View)[A-Za-z0-9_]*)\s*\(', m_body)
         for pop in popups:
             if "Lookup" in pop:
                 cb_desc = ""
@@ -590,6 +590,11 @@ def extract_events_and_methods(
                 work_parts.append(f"조회창 {pop} 열기{cb_desc}")
             else:
                 work_parts.append(f"팝업 {pop} 열기")
+
+        for m_open in re.finditer(r'(?:this\.)?(\w+)\.(open|show)\s*\(', m_body):
+            v_name, op_name = m_open.group(1), m_open.group(2)
+            if v_name not in ("this", "super", "window", "Window") and not any(v_name in p for p in work_parts):
+                work_parts.append(f"{v_name}.{op_name}() 호출")
 
         sub_evs = [
             ev for ev in ev_list
@@ -615,19 +620,41 @@ def extract_events_and_methods(
         elif has_alert:
             work_parts.append(f"미선택 시 alert{alert_msg}")
 
-        # 서비스 호출
+        # 서비스 호출 (리터럴 및 executeService 래퍼)
         if svcs and not (has_confirm and sub_evs):
             prm_str = f"({', '.join(prms)})" if prms else ""
             if "GridDeleteData" in m_body:
                 tgt = "(체크된 행 목록)" if ("getSelectedItems" in m_body or "checkedList" in m_body) else ""
                 work_parts.append(f"GridDeleteData {', '.join(svcs)}{tgt}")
             elif "GridRetrieveData" in m_body:
-                # 실제 코드에 건수 표시 로직(txtTotalRow, setTotal, totalRow)이 있을 때만 표시
                 has_count = any(k in m_body for k in ("txtTotalRow", "setTotal", "totalRow", "count"))
                 cnt_desc = ", 건수 표시" if has_count else ""
                 work_parts.append(f"서비스 {', '.join(svcs)}{prm_str}{cnt_desc}")
             else:
                 work_parts.append(f"서비스 {', '.join(svcs)}{prm_str}")
+        elif not svcs:
+            for m_exec in re.finditer(r'\b(executeService|callService)\s*\(\s*([^,)]+)', m_body):
+                work_parts.append(f"{m_exec.group(1)}({m_exec.group(2).strip()})")
+            if "GridInsertRow" in m_body:
+                work_parts.append("GridInsertRow 행 추가")
+            if "GridUpdate" in m_body:
+                work_parts.append("GridUpdate 저장")
+
+        # 커스텀 이벤트 발화 (fireEvent)
+        for m_fire in re.finditer(r'fireEvent\s*\(\s*new\s+(\w+Event)\s*\(', m_body):
+            work_parts.append(f"이벤트 발화: {m_fire.group(1)}")
+
+        # 폼 드라이버 및 스토어 조작
+        for m_drv in re.finditer(r'(\w*[dD]river)\.(edit|flush)\s*\(([^)]*)\)', m_body):
+            work_parts.append(f"{m_drv.group(1)}.{m_drv.group(2)}({m_drv.group(3).strip()})")
+        for m_st in re.finditer(r'(\w+)\.getStore\(\)\.(add|clear|remove|update|replaceAll|commitChanges)\s*\(', m_body):
+            work_parts.append(f"{m_st.group(1)}.store.{m_st.group(2)}()")
+
+        # 파일 업로드 / 다운로드
+        if "FileUpload" in m_body or ".submit()" in m_body:
+            work_parts.append("파일 업로드 submit")
+        if "FileDownload" in m_body or "fileDownload" in m_body:
+            work_parts.append("파일 다운로드")
 
         # 탭페이지 retrieve
         if "InterfaceTabPage" in m_body or "selectedPage.retrieve" in m_body:

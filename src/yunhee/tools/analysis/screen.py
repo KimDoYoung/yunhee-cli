@@ -359,15 +359,35 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
             m_btn = re.search(r"##\s*사용된 버튼.*?(?=\n##\s*|\Z)|####\s*버튼.*?(?=####\s*|###\s*|\Z)", combined, re.DOTALL)
             return m_btn.group(0).strip() if m_btn else "버튼 섹션을 찾을 수 없습니다."
 
-        if sec_filter in ("servlet", "servlets"):
-            m_s = re.search(r"##\s*서블릿\s*호출.*?(?=\n##\s*|\Z)", combined, re.DOTALL)
-            if not m_s:
-                m_s = re.search(r"##\s*서블릿\s*호출.*?(?=\n##\s*|\Z)", full_text, re.DOTALL)
-            if m_s:
-                return m_s.group(0).strip()
+        if sec_filter in ("methods", "method"):
+            _, java_text = _find_java_source(target_cls, obj, combined, full_text)
+            if not java_text:
+                return f"클래스 소스 파일을 찾을 수 없습니다: {target_cls}.java"
+            return _render_methods_section(target_cls, java_text, combined)
+
+        if sec_filter in ("flow", "event-flow", "event_flow"):
+            flow_md = _extract_component_event_flow(obj, combined, full_text)
+            return flow_md if flow_md else "컴포넌트 간 이벤트 흐름을 찾을 수 없습니다."
+
+        if sec_filter in ("lookup", "lookups"):
             _, java_text = _find_java_source(target_cls, obj, combined, full_text)
             if java_text:
-                return _extract_servlet_calls_from_java(java_text, target_cls)
+                lk_md = _extract_lookup_connections(java_text, target_cls)
+                if lk_md:
+                    return lk_md
+            return "Lookup 팝업 연결을 찾을 수 없습니다."
+
+        if sec_filter in ("servlet", "servlets", "file", "files"):
+            m_s = re.search(r"##\s*(?:서블릿\s*호출|파일\s*입출력).*?(?=\n##\s*|\Z)", combined, re.DOTALL)
+            if not m_s:
+                m_s = re.search(r"##\s*(?:서블릿\s*호출|파일\s*입출력).*?(?=\n##\s*|\Z)", full_text, re.DOTALL)
+            _, java_text = _find_java_source(target_cls, obj, combined, full_text)
+            if java_text:
+                fio = _extract_servlet_calls_from_java(java_text, target_cls)
+                if not fio.startswith("서블릿 호출을 찾을 수 없습니다"):
+                    return fio
+            if m_s:
+                return m_s.group(0).strip()
             return "서블릿 호출 섹션을 찾을 수 없습니다."
 
     # 기본 (전체/클래스 본문)
@@ -377,8 +397,25 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         if m_srv:
             new_srv = _inject_dynamic_services(m_srv.group(1).strip(), java_text, target_cls)
             combined = combined[:m_srv.start(1)] + new_srv + combined[m_srv.end(1):]
+        combined = _enrich_method_table(combined, java_text, target_cls)
 
     combined = _format_service_rows(combined)
+
+    # 컴포넌트 간 이벤트 흐름 (#9), Lookup 팝업 연결 (#16), 파일 입출력 (#19) 자동 첨부
+    if not sec_filter:
+        extra_sections: list[str] = []
+        flow_sec = _extract_component_event_flow(obj, combined, full_text)
+        if flow_sec and "## 컴포넌트 간 이벤트 흐름" not in combined:
+            extra_sections.append(f"## 컴포넌트 간 이벤트 흐름\n{flow_sec}")
+        if java_text:
+            lk_sec = _extract_lookup_connections(java_text, target_cls)
+            if lk_sec and "## Lookup 팝업 연결" not in combined:
+                extra_sections.append(f"## Lookup 팝업 연결\n{lk_sec}")
+            fio_sec = _extract_servlet_calls_from_java(java_text, target_cls)
+            if not fio_sec.startswith("서블릿 호출을 찾을 수 없습니다") and "## 파일 입출력" not in combined and "## 서블릿 호출" not in combined:
+                extra_sections.append(f"## 파일 입출력\n{fio_sec}")
+        if extra_sections:
+            combined = combined.rstrip() + "\n\n" + "\n\n".join(extra_sections) + "\n"
 
     # 미정의 SQL 경고 헤더 추가
     undef_calls = _extract_undefined_sqls(combined)
@@ -612,6 +649,199 @@ def _inject_dynamic_services(srv_text: str, java_text: str, screen_cls: str) -> 
     return srv_text
 
 
+def _enrich_method_table(md_text: str, java_text: str, target_cls: str) -> str:
+    """색인 마크다운의 메서드 표에서 '동작'/'하는 일' 칼럼이 '-' 또는 '상태 처리'인 행을 원본 Java 분석 결과로 보강한다 (#4)."""
+    try:
+        from yunhee.tools.as_is.events import extract_events_and_methods
+
+        _, meth_list = extract_events_and_methods(java_text, f"{target_cls}.java")
+    except Exception:  # noqa: BLE001
+        return md_text
+
+    work_by_name: dict[str, str] = {}
+    for m in meth_list:
+        w = getattr(m, "work_desc", None) or getattr(m, "work", None) or ""
+        if w and w not in ("-", "상태 처리"):
+            m_nm = re.search(r"(\w+)\s*\(", m.name)
+            key = m_nm.group(1) if m_nm else m.name
+            work_by_name[key] = w
+    if not work_by_name:
+        return md_text
+
+    out_lines = []
+    for line in md_text.splitlines():
+        s = line.strip()
+        if s.startswith("|") and not s.startswith("|:---"):
+            cols = [c.strip() for c in s.split("|")[1:-1]]
+            # | 가시성 | 메서드 | 줄 | 호출처 | 동작/하는 일 | 구분 | (6칸) 또는 | 메서드 | 줄 | 호출처 | 하는 일 | (4칸)
+            if len(cols) >= 5:
+                m_cell = cols[1] if len(cols) == 6 else cols[0]
+                work_idx = 4 if len(cols) == 6 else 3
+                m_nm = re.match(r"`?(\w+)\s*\(", m_cell)
+                if m_nm:
+                    name = m_nm.group(1)
+                    if cols[work_idx] in ("-", "상태 처리") and name in work_by_name:
+                        cols[work_idx] = work_by_name[name]
+                        line = "| " + " | ".join(cols) + " |"
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
+
+def _render_methods_section(target_cls: str, java_text: str, md_text: str) -> str:
+    """클래스의 메서드 목록 표와 각 비즈니스 메서드의 본문 요약을 일괄 출력한다 (#5)."""
+    from yunhee.tools.analysis.method import _summarize_body
+    from yunhee.tools.as_is.events import (
+        extract_events_and_methods,
+        render_events_markdown,
+    )
+    from yunhee.tools.as_is.src_indexer import find_methods, line_of, strip_java
+
+    ev_list, meth_list = extract_events_and_methods(java_text, f"{target_cls}.java")
+    md = render_events_markdown(f"{target_cls}.java", ev_list, meth_list)
+    m_tbl = re.search(r"##\s*메서드.*?(?=\n##\s*|\Z)", md, re.DOTALL)
+    table_part = m_tbl.group(0).strip() if m_tbl else f"## 메서드 (`{target_cls}`)"
+
+    _, bare = strip_java(java_text)
+    raw_methods = find_methods(bare)
+    raw_lines = java_text.splitlines()
+
+    detail_blocks: list[str] = []
+    for m_name, sig_pos, _, end_pos, is_ctor, _ in raw_methods:
+        if is_ctor or m_name == target_cls or m_name in ("asWidget", "buildGrid"):
+            continue
+        s_line = line_of(bare, sig_pos)
+        e_line = line_of(bare, end_pos)
+        body_str = "\n".join(raw_lines[s_line - 1 : e_line])
+        sig_m = re.search(r"((?:public|protected|private)\s+[^{]+)\{", body_str)
+        sig = " ".join(sig_m.group(1).split()) if sig_m else f"{m_name}()"
+        summary_items = _summarize_body(body_str, s_line, is_server=False, file_text=java_text)
+        bullets = [f"  - {it}" for it in summary_items]
+        if bullets:
+            detail_blocks.append(f"#### `{m_name}` (L{s_line}-{e_line}) — `{sig}`\n" + "\n".join(bullets))
+
+    if detail_blocks:
+        return table_part + "\n\n### 메서드별 상세 요약\n\n" + "\n\n".join(detail_blocks)
+    return table_part
+
+
+def _extract_component_event_flow(obj: dict[str, Any], combined: str, full_text: str) -> str:
+    """화면 내 부모-자식/형제 클래스 간 fireEvent -> addChangeHandler 흐름을 추출한다 (#9)."""
+    stats = obj.get("class_stats") or []
+    emitters: list[tuple[str, str, int, str]] = []  # (cls_name, meth_name, line_no, event_expr)
+    listeners: list[tuple[str, str, str, int, str]] = []  # (cls_name, field_var, field_type, line_no, handler_desc)
+
+    from yunhee.tools.as_is.src_indexer import find_methods, line_of, strip_java
+
+    for st in stats:
+        c_name = st.get("raw_name") or st["name"].split()[0]
+        _, jtext = _find_java_source(c_name, obj, st.get("text", ""), full_text)
+        if not jtext:
+            continue
+        jlines = jtext.splitlines()
+        _, bare = strip_java(jtext)
+        m_ranges = [
+            (mn, line_of(bare, sp), line_of(bare, ep))
+            for mn, sp, _, ep, _, _ in find_methods(bare)
+        ]
+
+        def _meth_at(lno: int, ranges: list = m_ranges, default_cls: str = c_name) -> str:
+            for mn, sl, el in ranges:
+                if sl <= lno <= el:
+                    return mn
+            return default_cls
+
+        # 필드 변수 -> 클래스 타입 매핑
+        field_cls_map: dict[str, str] = {}
+        for m_f in re.finditer(r"\b([A-Z]\w+)\s+(\w+)\s*(?:=\s*new\s+([A-Z]\w+)|;)", jtext):
+            f_type = m_f.group(3) or m_f.group(1)
+            field_cls_map[m_f.group(2)] = f_type
+
+        for idx, line in enumerate(jlines):
+            lno = idx + 1
+            m_fire = re.search(r"\bfireEvent\s*\(\s*new\s+(\w+)\s*\(([^)]*)\)\s*\)", line)
+            if m_fire:
+                ev_type = m_fire.group(1)
+                emitters.append((c_name, _meth_at(lno), lno, f"new {ev_type}()"))
+
+            m_listen = re.search(r"\b(\w+)\.add(Change|Select|Hide|SubmitComplete|\w+)Handler\s*\(", line)
+            if m_listen:
+                f_var = m_listen.group(1)
+                h_type = m_listen.group(2)
+                f_cls = field_cls_map.get(f_var, "")
+                # 커스텀 컴포넌트이거나 ChangeHandler인 경우 수집
+                if h_type == "Change" or (f_cls and re.match(r"^[A-Z][a-z0-9]+_", f_cls)):
+                    block = "\n".join(jlines[idx : min(len(jlines), idx + 12)])
+                    calls = [
+                        mc.group(1)
+                        for mc in re.finditer(r"\b([a-z]\w+)\s*\(", block)
+                        if mc.group(1) not in ("addChangeHandler", "onChange", "if", "for", "getValue", "equals")
+                    ]
+                    call_desc = f"{calls[0]}()" if calls else "인라인 처리"
+                    listeners.append((c_name, f_var, f_cls or f_var, lno, f"add{h_type}Handler → `{call_desc}`"))
+
+    if not emitters and not listeners:
+        return ""
+
+    flow_lines: list[str] = []
+    matched_listeners: set[int] = set()
+    for em_cls, em_meth, em_line, ev_expr in emitters:
+        matched = False
+        for l_idx, (ls_cls, f_var, f_cls, ls_line, h_desc) in enumerate(listeners):
+            if f_cls.lower() == em_cls.lower() or f_var.lower() in em_cls.lower():
+                flow_lines.append(
+                    f"- **발신** `{em_cls}.{em_meth}()` (L{em_line}: `{ev_expr}`) ──▶ **수신** `{ls_cls}` (`{f_var}` L{ls_line}: {h_desc})"
+                )
+                matched_listeners.add(l_idx)
+                matched = True
+        if not matched:
+            flow_lines.append(f"- **발신** `{em_cls}.{em_meth}()` (L{em_line}): `fireEvent({ev_expr})`")
+
+    for l_idx, (ls_cls, f_var, f_cls, ls_line, h_desc) in enumerate(listeners):
+        if l_idx not in matched_listeners:
+            cls_tag = f" (`{f_cls}`)" if f_cls and f_cls != f_var else ""
+            flow_lines.append(f"- **수신** `{ls_cls}`: `{f_var}`{cls_tag} (L{ls_line}) — {h_desc}")
+
+    return "\n".join(flow_lines)
+
+
+def _extract_lookup_connections(java_text: str, target_cls: str) -> str:
+    """LookupTriggerField 및 Lookup/Popup 오픈·콜백 바인딩 관계를 추출한다 (#16)."""
+    lines = java_text.splitlines()
+    items: list[str] = []
+
+    # 1. Lookup 클래스 필드/지역변수 타입 매핑
+    var_to_cls: dict[str, str] = {}
+    for m_decl in re.finditer(r"\b([A-Z]\w*(?:Lookup|Popup|Modal|Dialog|Window)\w*)\s+(\w+)\s*=", java_text):
+        var_to_cls[m_decl.group(2)] = m_decl.group(1)
+
+    # 2. .open(...) 또는 .show(...) 호출 및 인접 콜백(addCallback / InterfaceCallback / CallbackReg) 추적
+    for idx, line in enumerate(lines):
+        lno = idx + 1
+        m_open = re.search(r"\b(\w+)\.(open|show)\s*\(([^)]*)\)", line)
+        if not m_open:
+            continue
+        var_n = m_open.group(1)
+        args_s = m_open.group(3).strip()
+        popup_cls = var_to_cls.get(var_n, "")
+        if not popup_cls and not any(k in var_n.lower() for k in ("lookup", "popup", "modal", "dialog", "win")):
+            continue
+        window_lines = lines[max(0, idx - 15) : min(len(lines), idx + 25)]
+        window_text = "\n".join(window_lines)
+        bindings: list[str] = []
+        for m_sv in re.finditer(r"\b(\w+)\.setValue\s*\(\s*([^)]+)\)", window_text):
+            bindings.append(f"`{m_sv.group(1)}.setValue({m_sv.group(2).strip()})`")
+        for m_rc in re.finditer(r"\brecord\.addChange\s*\(\s*([^,]+),\s*([^)]+)\)", window_text):
+            bindings.append(f"`record.addChange({m_rc.group(1).strip()}, {m_rc.group(2).strip()})`")
+        for m_ed in re.finditer(r"\beditDriver\.edit\s*\(\s*([^)]+)\)", window_text):
+            bindings.append(f"`editDriver.edit({m_ed.group(1).strip()})`")
+        cls_disp = f"`{popup_cls}` (`{var_n}`)" if popup_cls else f"`{var_n}`"
+        arg_disp = f", 전달 인자: `{args_s}`" if args_s else ""
+        bind_disp = f" → 콜백 바인딩: {', '.join(dict.fromkeys(bindings))}" if bindings else ""
+        items.append(f"- {cls_disp} (L{lno}{arg_disp}){bind_disp}")
+
+    return "\n".join(items)
+
+
 def _extract_servlet_calls_from_java(java_text: str, target_cls: str) -> str:
     lines = java_text.splitlines()
     calls = []
@@ -638,9 +868,27 @@ def _extract_servlet_calls_from_java(java_text: str, target_cls: str) -> str:
                     break
             range_str = f" (L{start_l}-{end_l})" if end_l > start_l else f" (L{idx + 1})"
             calls.append(f"{s_name} fileType={ft} {p_desc}{range_str}".strip())
+
+    # FileUploadField / FormPanel(MULTIPART) / SubmitCompleteHandler / Excel 입출력 추가 추출 (#19)
+    for idx, l in enumerate(lines):
+        lno = idx + 1
+        m_fuf = re.search(r"\bFileUploadField\s+(\w+)\s*=\s*new\s+FileUploadField\b", l)
+        if m_fuf:
+            calls.append(f"FileUploadField `{m_fuf.group(1)}` (L{lno})")
+        if "Encoding.MULTIPART" in l:
+            calls.append(f"FormPanel MULTIPART 설정 (L{lno})")
+        m_act = re.search(r"\b(\w+)\.setAction\s*\(\s*([^)]+)\)", l)
+        if m_act and "FileUpload?" not in l and "FileDownload?" not in l:
+            calls.append(f"`{m_act.group(1)}.setAction({m_act.group(2).strip()})` (L{lno})")
+        if "SubmitCompleteHandler" in l:
+            calls.append(f"업로드 완료 핸들러 `SubmitCompleteHandler` (L{lno})")
+        m_xls = re.search(r"\b(ExcelDownload|GridExcel\w*|excelUpload\w*|exportExcel\w*)\b", l)
+        if m_xls:
+            calls.append(f"엑셀 입출력 `{m_xls.group(1)}` (L{lno})")
+
     if not calls:
         return "서블릿 호출을 찾을 수 없습니다."
-    return "\n".join(calls)
+    return "\n".join(dict.fromkeys(calls))
 
 
 def _format_service_rows(text: str, src_root: Path | None = None) -> str:

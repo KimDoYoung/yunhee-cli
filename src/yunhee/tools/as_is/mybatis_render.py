@@ -271,7 +271,46 @@ def eval_test_condition_status(test: str, params: dict[str, Any]) -> tuple[bool 
     return False, var_name
 
 
+def _strip_type_prefix(val: Any) -> tuple[str | None, Any]:
+    """파라미터 값에서 명시적 타입 접두사(s:, n:)를 분리한다."""
+    if isinstance(val, str):
+        if val.startswith("s:"):
+            return "s", val[2:]
+        if val.startswith("n:"):
+            return "n", val[2:]
+    return None, val
+
+
+def _clean_params_for_eval(params: dict[str, Any]) -> dict[str, Any]:
+    """조건식 평가를 위해 s:/n: 접두사를 제거한 파라미터 사전을 반환한다."""
+    return {k: _strip_type_prefix(v)[1] for k, v in params.items()}
+
+
+_STRING_LIKE_VAR_RE = re.compile(
+    r"(?:Type|Cd|Code|Ym|Year|Month|Date|Dt|Yn|Text|Txt|Nm|Name|Status|Stat|Div|Gb|Kind|Cls|Class|Flag|Mode|Tel|Phone|Zip|Addr|Address|Email|Url|Path|Key|Msg|Note|Rmk|Desc|Content|Title|Step|Grade)$",
+    re.IGNORECASE,
+)
+_NUMERIC_LIKE_VAR_RE = re.compile(
+    r"(?:Id|Seq|Cnt|Count|Limit|Offset|Size|Page|Row|Idx|Amt|Price|Rate|Num|Order)$",
+    re.IGNORECASE,
+)
+_STRING_LIKE_COL_RE = re.compile(
+    r"\b\w+_(?:type|cd|code|ym|date|dt|yn|nm|name|text|note|status|div|gb|kind|cls|flag|mode|tel|phone|zip)\s*(?:=|!=|<>|LIKE|IN\s*\([^)]*)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_string_like_param(var: str, sql_before: str = "") -> bool:
+    """변수명 접미사 또는 직전 SQL 컬럼 문맥을 통해 문자열 바인딩 대상인지 판별한다."""
+    if _NUMERIC_LIKE_VAR_RE.search(var):
+        return False
+    if _STRING_LIKE_VAR_RE.search(var):
+        return True
+    return bool(sql_before and _STRING_LIKE_COL_RE.search(sql_before))
+
+
 def _eval_single_condition_status(expr: str, params: dict[str, Any]) -> bool | None:
+    params = _clean_params_for_eval(params)
     expr = expr.strip()
     if not expr:
         return True
@@ -453,7 +492,7 @@ def eval_bind(name: str, value: str, params: dict[str, Any]) -> None:
             if m_str:
                 res_parts.append(m_str.group(1))
             elif re.match(r"^\w+$", t):
-                val = params.get(t, "")
+                _, val = _strip_type_prefix(params.get(t, ""))
                 res_parts.append(str(val) if val is not None else "")
             else:
                 sys.stderr.write(f"⚠ bind 식 건너뜀: {name}={value}\n")
@@ -464,6 +503,50 @@ def eval_bind(name: str, value: str, params: dict[str, Any]) -> None:
     sys.stderr.write(f"⚠ bind 식 건너뜀: {name}={value}\n")
 
 
+def extract_branch_condition_vars(
+    node: Any,
+    current_ns: str,
+    statements: dict[str, Statement],
+    seen: tuple[str, ...] = (),
+) -> set[str]:
+    """문장(include 포함) 내 <when>/<if> 조건식에서 검사하는 변수명 집합을 추출한다."""
+    if isinstance(node, str):
+        return set()
+    vars_found: set[str] = set()
+    tag = node.tag
+    if tag == "include":
+        ref = node.attrs.get("refid", "")
+        target = find_target_statement(ref, current_ns, statements)
+        if target and target.key not in seen:
+            vars_found.update(
+                extract_branch_condition_vars(target.node, target.ns, statements, seen + (target.key,))
+            )
+        return vars_found
+
+    if tag in ("when", "if"):
+        test = node.attrs.get("test", "")
+        for m in re.finditer(r"\b([a-zA-Z_]\w*)\b", test):
+            w = m.group(1)
+            if w.lower() not in (
+                "null",
+                "true",
+                "false",
+                "and",
+                "or",
+                "not",
+                "size",
+                "ispostgresql",
+                "istibero",
+                "isoracle",
+                "_databaseid",
+            ):
+                vars_found.add(w)
+
+    for c in node.children:
+        vars_found.update(extract_branch_condition_vars(c, current_ns, statements, seen))
+    return vars_found
+
+
 def render_node(
     node: Any,
     current_ns: str,
@@ -472,6 +555,7 @@ def render_node(
     mode: str = "params",
     seen: tuple[str, ...] = (),
     missing_params: list[str] | None = None,
+    branch_log: list[str] | None = None,
 ) -> str:
     """MyBatis 노드를 렌더링한다.
 
@@ -489,7 +573,7 @@ def render_node(
     tag = node.tag
     if tag == "root":
         return "".join(
-            render_node(c, current_ns, statements, params, mode, seen, missing_params)
+            render_node(c, current_ns, statements, params, mode, seen, missing_params, branch_log)
             for c in node.children
         )
 
@@ -505,6 +589,7 @@ def render_node(
                 mode,
                 seen + (target.key,),
                 missing_params,
+                branch_log,
             )
         if mode == "structure":
             return f'<!-- include {ref} 없음 -->'
@@ -523,7 +608,7 @@ def render_node(
         # 태그 구조 보존 모드 (port-sql 용): include만 펼치고 나머지는 태그 그대로 출력
         attrs_str = "".join(f' {k}="{v}"' for k, v in node.attrs.items())
         body = "".join(
-            render_node(c, current_ns, statements, params, mode, seen, missing_params)
+            render_node(c, current_ns, statements, params, mode, seen, missing_params, branch_log)
             for c in node.children
         )
         return f"<{tag}{attrs_str}>{body}</{tag}>"
@@ -541,13 +626,13 @@ def render_node(
                 or other
             )
             if pick:
-                return render_node(pick, current_ns, statements, params, mode, seen, missing_params)
+                return render_node(pick, current_ns, statements, params, mode, seen, missing_params, branch_log)
             return ""
         if tag == "if":
             test = node.attrs.get("test", "")
             if "isTibero" not in test:
                 return "".join(
-                    render_node(c, current_ns, statements, params, mode, seen, missing_params)
+                    render_node(c, current_ns, statements, params, mode, seen, missing_params, branch_log)
                     for c in node.children
                 )
             return ""
@@ -555,7 +640,7 @@ def render_node(
             return " NULL "
         if tag in ("where", "set", "trim"):
             body = "".join(
-                render_node(c, current_ns, statements, params, mode, seen, missing_params)
+                render_node(c, current_ns, statements, params, mode, seen, missing_params, branch_log)
                 for c in node.children
             )
             if tag == "where":
@@ -570,7 +655,7 @@ def render_node(
                     body = body[:-len(o)]
             return f" {prefix} {body} {node.attrs.get('suffix', '')} "
         return "".join(
-            render_node(c, current_ns, statements, params, mode, seen, missing_params)
+            render_node(c, current_ns, statements, params, mode, seen, missing_params, branch_log)
             for c in node.children
         )
 
@@ -579,26 +664,37 @@ def render_node(
         whens = [w for w in node.children if isinstance(w, Node) and w.tag == "when"]
         other = next((w for w in node.children if isinstance(w, Node) and w.tag == "otherwise"), None)
         selected_when = None
+        selected_var = None
         excluded_vars = []
         for w in whens:
             test = w.attrs.get("test", "")
             eval_res, var_name = eval_test_condition_status(test, params)
-            if eval_res is True:
+            if eval_res is True and selected_when is None:
                 selected_when = w
-                break
+                if var_name and var_name not in ("isPostgreSql", "isTibero", "isOracle"):
+                    selected_var = var_name
             elif eval_res is False:
-                if var_name and var_name not in ("isTibero", "isOracle"):
+                if var_name and var_name not in ("isPostgreSql", "isTibero", "isOracle"):
                     excluded_vars.append(var_name)
-            else:
+            elif selected_when is None:
                 body = "".join(
-                    render_node(c, current_ns, statements, params, mode, seen, missing_params)
+                    render_node(c, current_ns, statements, params, mode, seen, missing_params, branch_log)
                     for c in w.children
                 )
                 return f"\n/* if {test} */\n{body}\n/* end */\n"
+        if branch_log is not None:
+            if selected_var:
+                entry = f"{selected_var} ON"
+                if entry not in branch_log:
+                    branch_log.append(entry)
+            for ev in excluded_vars:
+                entry = f"{ev} OFF"
+                if entry not in branch_log:
+                    branch_log.append(entry)
         if selected_when:
-            return render_node(selected_when, current_ns, statements, params, mode, seen, missing_params)
+            return render_node(selected_when, current_ns, statements, params, mode, seen, missing_params, branch_log)
         if other:
-            return render_node(other, current_ns, statements, params, mode, seen, missing_params)
+            return render_node(other, current_ns, statements, params, mode, seen, missing_params, branch_log)
         if excluded_vars:
             return f"\n-- 분기 제외: {', '.join(excluded_vars)}\n"
         return ""
@@ -607,17 +703,25 @@ def render_node(
         test = node.attrs.get("test", "")
         eval_res, var_name = eval_test_condition_status(test, params)
         if eval_res is True:
+            if branch_log is not None and var_name and var_name not in ("isPostgreSql", "isTibero", "isOracle"):
+                entry = f"{var_name} ON"
+                if entry not in branch_log:
+                    branch_log.append(entry)
             return "".join(
-                render_node(c, current_ns, statements, params, mode, seen, missing_params)
+                render_node(c, current_ns, statements, params, mode, seen, missing_params, branch_log)
                 for c in node.children
             )
         elif eval_res is False:
-            if var_name and var_name not in ("isTibero", "isOracle"):
+            if var_name and var_name not in ("isPostgreSql", "isTibero", "isOracle"):
+                if branch_log is not None:
+                    entry = f"{var_name} OFF"
+                    if entry not in branch_log:
+                        branch_log.append(entry)
                 return f"\n-- 분기 제외: {var_name}\n"
             return ""
         else:
             body = "".join(
-                render_node(c, current_ns, statements, params, mode, seen, missing_params)
+                render_node(c, current_ns, statements, params, mode, seen, missing_params, branch_log)
                 for c in node.children
             )
             return f"\n/* if {test} */\n{body}\n/* end */\n"
@@ -637,7 +741,7 @@ def render_node(
                 sub_params = dict(params)
                 sub_params[item_var] = it
                 sub_sql = "".join(
-                    render_node(c, current_ns, statements, sub_params, mode, seen, missing_params)
+                    render_node(c, current_ns, statements, sub_params, mode, seen, missing_params, branch_log)
                     for c in node.children
                 )
                 sub_sqls.append(sub_sql.strip())
@@ -646,7 +750,7 @@ def render_node(
 
     if tag in ("where", "set", "trim"):
         body = "".join(
-            render_node(c, current_ns, statements, params, mode, seen, missing_params)
+            render_node(c, current_ns, statements, params, mode, seen, missing_params, branch_log)
             for c in node.children
         ).strip()
         if tag == "where":
@@ -667,22 +771,19 @@ def render_node(
         return f" {prefix} {body} {suffix} " if body else ""
 
     return "".join(
-        render_node(c, current_ns, statements, params, mode, seen, missing_params)
+        render_node(c, current_ns, statements, params, mode, seen, missing_params, branch_log)
         for c in node.children
     )
 
 
-def render(
+def render_with_meta(
     key: str,
     params: dict[str, Any] | None = None,
     mode: str = "params",
     src_root: Path | None = None,
     statements: dict[str, Statement] | None = None,
-) -> tuple[str, list[str]]:
-    """statement 또는 SQL 조각을 렌더링한다.
-
-    반환: (완성된 SQL/텍스트, 누락된 파라미터 이름 목록)
-    """
+) -> tuple[str, list[str], list[str]]:
+    """statement를 렌더링하고 (SQL, 누락 파라미터 목록, 분기 판정 로그)를 반환한다."""
     if statements is None:
         statements = get_all_statements(src_root)
     if params is None:
@@ -690,12 +791,12 @@ def render(
 
     st = statements.get(key)
     if not st:
-        # sid만 넘겼을 수도 있음
         st = next((s for s in statements.values() if s.sid == key), None)
     if not st:
         raise ValueError(f"statement를 찾을 수 없습니다: {key}")
 
     missing_params: list[str] = []
+    branch_log: list[str] = []
     local_params = dict(params)
 
     rendered = render_node(
@@ -706,10 +807,11 @@ def render(
         mode=mode,
         seen=(st.key,),
         missing_params=missing_params,
+        branch_log=branch_log,
     )
 
     if mode == "structure":
-        return rendered, []
+        return rendered, [], branch_log
 
     if mode == "explain":
         sql = rendered
@@ -717,7 +819,7 @@ def render(
         sql = re.sub(r"(?i)\bin\s*\$\{[^}]*\}", "IN (1)", sql)
         sql = re.sub(r"(?i)\bin\s+NULL\b", "IN (NULL)", sql)
         sql = re.sub(r"\$\{[^}]*\}", "1", sql)
-        return sql.strip().rstrip(";"), []
+        return sql.strip().rstrip(";"), [], branch_log
 
     # mode == "params" 파라미터 대입
     def replace_sharp(m: re.Match) -> str:
@@ -725,9 +827,20 @@ def render(
         if "," in var:
             var = var.split(",")[0].strip()
         if var in local_params and local_params[var] is not None:
-            val = local_params[var]
+            raw_val = local_params[var]
+            type_pfx, val = _strip_type_prefix(raw_val)
             val_str = str(val)
-            if val_str.lstrip("-").isdigit() and not (val_str.startswith("0") and len(val_str) > 1):
+            if type_pfx == "s":
+                val_escaped = val_str.replace("'", "''")
+                return f"'{val_escaped}'"
+            if type_pfx == "n":
+                return val_str
+            sql_before = rendered[max(0, m.start() - 80):m.start()]
+            if (
+                val_str.lstrip("-").isdigit()
+                and not (val_str.startswith("0") and len(val_str) > 1)
+                and not _is_string_like_param(var, sql_before)
+            ):
                 return val_str
             val_escaped = val_str.replace("'", "''")
             return f"'{val_escaped}'"
@@ -739,7 +852,8 @@ def render(
         if "," in var:
             var = var.split(",")[0].strip()
         if var in local_params and local_params[var] is not None:
-            return str(local_params[var])
+            _, val = _strip_type_prefix(local_params[var])
+            return str(val)
         return "1"
 
     sql = re.sub(r"#\{([^}]+)\}", replace_sharp, rendered)
@@ -753,16 +867,32 @@ def render(
     unique_missing = sorted(set(missing_params))
     if unique_missing:
         sql += "\n" + "\n".join(f"-- 필요: {p}" for p in unique_missing)
+    return sql, unique_missing, branch_log
+
+
+def render(
+    key: str,
+    params: dict[str, Any] | None = None,
+    mode: str = "params",
+    src_root: Path | None = None,
+    statements: dict[str, Statement] | None = None,
+) -> tuple[str, list[str]]:
+    """statement 또는 SQL 조각을 렌더링한다.
+
+    반환: (완성된 SQL/텍스트, 누락된 파라미터 이름 목록)
+    """
+    sql, unique_missing, _ = render_with_meta(
+        key,
+        params=params,
+        mode=mode,
+        src_root=src_root,
+        statements=statements,
+    )
     return sql, unique_missing
 
 
-def render_from_xml(
-    xml_text: str,
-    sql_id: str,
-    params: dict[str, Any] | None = None,
-    mode: str = "params",
-) -> tuple[str, list[str]]:
-    """단일 XML 문자열에서 statement를 찾아 렌더링한다 (단위 테스트 및 fallback용)."""
+def parse_xml_statements(xml_text: str) -> tuple[str, dict[str, Statement]]:
+    """단일 XML 문자열에서 namespace와 statement 사전을 파싱한다."""
     ns_m = re.search(r"<mapper\s+namespace\s*=\s*\"([^\"]+)\"", xml_text)
     ns = ns_m.group(1) if ns_m else "default"
     root = parse_xml(xml_text)
@@ -774,9 +904,30 @@ def render_from_xml(
             st = Statement(ns, sid, child.tag, child, Path("inline.xml"), 1, xml_text)
             statements[st.key] = st
             statements[sid] = st
+    return ns, statements
 
+
+def render_from_xml_with_meta(
+    xml_text: str,
+    sql_id: str,
+    params: dict[str, Any] | None = None,
+    mode: str = "params",
+) -> tuple[str, list[str], list[str]]:
+    """단일 XML 문자열에서 statement를 찾아 (SQL, 누락 파라미터, 분기 로그)를 반환한다."""
+    ns, statements = parse_xml_statements(xml_text)
     key = sql_id if "." in sql_id else f"{ns}.{sql_id}"
     if key not in statements and sql_id in statements:
         key = sql_id
-    return render(key, params=params, mode=mode, statements=statements)
+    return render_with_meta(key, params=params, mode=mode, statements=statements)
+
+
+def render_from_xml(
+    xml_text: str,
+    sql_id: str,
+    params: dict[str, Any] | None = None,
+    mode: str = "params",
+) -> tuple[str, list[str]]:
+    """단일 XML 문자열에서 statement를 찾아 렌더링한다 (단위 테스트 및 fallback용)."""
+    sql, missing, _ = render_from_xml_with_meta(xml_text, sql_id, params=params, mode=mode)
+    return sql, missing
 

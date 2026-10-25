@@ -363,9 +363,11 @@ def ui_lines(cls: Any, with_events: bool = False) -> list[str]:
                 flags.append("행번호숨김")
             elif op == "setDoubleClickEdit":
                 flags.append("더블클릭편집")
-            elif op.startswith("add") and args:
+            elif op.startswith("add") and op not in ("addHeaderGroupMap", "addHeaderGroup", "addAggregationRow") and args:
                 fld_m = re.search(r"\.(\w+)\s*\(\s*\)", args[0])
                 fld = fld_m.group(1) if fld_m else _short(args[0], 20)
+                if fld.startswith("new ") or fld == "new":
+                    continue
                 width = args[1] if len(args) > 1 else ""
                 head = _strings(args[2])[0] if len(args) > 2 and _strings(args[2]) else ""
                 edit = ""
