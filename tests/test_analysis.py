@@ -624,8 +624,8 @@ public class Apr01_Grid_Stamp {
 
     res = grid.resolve("Apr01_Grid_Stamp", {"src": src_dir, "check_columns": False})
     md = grid.render(res, fmt="md", opts={"check_columns": False})
-    assert "2단 헤더 그룹" in md
-    assert "`인감정보` (row=0, col=1, colspan=2, rowspan=1)" in md
+    assert "묶음 헤더" in md
+    assert "`인감정보` = 열 1~2 (row=0, col=1, colspan=2, rowspan=1)" in md
     assert "합계/집계 행" in md
     assert "checkbox(편집가능)" in md
     assert "checkbox(읽기전용)" in md
@@ -800,4 +800,118 @@ public class Emp02_Tab_Detail {
     sc_file = screen.render(sc_obj, fmt="md", opts={"section": "file"})
     assert "FileUploadField `uploadField`" in sc_file
     assert "FormPanel MULTIPART" in sc_file
+
+
+def test_042_remaining_acceptance_criteria(tmp_path: Path):
+    """042-#4(색인 없는 컴포넌트 폴백), #5(생성자 -o code, 툴바/스타일), #9(QuickMoveField 콜백), #10(sql 함수 안내), #16(callback(null), hide()), #17(오버로드 위임 체인), #18(GridGroupBuilder/BaseGrid), #19(generate 버튼)."""
+    from types import SimpleNamespace
+
+    from yunhee.tools.analysis import common, method, screen, sql
+    from yunhee.tools.analysis.layout import parse_layout
+    from yunhee.tools.as_is.events import extract_buttons, extract_events_and_methods
+
+    src_dir = tmp_path / "src"
+    client_dir = src_dir / "client" / "vi" / "tdm"
+    client_dir.mkdir(parents=True, exist_ok=True)
+    src_index = tmp_path / "docs" / "as-is" / "src"
+    src_index.mkdir(parents=True, exist_ok=True)
+
+    # 1. #4, #16, #17, #18, #19: 색인 없는 Lookup 컴포넌트 Java 파일
+    lookup_java = """
+package test;
+public class Tdm01_Lookup_SelectSingle {
+    private TextButton allButton = new TextButton("전체");
+    private TextButton genBtn = new TextButton("관리의무생성");
+    private TextButton writeBtn = new TextButton("매뉴얼 작성");
+    private QuickMoveField qmField = new QuickMoveField(0, new InterfaceCallback() {
+        public void execute() {
+            retrieve();
+        }
+    });
+    private String monitorStyle01 = "<div style='font-size:50px;justify-content:flex-end;'>";
+
+    public Tdm01_Lookup_SelectSingle() {
+        allButton.setWidth(75);
+        buttonBar.add(qmField);
+        buttonBar.add(new LabelToolItem(""));
+        buttonBar.add(allButton);
+        allButton.addSelectHandler(new SelectHandler() {
+            public void onSelect(SelectEvent event) {
+                callback.execute(null);
+                hide();
+            }
+        });
+    }
+
+    public void open(String baseDate, boolean allYn, InterfaceCallback cb) {
+        this.open(baseDate, cb);
+    }
+
+    public void open(String baseDate, InterfaceCallback cb) {
+        this.callback = cb;
+        this.show();
+    }
+
+    public void retrieve() {}
+
+    public Grid<Tdm01_Model> buildGrid() {
+        GridGroupBuilder<Tdm01_Model> gb = new GridGroupBuilder<Tdm01_Model>();
+        gb.addText(properties.dutyNm(), 200, "책무명");
+        return gb.getGroupGrid();
+    }
+}
+"""
+    (client_dir / "Tdm01_Lookup_SelectSingle.java").write_text(lookup_java, encoding="utf-8")
+
+    # #4: 색인 .md 파일이 없어도 screen.resolve 폴백 성공
+    sc_obj = screen.resolve("Tdm01_Lookup_SelectSingle", {"src": src_dir, "src_index": src_index})
+    sc_list = screen.render(sc_obj, fmt="md", opts={"list": True})
+    assert "Tdm01_Lookup_SelectSingle" in sc_list
+
+    # #9 & #16: QuickMoveField.callbackOnCreate 및 callback(null), hide() 검증
+    evs, _ = extract_events_and_methods(lookup_java, "Tdm01_Lookup_SelectSingle.java")
+    ev_strs = [f"{e.source}.{e.event_type} -> {e.action}" for e in evs]
+    assert any("callbackOnCreate -> retrieve()" in s for s in ev_strs)
+    assert any("callback(null), hide()" in s for s in ev_strs)
+
+    # #19: 버튼 type generate 및 후보("매뉴얼 작성") 검증
+    btns = extract_buttons(lookup_java, events=evs, file_path="Tdm01_Lookup_SelectSingle.java")
+    btn_by_lbl = {b.label: b for b in btns}
+    assert btn_by_lbl["관리의무생성"].button_type == "generate"
+    assert btn_by_lbl["매뉴얼 작성"].candidate_type == "generate"
+
+    # #5: 생성자 -o code 및 layout 툴바 순서/스타일 상수 검증
+    ctor_obj = method.resolve("Tdm01_Lookup_SelectSingle.Tdm01_Lookup_SelectSingle", {"src": src_dir, "output": "code"})
+    ctor_code = method.render(ctor_obj, fmt="code")
+    assert "allButton.setWidth(75);" in ctor_code
+
+    layout_out = parse_layout(lookup_java)
+    assert "툴바 순서:" in layout_out and "빈칸" in layout_out and "{allButton}(w=75)" in layout_out
+    assert "스타일 상수 `monitorStyle01`" in layout_out
+
+    # #17: 오버로드 위임 체인 자동 요약 (Exit 2 없이 한 번에 요약)
+    open_obj = method.resolve("Tdm01_Lookup_SelectSingle.open", {"src": src_dir})
+    open_md = method.render(open_obj, fmt="md")
+    assert "open" in open_md
+
+    # #18: TOBE <BaseGrid> 집계 검증
+    assert common.count_tobe_grids("<BaseGrid columns={cols} />") == 1
+
+    # #10: analysis sql 함수(getPerson) 안내 검증
+    raw_sql = '<select id="selectGetPerson">SELECT * FROM getPerson(#{companyId}, f_today())</select>'
+    st = SimpleNamespace(
+        key="emp00_trans_info.selectGetPerson",
+        ns="emp00_trans_info",
+        sid="selectGetPerson",
+        kind="select",
+        raw=raw_sql,
+        rel=Path("mapper/emp00.xml"),
+        line=10,
+    )
+    sql_md = sql.render(
+        {"key": st.key, "statement": st, "params": {}, "src_root": Path("."), "statements": {st.key: st}},
+        fmt="md",
+    )
+    assert "getPerson (열은 yunhee table getPerson)" in sql_md
+
 

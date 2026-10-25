@@ -122,3 +122,33 @@ def test_table_cli_prints_only_dbml_on_stdout(tmp_path, monkeypatch):
     assert runner.invoke(cli.app, ["table", "nope", "--db", "X_DB"]).exit_code == 1
     assert runner.invoke(cli.app, ["table", "x", "--db", "MISSING_DB"]).exit_code == 1
     assert runner.invoke(cli.app, ["table", "--db", "X_DB"]).exit_code == 1
+
+
+def test_042_10_table_returns_table_function_and_virtual_model():
+    """042-#10: yunhee table getPerson 및 emp00_trans_info 호출 시 RETURNS TABLE 열을 DBML로 반환."""
+    snap = _snapshot()
+    snap["routines"] = [
+        {
+            "schema": "public",
+            "name": "getperson",
+            "kind": "function",
+            "arguments": "p_company_id numeric, p_std_date date",
+            "note": None,
+            "definition": (
+                "CREATE OR REPLACE FUNCTION public.getperson(p_company_id numeric, p_std_date date)\n"
+                " RETURNS TABLE(emp00_trans_id numeric, emp00_kor_nm character varying, emp00_pos_cd character varying)\n"
+                " LANGUAGE plpgsql AS $$ BEGIN END; $$;"
+            ),
+        }
+    ]
+    res_fn = schema_snapshot.slice_tables(snap, ["getPerson"])
+    assert res_fn.ok
+    assert res_fn.data["tables"] == ["getperson"]
+    assert '"emp00_pos_cd" "character varying"' in res_fn.data["dbml"]
+    assert "RETURNS TABLE (3 columns)" in res_fn.data["dbml"]
+
+    res_model = schema_snapshot.slice_tables(snap, ["emp00_trans_info"])
+    assert res_model.ok
+    assert res_model.data["tables"] == ["getperson"]
+    assert "매핑: emp00_trans_info" in res_model.data["dbml"]
+

@@ -527,6 +527,7 @@ def outline(
     limit: Annotated[int, typer.Option("--limit", help="최대 글자 수 제한")] = 30000,
     members: Annotated[bool, typer.Option("--members", "-m", help="interface/type의 필드(멤버) 목록 표시")] = False,
     symbol: Annotated[str | None, typer.Option("--symbol", "-s", help="특정 symbol(interface/type/함수 등)만 추출")] = None,
+    tail: Annotated[int | None, typer.Option("--tail", help="파일 마지막 N줄 원문 함께 출력")] = None,
 ):
     """소스 파일·디렉터리의 클래스·메서드 시그니처와 줄 번호 추출
 
@@ -542,7 +543,7 @@ def outline(
         if remaining_limit <= 0:
             combined_outputs.append("// ... [글자 수 예산 초과로 이하 생략]")
             break
-        res = outline_path(p, char_limit=remaining_limit, members=members, symbol=symbol)
+        res = outline_path(p, char_limit=remaining_limit, members=members, symbol=symbol, tail=tail)
         if not res.ok:
             typer.echo(f"오류: {res.error}", err=True)
             raise typer.Exit(code=1)

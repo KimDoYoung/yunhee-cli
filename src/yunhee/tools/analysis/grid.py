@@ -163,17 +163,30 @@ def _parse_single_grid(
 
     # 2-1. 다단 헤더 그룹 (HeaderGroupConfig / HeaderGroupMap) 추출 (#6)
     header_groups: list[dict[str, Any]] = []
+    for m_hgm_full in re.finditer(
+        r"HeaderGroupMap\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*new\s+HeaderGroupConfig\s*\(\s*\"([^\"]+)\"\s*(?:,\s*(\d+)\s*,\s*(\d+))?",
+        grid_text,
+    ):
+        header_groups.append({
+            "title": m_hgm_full.group(3),
+            "row": int(m_hgm_full.group(1)),
+            "col": int(m_hgm_full.group(2)),
+            "row_span": int(m_hgm_full.group(4)) if m_hgm_full.group(4) else 1,
+            "col_span": int(m_hgm_full.group(5)) if m_hgm_full.group(5) else 1,
+        })
     for m_hg in re.finditer(
         r"addHeaderGroup\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(?:new\s+HeaderGroupConfig\s*\(\s*)?\"([^\"]+)\"\s*(?:,\s*(\d+)\s*,\s*(\d+))?",
         grid_text,
     ):
-        header_groups.append({
-            "title": m_hg.group(3),
-            "row": int(m_hg.group(1)),
-            "col": int(m_hg.group(2)),
-            "row_span": int(m_hg.group(4)) if m_hg.group(4) else 1,
-            "col_span": int(m_hg.group(5)) if m_hg.group(5) else 1,
-        })
+        title = m_hg.group(3)
+        if not any(h["title"] == title and h["col"] == int(m_hg.group(2)) for h in header_groups):
+            header_groups.append({
+                "title": title,
+                "row": int(m_hg.group(1)),
+                "col": int(m_hg.group(2)),
+                "row_span": int(m_hg.group(4)) if m_hg.group(4) else 1,
+                "col_span": int(m_hg.group(5)) if m_hg.group(5) else 1,
+            })
     for m_hgm in re.finditer(
         r"new\s+HeaderGroup(?:Map|Config)\s*\(\s*\"([^\"]+)\"\s*,\s*(\d+)\s*,\s*(\d+)\s*\)",
         grid_text,
@@ -187,6 +200,20 @@ def _parse_single_grid(
                 "row_span": 1,
                 "col_span": int(m_hgm.group(3)),
             })
+
+    # 2-1b. 고정 열 (setFrozenNum / add*Frozen) 및 동적 헤더 (getColumn(...).setHeader(...)) 추출 (#6)
+    frozen_cnt = 0
+    m_frz = re.search(r"setFrozenNum\s*\(\s*(\d+)\s*\)", grid_text)
+    if m_frz:
+        frozen_cnt = int(m_frz.group(1))
+    else:
+        frozen_cnt = len(re.findall(r"\.add\w*Frozen\s*\(", grid_text))
+
+    dynamic_headers: list[str] = []
+    for m_dh_meth, m_dh_body, _ in _extract_methods_with_braces(full_text):
+        cols_dh = re.findall(r"getColumn\s*\(\s*([^)]+)\s*\)\s*\.setHeader\s*\(", m_dh_body)
+        if cols_dh:
+            dynamic_headers.append(f"{m_dh_meth} (열 {', '.join(dict.fromkeys(c.strip() for c in cols_dh))})")
 
     # 2-2. 합계 행 (AggregationRowConfig / SummaryType) 추출 (#6)
     summary_info: dict[str, Any] = {}
@@ -496,6 +523,8 @@ def _parse_single_grid(
         "hidden_calls": hidden_calls,
         "header_groups": header_groups,
         "summary_info": summary_info,
+        "frozen_cnt": frozen_cnt,
+        "dynamic_headers": dynamic_headers,
     }
 
 
@@ -540,7 +569,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     grid_methods = [
         (m_name, field_by_method.get(m_name), m_text, m_line)
         for m_name, m_text, m_line in methods
-        if re.search(r"GridBuilder\b", m_text)
+        if re.search(r"(?:GridBuilder|GridGroupBuilder)\b", m_text)
     ]
 
     # 메서드 블록 밖에서 선언된 경우 fallback
@@ -627,11 +656,20 @@ def _render_grid_extra_meta(g: dict[str, Any]) -> list[str]:
     meta_lines: list[str] = []
     hgs = g.get("header_groups") or []
     if hgs:
-        hg_strs = [
-            f"`{hg['title']}` (row={hg['row']}, col={hg['col']}, colspan={hg.get('col_span', hg.get('colspan', 1))}, rowspan={hg.get('row_span', hg.get('rowspan', 1))})"
-            for hg in hgs
-        ]
-        meta_lines.append(f"- **2단 헤더 그룹**: {', '.join(hg_strs)}")
+        hg_strs = []
+        for hg in hgs:
+            cs = hg.get("col_span", hg.get("colspan", 1))
+            rs = hg.get("row_span", hg.get("rowspan", 1))
+            c_start = hg["col"]
+            c_end = c_start + cs - 1
+            hg_strs.append(
+                f"`{hg['title']}` = 열 {c_start}~{c_end} (row={hg['row']}, col={c_start}, colspan={cs}, rowspan={rs})"
+            )
+        meta_lines.append(f"- **묶음 헤더 (2단 헤더 그룹)**: {' · '.join(hg_strs)}")
+    if g.get("frozen_cnt"):
+        meta_lines.append(f"- **고정 열**: 1~{g['frozen_cnt']}")
+    if g.get("dynamic_headers"):
+        meta_lines.append(f"- **동적 헤더**: {', '.join(g['dynamic_headers'])}")
     sums = g.get("summary_info")
     if sums:
         if isinstance(sums, dict):

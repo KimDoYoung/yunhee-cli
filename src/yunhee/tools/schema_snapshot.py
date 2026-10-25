@@ -5,6 +5,7 @@
 """
 
 import json
+import re
 from datetime import datetime
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -54,6 +55,86 @@ def _matches(table: dict, pattern: str) -> bool:
     return fnmatchcase(target.lower(), pattern)
 
 
+# 가상 테이블/모델명 -> DB 테이블 반환 함수 매핑 (#10)
+_MODEL_TO_FUNC = {
+    "emp00_trans_info": "getperson",
+    "emp00_trans_infomodel": "getperson",
+    "org00_org": "getorg",
+    "org00_orgmodel": "getorg",
+    "tdm30_role_allc": "gettdm30roleallc",
+}
+
+
+def _routine_to_virtual_table(snapshot: dict, pattern: str) -> dict | None:
+    """스냅샷의 routines 또는 docs/as-is/db/functions/*.md에서 RETURNS TABLE 함수를 찾아 가상 테이블 dict로 변환한다 (#10)."""
+    pat_clean = pattern.strip().lower().removeprefix("public.")
+    target_fn = _MODEL_TO_FUNC.get(pat_clean, pat_clean)
+
+    routines = snapshot.get("routines") or []
+    matched_r = None
+    for r in routines:
+        if r.get("name", "").lower() == target_fn and "returns table" in r.get("definition", "").lower():
+            matched_r = r
+            break
+
+    definition = matched_r.get("definition", "") if matched_r else ""
+    fn_name = matched_r.get("name", target_fn) if matched_r else target_fn
+    fn_schema = matched_r.get("schema", "public") if matched_r else "public"
+    fn_args = matched_r.get("arguments", "") if matched_r else ""
+
+    if not definition:
+        from yunhee.tools.as_is import find_as_is_dir
+
+        db_dir = find_as_is_dir("db")
+        if db_dir and (db_dir / "functions").is_dir():
+            for f_md in (db_dir / "functions").glob("*.md"):
+                if f_md.stem.lower() == target_fn:
+                    definition = f_md.read_text(encoding="utf-8", errors="replace")
+                    fn_name = f_md.stem
+                    break
+
+    if not definition:
+        return None
+
+    m_ret = re.search(r"RETURNS\s+TABLE\s*\((.*?)\)\s*(?:LANGUAGE|AS|\$)", definition, re.DOTALL | re.IGNORECASE)
+    if not m_ret:
+        return None
+
+    cols_raw = m_ret.group(1)
+    columns = []
+    for part in cols_raw.split(","):
+        tokens = part.strip().split(None, 1)
+        if len(tokens) == 2:
+            col_name = tokens[0].strip('"')
+            col_type = tokens[1].strip()
+            columns.append({
+                "name": col_name,
+                "type": col_type,
+                "not_null": False,
+                "default": None,
+                "identity": None,
+                "generated": None,
+                "note": None,
+            })
+
+    if not columns:
+        return None
+
+    note_str = f"FUNCTION {fn_schema}.{fn_name}({fn_args}) RETURNS TABLE ({len(columns)} columns)"
+    if pat_clean != target_fn:
+        note_str += f" — 매핑: {pattern}"
+
+    return {
+        "schema": fn_schema,
+        "name": fn_name,
+        "columns": columns,
+        "pk": [],
+        "uniques": [],
+        "indexes": [],
+        "note": note_str,
+    }
+
+
 def slice_tables(snapshot: dict, patterns: list[str], char_limit: int = SCHEMA_CHAR_LIMIT) -> ToolResult:
     """patterns 순서대로 매칭되는 테이블을 모아 DBML로 렌더링한다.
 
@@ -66,7 +147,11 @@ def slice_tables(snapshot: dict, patterns: list[str], char_limit: int = SCHEMA_C
     for pattern in patterns:
         hits = [t for t in snapshot["tables"] if _matches(t, pattern)]
         if not hits:
-            missing.append(pattern)
+            vt = _routine_to_virtual_table(snapshot, pattern)
+            if vt:
+                hits = [vt]
+            else:
+                missing.append(pattern)
         for t in hits:
             key = (t["schema"], t["name"])
             if key not in seen:

@@ -260,6 +260,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         containers_info: list[str] = []
         widgets_info: list[str] = []
         form_layout_str: str = ""
+        linked_extra: dict[str, int] | None = None
         if src_root:
             c_files = [f for f in src_root.rglob(f"{c['name']}.java") if "target" not in f.parts]
             if c_files:
@@ -273,18 +274,36 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
                         fl = parse_layout(java_text)
                         if not fl.startswith("레이아웃 없음"):
                             form_layout_str = fl
-                    if not ev_matches:
-                        from yunhee.tools.as_is.events import (
-                            extract_buttons,
-                            extract_events_and_methods,
-                        )
+                    from yunhee.tools.as_is.events import (
+                        extract_buttons,
+                        extract_events_and_methods,
+                        extract_grid_spec,
+                    )
 
-                        ev_list, _ = extract_events_and_methods(java_text, c_files[0])
-                        ev_matches = [e.id.replace("E", "") for e in ev_list]
-                        unreach_matches = [e.id.replace("E", "") for e in ev_list if e.is_unreachable]
+                    ev_list, _ = extract_events_and_methods(java_text, c_files[0])
+                    own_ev_matches = [e.id.replace("E", "") for e in ev_list]
+                    own_unreach_matches = [e.id.replace("E", "") for e in ev_list if e.is_unreachable]
+                    own_btn_list = extract_buttons(java_text, events=ev_list, file_path=c_files[0])
+                    own_btn_cnt = len(own_btn_list)
+                    own_gs = extract_grid_spec(java_text, file_path=c_files[0])
+                    own_grid_cnt = len(re.findall(r"\bconst\s+\w+\s*=\s*\(\)\s*=>\s*\[", own_gs or ""))
+
+                    if not ev_matches:
+                        ev_matches = own_ev_matches
+                        unreach_matches = own_unreach_matches
                         if btn_cnt == 0:
-                            btn_list = extract_buttons(java_text, events=ev_list, file_path=c_files[0])
-                            btn_cnt = len(btn_list)
+                            btn_cnt = own_btn_cnt
+                    elif len({int(x) for x in ev_matches}) > len({int(x) for x in own_ev_matches}) and own_ev_matches:
+                        # 색인 절에 팝업/연결 클래스가 합산되어 있는 경우 클래스 자체 수치로 분리 (#3)
+                        idx_grid_cnt, _ = count_as_is_grids(c_text)
+                        linked_extra = {
+                            "buttons": max(0, btn_cnt - own_btn_cnt),
+                            "events": max(0, len({int(x) for x in ev_matches}) - len({int(x) for x in own_ev_matches})),
+                            "grids": max(0, idx_grid_cnt - own_grid_cnt),
+                        }
+                        btn_cnt = own_btn_cnt
+                        ev_matches = own_ev_matches
+                        unreach_matches = own_unreach_matches
                 except Exception:  # noqa: BLE001, S110
                     pass
 
@@ -294,6 +313,21 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             ev_ids = ev_ids - unreach_ids
 
         grid_cnt, grid_warn = count_as_is_grids(c_text)
+        if linked_extra is not None:
+            grid_cnt = max(0, grid_cnt - linked_extra["grids"])
+            grid_warn = False
+        if grid_cnt == 0 and src_root:
+            c_files_g = [f for f in src_root.rglob(f"{c['name']}.java") if "target" not in f.parts]
+            if c_files_g:
+                try:
+                    jtxt_g = c_files_g[0].read_text(encoding="utf-8", errors="replace")
+                    if "GridGroupBuilder" in jtxt_g or "GridBuilder" in jtxt_g:
+                        grid_cnt = max(
+                            1,
+                            len(re.findall(r"(?:GridBuilder|GridGroupBuilder)<[^>]+>\s+\w+\s*=\s*new\b", jtxt_g)),
+                        )
+                except OSError:
+                    pass
         as_is_stats[c["name"]] = {
             "buttons": btn_cnt,
             "events": len(ev_ids),
@@ -304,6 +338,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             "containers": containers_info,
             "widgets": widgets_info,
             "form_layout": form_layout_str,
+            "linked_extra": linked_extra,
         }
 
     # 연결 컴포넌트 탐색 (같은 도메인만 포함)
@@ -429,6 +464,14 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
                         continue
                     f_name = f.stem
                     t_btn = count_tobe_buttons(f_text)
+                    if t_btn == 0:
+                        for m_imp in re.finditer(r"from\s+['\"]\.\/([^'\"]+_Common)['\"]", f_text):
+                            common_f = f.parent / f"{m_imp.group(1)}.tsx"
+                            if common_f.is_file():
+                                try:
+                                    t_btn += count_tobe_buttons(common_f.read_text(encoding="utf-8", errors="replace"))
+                                except OSError:
+                                    pass
                     impl_ev, skip_ev = _tobe_event_ids(f_text)
                     t_grid = count_tobe_grids(f_text)
                     tobe_stats[f_name] = {
@@ -576,6 +619,8 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
             )
         if has_missing_e0:
             lines.append("\nE0은 생성자 이벤트 — 대응 코드 근처에 `// [E0] …` 주석을 달면 된다")
+        if any(as_is[c]["events"] > 0 and tobe.get(c, {}).get("events", 0) == 0 for c in all_cls_names):
+            lines.append("\nℹ TOBE 이벤트는 핸들러 위의 // [E3] … 주석으로 센다(05 §3). 주석이 없으면 0.")
         return "\n".join(lines)
 
     # 단계별 합계 표

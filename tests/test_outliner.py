@@ -462,3 +462,29 @@ public class MultiController {
     lines = outliner.outline_file(f)
     joined = "\n".join(lines)
     assert "  List<String> multi()" in joined
+
+
+def test_042_12_outline_markdown_headings_and_tail(tmp_path: Path):
+    """042-#12: 마크다운 문서 헤딩(#~######) 추출 및 --tail N 마지막 N줄 원문 출력 검증."""
+    md_file = tmp_path / "08-회차인계.md"
+    md_file.write_text(
+        "# 회차 인계 문서\n\n"
+        "```bash\n# 코드블록 내부 주석은 무시\n```\n\n"
+        "## 1. 진행 현황\n"
+        "### 1-1. 완료 목록\n"
+        "- N01 완료\n"
+        "- N02 완료\n"
+        "- 마지막 줄 확인\n",
+        encoding="utf-8",
+    )
+
+    res = outliner.outline_path(md_file, tail=2)
+    assert res.ok
+    assert "# 회차 인계 문서" in res.data
+    assert "  ## 1. 진행 현황" in res.data
+    assert "    ### 1-1. 완료 목록" in res.data
+    assert "코드블록 내부 주석" not in res.data
+    assert "// --- tail (마지막 2줄) ---" in res.data
+    assert "- N02 완료" in res.data
+    assert "- 마지막 줄 확인" in res.data
+

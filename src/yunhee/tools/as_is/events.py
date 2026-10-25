@@ -217,7 +217,15 @@ def extract_events_and_methods(
     class_name = class_match.group(1) if class_match else (p.stem or "Unknown")
 
     code, bare = strip_java(text)
-    raw_methods = find_methods(bare)
+    anon_spans: list[tuple[int, int]] = []
+    for m_anon in re.finditer(r"new\s+[\w.<>]+\s*\([^)]*\)\s*\{", bare):
+        b_open = m_anon.end() - 1
+        b_close = paren_end(bare, b_open)
+        anon_spans.append((b_open, b_close))
+    raw_methods = [
+        m for m in find_methods(bare)
+        if not any(s <= m[1] <= e for s, e in anon_spans)
+    ]
     meth_names = {m[0] for m in raw_methods} | {"hide", "close", "show"}
 
     # 1. 탭페이지 등록 수집: tabPanel.add(new Sys01_TabPage_Info01(), "관리정보")
@@ -287,12 +295,17 @@ def extract_events_and_methods(
 
         cond = detect_condition(event_name, body)
 
-        # 본문에서 호출하는 내부 메서드 추출
-        calls: list[str] = []
+        # 본문에서 호출하는 내부 메서드 및 callback.execute(...) 추출 (#16)
+        call_items: list[tuple[int, str]] = []
+        for cb_m in re.finditer(r"\b(\w*[cC]allback\w*)\.execute\s*\(([^)]*)\)", body):
+            cb_arg = cb_m.group(2).strip()
+            call_items.append((cb_m.start(), f"callback({cb_arg})"))
         for c in re.finditer(r"(?<![\w])((?:\w+\.)?)(\w+)\s*\(", body_bare):
             recv_call, fn = c.group(1), c.group(2)
             if recv_call in ("", "this.") and fn in meth_names:
-                calls.append(f"{fn}()")
+                call_items.append((c.start(), f"{fn}()"))
+        call_items.sort(key=lambda x: x[0])
+        calls: list[str] = [item[1] for item in call_items]
 
         if calls:
             deduped_calls: list[str] = []
@@ -438,6 +451,42 @@ def extract_events_and_methods(
             "target_class": class_name,
             "raw_snippet": m.group(0),
         })
+
+    # 5-b. 필드 초기화 익명 콜백 탐지 (QuickMoveField 등 생성자 인자 InterfaceCallback, #9)
+    for m_w in UI_NEW_RE.finditer(code):
+        var_raw, klass = m_w.group(1), m_w.group(2)
+        close_w = paren_end(code, m_w.end() - 1)
+        args_w = code[m_w.end():close_w]
+        if "InterfaceCallback" not in args_w:
+            continue
+        clean_var = var_raw.removeprefix("this.").strip()
+        for cb_idx, m_cb in enumerate(re.finditer(r"new\s+InterfaceCallback\s*\(\s*\)\s*\{", args_w), start=1):
+            brace_open = m_w.end() + m_cb.end() - 1
+            brace_close = paren_end(code, brace_open)
+            cb_body_bare = bare[brace_open:brace_close]
+            cb_line = line_of(code, m_w.end() + m_cb.start())
+            cb_end_line = line_of(code, brace_close)
+            cb_calls = []
+            for c in re.finditer(r"(?<![\w])((?:\w+\.)?)(\w+)\s*\(", cb_body_bare):
+                recv_c, fn_c = c.group(1), c.group(2)
+                if recv_c in ("", "this.") and fn_c in meth_names:
+                    cb_calls.append(f"{fn_c}()")
+            cb_action = ", ".join(dict.fromkeys(cb_calls)) if cb_calls else _summarize_inline_body(code[brace_open:brace_close], cb_line, cb_end_line)
+            if "QuickMoveField" in klass:
+                ev_t = "callbackOnCreate" if cb_idx == 1 else "callbackOnCollapse"
+            else:
+                ev_t = "callbackOnCreate" if cb_idx == 1 else f"callback{cb_idx}"
+            events_raw.append({
+                "source": f"{clean_var} ({klass})",
+                "event_type": ev_t,
+                "condition": "",
+                "line": cb_line,
+                "end_line": cb_end_line,
+                "action": cb_action,
+                "kind": "implicit",
+                "target_class": class_name,
+                "raw_snippet": "",
+            })
 
     # 6. [E0] 생성자 분석 (화면 열림, 핸들러 등록 스팬 제외)
     ev_list: list[EventInfo] = []
@@ -1250,12 +1299,18 @@ def extract_grid_spec(text: str, file_path: Path | None = None) -> str | None:
 
     for name, decl, start, end, is_pub, params in methods:
         body_bare = bare[start:end]
-        has_gb = "GridBuilder" in body_bare or "gridBuilder" in body_bare or "builder.add" in body_bare or "gb.add" in body_bare
+        has_gb = (
+            "GridBuilder" in body_bare
+            or "GridGroupBuilder" in body_bare
+            or "gridBuilder" in body_bare
+            or "builder.add" in body_bare
+            or "gb.add" in body_bare
+        )
         has_grid_name = "buildgrid" in name.lower() or "grid" in name.lower()
         if not (has_gb or has_grid_name):
             continue
 
-        builder_vars = set(re.findall(r"GridBuilder(?:<[^>]*>)?\s+(\w+)\s*=", body_bare))
+        builder_vars = set(re.findall(r"(?:GridBuilder|GridGroupBuilder)(?:<[^>]*>)?\s+(\w+)\s*=", body_bare))
         if not builder_vars:
             builder_vars = {"gridBuilder", "builder", "gb"}
 
@@ -1265,7 +1320,7 @@ def extract_grid_spec(text: str, file_path: Path | None = None) -> str | None:
         if not matches:
             continue
 
-        meth_mod_m = re.search(r"GridBuilder<(\w+)>", text[start:end]) or re.search(r"(\w+?)Properties\b", text[start:end])
+        meth_mod_m = re.search(r"(?:GridBuilder|GridGroupBuilder)<(\w+)>", text[start:end]) or re.search(r"(\w+?)Properties\b", text[start:end])
         if meth_mod_m:
             cand_m = meth_mod_m.group(1)
             model_name = cand_m if cand_m.endswith("Model") else f"{cand_m}Model"
@@ -1310,12 +1365,16 @@ def extract_grid_spec(text: str, file_path: Path | None = None) -> str | None:
             if not args:
                 continue
 
+            if op in ("addHeaderGroupMap", "addHeaderGroup", "addAggregationRow"):
+                continue
             if op not in KNOWN_GB_OPS:
                 grid_lines.append(f"  // ⚠ 대응 없음 (GridBuilder L{line_num}) {op}")
                 continue
 
             prop_m = re.search(r"\.(\w+)\s*\(\s*\)", args[0])
             prop_name = prop_m.group(1) if prop_m else re.sub(r"[^\w]", "", args[0])
+            if prop_name in ("new", "") or prop_name.startswith("newHeaderGroup"):
+                continue
 
             width = args[1].strip() if len(args) > 1 else "100"
 
@@ -1388,6 +1447,8 @@ BUTTON_SYNONYM_CANDIDATES: dict[str, tuple[str, str]] = {
     "닫기": ("close", "닫기"),
     "파일등록": ("upload", "파일업로드"),
     "파일관리": ("view", "첨부파일관리"),
+    "작성": ("generate", "생성"),
+    "복제": ("change", "복사"),
 }
 
 GENERIC_BUTTON_LABELS = {"전체", "공통", "선택", "기타", "일반", "관리", "설정"}
@@ -1402,6 +1463,12 @@ def find_button_candidate(label: str, var: str, btn_map: dict[str, str]) -> tupl
     # 1. 기정의된 대표 동의어 매핑
     if lbl in BUTTON_SYNONYM_CANDIDATES:
         return BUTTON_SYNONYM_CANDIDATES[lbl]
+
+    # 1-b. 의미 키워드("생성", "작성", "복제", "복사") 우선 후보 (#19)
+    if "생성" in lbl or "작성" in lbl:
+        return ("generate", "생성")
+    if "복제" in lbl or "복사" in lbl:
+        return ("change", "복사")
 
     # 일반/범용 문구는 후보 추천 제외
     if lbl in GENERIC_BUTTON_LABELS:
@@ -1587,6 +1654,8 @@ def extract_buttons(
         lbl = b["label"]
         handler = b["handler"] or "undefined"
         b_type = btn_map.get(lbl, "unknown")
+        if "생성" in lbl and b_type in ("save", "unknown"):
+            b_type = "generate"
         cand_type = ""
         cand_lbl = ""
         unk_reason = ""

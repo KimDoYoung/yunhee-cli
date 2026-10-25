@@ -86,12 +86,20 @@ def _detect_delegation(body: str) -> tuple[str, str] | None:
 
 
 def _find_method_blocks(full_text: str, target_method: str) -> list[tuple[str, int, int, str]]:
-    """자바 소스에서 target_method 이름의 메서드들을 찾아 (시그니처, 시작줄, 끝줄, 본문) 목록을 반환한다."""
-    pattern = re.compile(
-        r"(?:(?:public|protected|private|static|final|synchronized|abstract|default)\s+)*(?:<[\w,\s?]+>\s+)?(?:[\w<>\[\], ?]+)\s+\b("
-        + re.escape(target_method)
-        + r")\s*\(([^()]*)\)\s*(?:throws\s+[\w.,\s]+?)?\s*\{"
-    )
+    """자바 소스에서 target_method 이름의 메서드(생성자 포함)들을 찾아 (시그니처, 시작줄, 끝줄, 본문) 목록을 반환한다."""
+    is_ctor_name = bool(target_method and target_method[0].isupper())
+    if is_ctor_name:
+        pattern = re.compile(
+            r"(?<!new\s)(?:(?:public|protected|private)\s+)\b("
+            + re.escape(target_method)
+            + r")\s*\(([^()]*)\)\s*(?:throws\s+[\w.,\s]+?)?\s*\{"
+        )
+    else:
+        pattern = re.compile(
+            r"(?:(?:public|protected|private|static|final|synchronized|abstract|default)\s+)*(?:<[\w,\s?]+>\s+)?(?:[\w<>\[\], ?]+)\s+\b("
+            + re.escape(target_method)
+            + r")\s*\(([^()]*)\)\s*(?:throws\s+[\w.,\s]+?)?\s*\{"
+        )
 
     results = []
     for m in pattern.finditer(full_text):
@@ -375,6 +383,12 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             return {
                 **candidates[0],
                 "multi_candidates": candidates,
+                "cand_descs": cand_descs,
+            }
+        if is_short_or_delegated and any(c.get("delegates_to") for c in candidates):
+            return {
+                **candidates[0],
+                "multi_methods": candidates,
                 "cand_descs": cand_descs,
             }
         raise AmbiguousTargetError(cand_descs, target)

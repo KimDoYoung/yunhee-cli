@@ -91,7 +91,7 @@ def load_index_data(src_index_dir: Path | None = None, src_root: Path | None = N
         return None
 
 
-GRID_METHOD_NAME_PATTERN = r"(?:build\w*Grid\w*|getTreeGrid)"
+GRID_METHOD_NAME_PATTERN = r"(?:build\w*Grid\w*|getTreeGrid|getGroupGrid|getSumGrid|getAggregationGrid)"
 
 
 def count_as_is_grids(text: str) -> tuple[int, bool]:
@@ -107,7 +107,7 @@ def count_as_is_grids(text: str) -> tuple[int, bool]:
     # 불릿 라인(^- ...)에 포함된 메서드명 언급으로 인한 중복 카운트를 방지하기 위해 불릿 라인 제외
     non_bullet_text = re.sub(r"^-\s*.*$", "", text, flags=re.MULTILINE)
     code_cnt = len(re.findall(rf"\bconst\s+{GRID_METHOD_NAME_PATTERN}\b", non_bullet_text)) + len(
-        re.findall(r"(?<!const\s)\bgetTreeGrid\b", non_bullet_text)
+        re.findall(r"(?<!const\s)\b(?:getTreeGrid|GridGroupBuilder)\b", non_bullet_text)
     )
 
     if bullet_cnt > 0 and code_cnt > 0:
@@ -127,7 +127,7 @@ def count_tobe_grids(text: str) -> int:
     s = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
     # 한 줄 주석 제거
     s = re.sub(r"//.*$", "", s, flags=re.MULTILINE)
-    matches = re.findall(r"<(?:SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid)\b", s)
+    matches = re.findall(r"<(?:BaseGrid|SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid)\b", s)
     return len(matches)
 
 

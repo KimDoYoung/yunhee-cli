@@ -2,6 +2,14 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.5.4] - 2026-10-25
+수정사항 042 그룹 D (`table` 테이블 반환 함수 DBML 변환, `outline` 마크다운 제목 및 `--tail` 지원, `analysis` 수용 기준 전 항목 마무리) 반영.
+- `table` / `analysis sql`: `RETURNS TABLE(...)` 정의를 가진 PostgreSQL 함수(`getPerson`, `getOrg`, `getTdm30RoleAllc` 등) 및 매퍼 namespace(`emp00_trans_info` 등)를 가상 DBML `Table` 블록으로 출력하고, `analysis sql`의 `- **함수**:` 절에 `(열은 yunhee table <함수명>)` 안내 표시 (042-10)
+- `outline`: 마크다운(`.md`/`.markdown`) 파일의 `#`~`######` 제목(코드 펜스 내부 제외) 추출 지원 및 파일 끝부분 N줄을 함께 확인하는 `--tail N` 옵션 추가 (042-12)
+- `analysis ui`: 화면 색인(`.md`)에 하위 팝업이 병합된 경우 클래스 단독 이벤트/그리드 수 분리 집계, `*_Common.tsx` import 추적 및 TOBE `// [E#]` 주석 부재 시 안내 문구 출력 (042-3, 042-8, 042-18)
+- `analysis screen` / `events`: 색인(`.md`)이 없는 독립 컴포넌트(`Org00_Lookup_SelectSingle` 등) 조회 시 `.java` 소스를 직접 분석하는 폴백 지원 (042-4), 필드 초기화 `QuickMoveField` 익명 `InterfaceCallback` 이벤트(`callbackOnCreate`/`callbackOnCollapse`) 추출 (042-9), 핸들러 내 `callback.execute(...)` 호출(`callback(null), hide()`) 표시 (042-16), `GridGroupBuilder` 지원 및 `addHeaderGroupMap` 가짜 열 제외 (042-6, 042-18), `"생성"` 포함 버튼 `generate` 자동 매핑 및 `"작성"`/`"복제"` 후보 제시 (042-19)
+- `analysis method` / `layout` / `grid`: 생성자(`ClassName.ClassName -o code`) 본문 추출 및 오버로드 위임 체인(`open(...)`) 자동 합산 요약 (042-5, 042-17), `buttonBar.add(...)` 툴바 아이템 순서·너비·빈칸(`LabelToolItem("")`) 및 HTML/CSS 스타일 상수 추출 (042-5), `HeaderGroupMap` 다중 행 열 범위·고정 열(`frozen_cnt`)·동적 헤더 변경 메서드 추출 (042-6)
+
 ## [0.5.3] - 2026-10-25
 수정사항 042 그룹 C (`analysis ui` · `screen` · `grid` · `method` · `layout` 정적 분석 고도화) 반영.
 - `analysis ui`: 화면 컨테이너/분할/탭 구조(`BorderLayout` 영역·크기·split·collapsible·min, `TabPanel` 탭 구성, 모달 `setPixelSize`) 자동 추출 (042-3), 조회바·입력 비버튼 위젯(`CodeComboBox`, `SimpleComboBox`, `DateField`, `Radio`, `CheckBox`, `LookupTriggerField`, `TextField` 및 Enter 키 바인딩) 순서대로 추출 (042-8), `--layout` 옵션으로 클래스별 폼 레이아웃 상세 동시 출력 (042-18)

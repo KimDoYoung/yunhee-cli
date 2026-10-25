@@ -204,16 +204,22 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
 
     # 테이블 / DB 함수
     table_matches = re.finditer(
-        r"\b(?:FROM|JOIN|UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+([a-zA-Z0-9_]+)",
+        r"\b(?:FROM|JOIN|UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+([a-zA-Z0-9_]+)(\s*\()?",
         body,
         re.IGNORECASE,
     )
     table_names: list[str] = []
     seen_tables: set[str] = set()
+    table_funcs: list[str] = []
     for tm in table_matches:
         t = tm.group(1)
+        is_func_call = bool(tm.group(2))
         t_lower = t.lower()
         if t_lower in ("where", "select", "set", "values", "into", "dual"):
+            continue
+        if is_func_call:
+            if t not in table_funcs:
+                table_funcs.append(t)
             continue
         if t_lower in cte_set:
             continue
@@ -221,7 +227,10 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
             seen_tables.add(t_lower)
             table_names.append(t)
 
-    funcs = sorted(set(re.findall(r"\b(f_\w+|to_\w+|coalesce)\s*\(", body, re.IGNORECASE)))
+    funcs = sorted(set(re.findall(r"\b(f_\w+|to_\w+|coalesce|get\w+|find_\w+)\s*\(", body, re.IGNORECASE)))
+    for tf in table_funcs:
+        if tf not in funcs and tf.lower() not in {f.lower() for f in funcs}:
+            funcs.append(tf)
 
     # 변경 대상 (insert/update/delete)
     change_targets: list[str] = []
@@ -282,7 +291,12 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     if cte_names:
         lines.append(f"- **CTE**: {', '.join(cte_names)}")
     if funcs:
-        lines.append(f"- **함수**: {', '.join(funcs)}")
+        tf_lower = {tf.lower() for tf in table_funcs}
+        func_displays = [
+            f"{fn} (열은 yunhee table {fn})" if fn.lower() in tf_lower or fn.lower().startswith("get") else fn
+            for fn in funcs
+        ]
+        lines.append(f"- **함수**: {', '.join(func_displays)}")
     if st.kind in ("insert", "update", "delete"):
         if change_targets:
             lines.append(f"- **변경 대상**: {', '.join(change_targets)}")

@@ -34,6 +34,51 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         matched_files = list(src_index.glob(f"**/components/{target_name}.md"))
     if not matched_files:
         matched_files = [f for f in src_index.glob("**/components/*.md") if f.stem.lower() == target_name.lower()]
+    if not matched_files and src_root and src_root.is_dir():
+        java_cands = [f for f in src_root.rglob(f"{target_name}.java") if "target" not in f.parts]
+        if java_cands:
+            jf = java_cands[0]
+            jtext = jf.read_text(encoding="utf-8", errors="replace")
+            from yunhee.tools.as_is.events import (
+                extract_buttons,
+                extract_events_and_methods,
+                extract_grid_spec,
+                render_events_markdown,
+            )
+
+            ev_list, meth_list = extract_events_and_methods(jtext, jf)
+            g_spec = extract_grid_spec(jtext, file_path=jf)
+            btns = extract_buttons(jtext, events=ev_list, file_path=jf)
+            syn_md = (
+                f"# {target_name} (색인 없음 — 소스 직접 분석)\n\n"
+                f"- 파일: `{jf.name}`\n\n"
+                f"### {target_name} (`{jf.name}`, {jtext.count(chr(10)) + 1}줄)\n\n"
+                + render_events_markdown(jf.name, ev_list, meth_list, grid_spec=g_spec, buttons=btns)
+            )
+            grid_cnt = 1 if (g_spec and g_spec.strip()) else 0
+            return {
+                "file": jf,
+                "screen": target_name,
+                "full_text": syn_md,
+                "frontmatter": None,
+                "class_stats": [
+                    {
+                        "name": target_name,
+                        "raw_name": target_name,
+                        "lines": syn_md.count("\n") + 1,
+                        "buttons": len(btns),
+                        "events": len(ev_list),
+                        "grids": grid_cnt,
+                        "grid_warn": False,
+                        "text": syn_md,
+                        "is_linked": False,
+                        "same_domain": True,
+                        "file": jf,
+                    }
+                ],
+                "src_root": src_root,
+            }
+
     if not matched_files:
         raise ValueError(f"색인 화면 파일을 찾을 수 없습니다: {target_name}.md")
 
@@ -353,9 +398,30 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
 
         if sec_filter in ("grid", "grids"):
             m_gd = re.search(r"##\s*Grid Spec.*?(?=\n##\s*|\Z)|####\s*그리드.*?(?=####\s*|###\s*|\Z)", combined, re.DOTALL)
-            return m_gd.group(0).strip() if m_gd else "Grid Spec 섹션을 찾을 수 없습니다."
+            gd_text = m_gd.group(0).strip() if m_gd else ""
+            if not gd_text or "Grid 사용하지 않음" in gd_text:
+                _, java_text = _find_java_source(target_cls, obj, combined, full_text)
+                if java_text:
+                    from yunhee.tools.as_is.events import extract_grid_spec
+
+                    dyn_gs = extract_grid_spec(java_text, file_path=f"{target_cls}.java")
+                    if dyn_gs and dyn_gs.strip():
+                        return f"## Grid Spec\n```javascript\n{dyn_gs.strip()}\n```"
+            return gd_text if gd_text else "Grid Spec 섹션을 찾을 수 없습니다."
 
         if sec_filter in ("buttons", "button"):
+            _, java_text = _find_java_source(target_cls, obj, combined, full_text)
+            if java_text:
+                from yunhee.tools.as_is.events import (
+                    extract_buttons,
+                    extract_events_and_methods,
+                )
+
+                ev_l, _ = extract_events_and_methods(java_text, f"{target_cls}.java")
+                btns = extract_buttons(java_text, events=ev_l, file_path=f"{target_cls}.java")
+                if btns:
+                    btn_lines = ["#### 버튼"] + [f"{idx}. {b.jsx}" for idx, b in enumerate(btns, 1)]
+                    return "\n".join(btn_lines)
             m_btn = re.search(r"##\s*사용된 버튼.*?(?=\n##\s*|\Z)|####\s*버튼.*?(?=####\s*|###\s*|\Z)", combined, re.DOTALL)
             return m_btn.group(0).strip() if m_btn else "버튼 섹션을 찾을 수 없습니다."
 

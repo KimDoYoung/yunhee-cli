@@ -103,6 +103,9 @@ def parse_layout(java_text: str) -> str:
             container_types[m.group(2)] = c_type
 
     if not container_types:
+        extra_only = _extract_toolbar_and_style_constants(lines)
+        if extra_only:
+            return "#### 레이아웃 (툴바·스타일 상수)\n" + "\n".join(extra_only)
         return "레이아웃 없음 (폼 컨테이너를 찾지 못함)"
 
     # 1-b. 위젯 타입, 필수 여부(setAllowBlank(false)), 읽기 전용/비활성 사전 수집
@@ -346,4 +349,66 @@ def parse_layout(java_text: str) -> str:
     if ro_str:
         out_lines.append(f"- 읽기 전용·비활성: {ro_str}")
 
+    extra_lines = _extract_toolbar_and_style_constants(lines)
+    if extra_lines:
+        out_lines.extend(extra_lines)
+
     return "\n".join(out_lines)
+
+
+def _extract_toolbar_and_style_constants(lines: list[str]) -> list[str]:
+    """툴바(buttonBar.add) 요소 배치 순서·폭 및 HTML/CSS 문자열 상수를 추출한다 (#5)."""
+    out: list[str] = []
+
+    # 위젯별 setWidth 수집
+    widget_widths: dict[str, str] = {}
+    for line in lines:
+        m_w = re.search(r"(?:this\.)?(\w+)\.setWidth\s*\(\s*(\d+)\s*\)", line)
+        if m_w:
+            widget_widths[m_w.group(1)] = m_w.group(2)
+
+    # buttonBar / searchBar / toolBar .add(...) 순서 수집
+    tb_items: list[str] = []
+    spacer_cnt = 0
+    for line in lines:
+        s = line.strip()
+        m_tb = re.search(r"\b(buttonBar|searchBar|toolBar|topBar)\.add\s*\((.*)\)\s*;", s)
+        if not m_tb:
+            continue
+        arg = m_tb.group(2).strip()
+        if re.search(r'new\s+LabelToolItem\s*\(\s*""\s*\)', arg):
+            spacer_cnt += 1
+            continue
+        if spacer_cnt > 0:
+            tb_items.append(f"빈칸×{spacer_cnt}" if spacer_cnt > 1 else "빈칸")
+            spacer_cnt = 0
+        m_fl = re.search(r'new\s+FieldLabel\s*\(\s*(\w+)\s*,\s*"([^"]+)"\s*\)', arg)
+        if m_fl:
+            v, lbl = m_fl.group(1), m_fl.group(2)
+            w_s = f", w={widget_widths[v]}" if v in widget_widths else ""
+            tb_items.append(f"{lbl}{{{v}{w_s}}}")
+        else:
+            m_var = re.match(r"^(?:this\.)?(\w+)$", arg)
+            if m_var:
+                v = m_var.group(1)
+                w_s = f"(w={widget_widths[v]})" if v in widget_widths else ""
+                tb_items.append(f"{{{v}}}{w_s}")
+            else:
+                tb_items.append(arg[:40])
+    if spacer_cnt > 0:
+        tb_items.append(f"빈칸×{spacer_cnt}" if spacer_cnt > 1 else "빈칸")
+
+    if tb_items:
+        out.append(f"- 툴바 순서: {' → '.join(tb_items)}")
+
+    # HTML / style 문자열 상수 추출
+    for idx, line in enumerate(lines):
+        m_sc = re.search(
+            r'(?:private|protected|public)?\s*(?:static\s+)?(?:final\s+)?String\s+(\w+)\s*=\s*"([^"]*(?:style=|div|span|font)[^"]*)"',
+            line,
+            re.IGNORECASE,
+        )
+        if m_sc:
+            out.append(f'- 스타일 상수 `{m_sc.group(1)}` (L{idx + 1}): `"{m_sc.group(2)[:80]}"`')
+
+    return out

@@ -691,6 +691,27 @@ def _outline_python(content: str) -> list[str]:
     return results
 
 
+def _outline_markdown(content: str) -> list[str]:
+    """마크다운 문서에서 코드 펜스 밖의 헤딩(# ~ ######)과 줄 번호를 추출한다 (#12)."""
+    lines = content.splitlines()
+    results: list[str] = []
+    in_code_block = False
+    for i, line in enumerate(lines):
+        line_num = i + 1
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        m_head = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if m_head:
+            hashes, title = m_head.group(1), m_head.group(2).strip()
+            indent = "  " * (len(hashes) - 1)
+            results.append(f"L{line_num:4d}: {indent}{hashes} {title}")
+    return results
+
+
 def outline_file(file_path: Path, members: bool = False, symbol: str | None = None) -> list[str]:
     if not file_path.is_file():
         return []
@@ -720,6 +741,12 @@ def outline_file(file_path: Path, members: bool = False, symbol: str | None = No
             sym_l = symbol.lower()
             return [l for l in lines if sym_l in l.lower()]
         return lines
+    elif ext in (".md", ".markdown"):
+        lines = _outline_markdown(content)
+        if symbol:
+            sym_l = symbol.lower()
+            return [l for l in lines if sym_l in l.lower()]
+        return lines
     return []
 
 
@@ -728,6 +755,7 @@ def outline_path(
     char_limit: int = MAX_OUTLINE_CHARS,
     members: bool = False,
     symbol: str | None = None,
+    tail: int | None = None,
 ) -> ToolResult:
     target = Path(path).resolve()
     if not target.exists():
@@ -743,6 +771,18 @@ def outline_path(
             text = f"// {target.name} (추출 가능한 시그니처 없음)"
         else:
             text = f"// {target.name}\n" + "\n".join(lines)
+        if tail and tail > 0:
+            try:
+                raw_lines = target.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except Exception:  # noqa: BLE001
+                raw_lines = []
+            if raw_lines:
+                start_idx = max(0, len(raw_lines) - tail)
+                tail_formatted = [
+                    f"L{idx + 1:4d}: {raw_lines[idx]}"
+                    for idx in range(start_idx, len(raw_lines))
+                ]
+                text += f"\n\n// --- tail (마지막 {len(tail_formatted)}줄) ---\n" + "\n".join(tail_formatted)
         return ToolResult(ok=True, data=text)
 
     # 디렉터리인 경우 주요 소스 파일 스캔
