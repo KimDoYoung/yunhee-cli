@@ -194,9 +194,16 @@ def login(
 
     if resp.status_code != 200:
         err_msg = resp.text.strip()
+        extra_hint = ""
+        if "COMPANY_NOT_FOUND" in err_msg or "company" in err_msg.lower():
+            extra_hint = "\n힌트: -c는 회사코드입니다(예: admin, kfstest). 회사 ID가 아닙니다."
+            if comp and comp.isdigit():
+                extra_hint += f" ({comp}는 companyId로 오해했나요?)"
+        elif comp and comp.isdigit():
+            extra_hint = f"\n힌트: -c는 회사코드입니다(예: admin, kfstest). {comp}는 companyId로 오해했나요?"
         return ToolResult(
             ok=False,
-            error=f"로그인 실패 (HTTP {resp.status_code}): {err_msg[:400]}",
+            error=f"로그인 실패 (HTTP {resp.status_code}): {err_msg[:400]}{extra_hint}",
         )
 
     cookies = dict(resp.cookies)
@@ -464,6 +471,16 @@ def request_api(
     if session and session.get("user_info"):
         user_info = session.get("user_info")
 
+    conf_pfx = config.TOML_CONFIG.get("api", {}).get("auto_prefix")
+    auto_prefix = "/api/v1/" if conf_pfx is None else (conf_pfx or "")
+    if auto_prefix and not path.startswith(("/api/", "api/")):
+        cleaned = path.lstrip("/")
+        if cleaned.startswith("v1/"):
+            path = "/api/" + cleaned
+        else:
+            pfx = auto_prefix if auto_prefix.endswith("/") else auto_prefix + "/"
+            path = pfx + cleaned
+
     url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
 
     # 세션이 없고 자동 로그인이 켜져 있으면 최초 로그인 시도
@@ -520,8 +537,13 @@ def request_api(
     except Exception as exc:  # noqa: BLE001
         return ToolResult(ok=False, error=f"API 요청 실패 ({method} {url}): {exc}")
 
-    # 기존에 저장되어 있던 세션이 만료되어 401이 뜬 경우에만 1회 재로그인 시도
-    if resp.status_code == 401 and auto_login and had_existing_session:
+    # 기존에 저장되어 있던 세션이 만료되어 401 또는 TOKEN_EXPIRED가 뜬 경우에만 1회 재로그인 시도
+    is_token_expired = resp.status_code == 401 or (
+        "TOKEN_EXPIRED" in resp.text
+        or "만료" in resp.text
+        or "만료되었습니다" in resp.text
+    )
+    if is_token_expired and auto_login and had_existing_session:
         _clear_session(user, base_url, tenant, comp)
         login_res = login(
             base_url=base_url,
@@ -544,6 +566,8 @@ def request_api(
         if form_fields:
             new_headers.pop("Content-Type", None)
             new_headers.pop("content-type", None)
+        cookies = session.get("cookies", {})
+        headers = new_headers
 
         try:
             resp = httpx.request(

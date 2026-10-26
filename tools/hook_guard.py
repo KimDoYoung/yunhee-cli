@@ -199,7 +199,8 @@ def main() -> None:
     cmd = (data.get("tool_input") or {}).get("command", "")
     blocked, trigger, reason = inspect_command(cmd)
     if blocked:
-        msg = f"[차단 원인: {trigger}] {reason}" if trigger else reason
+        prefix = "⚠ 이 명령은 실행되지 않았습니다(앞 명령 포함).\n"
+        msg = f"{prefix}[차단 원인: {trigger}] {reason}" if trigger else f"{prefix}{reason}"
         out = {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",

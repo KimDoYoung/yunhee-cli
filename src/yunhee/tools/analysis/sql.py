@@ -46,6 +46,69 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _fold_cte_and_section(sql: str, no_cte: bool = False, section: str = "") -> str:
+    """CTE를 접거나 WHERE 절 이후만 분리하여 반환한다 (#16)."""
+    m_with = re.search(r"^\s*WITH\b", sql, re.IGNORECASE)
+    cte_names = []
+    main_sql = sql
+    if m_with:
+        depth = 0
+        in_str = False
+        k = m_with.end()
+        n = len(sql)
+        main_start = -1
+        while k < n:
+            c = sql[k]
+            if c == "'":
+                in_str = not in_str
+            elif not in_str:
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                elif depth == 0:
+                    m_kw = re.match(r"\b(SELECT|INSERT|UPDATE|DELETE)\b", sql[k:], re.IGNORECASE)
+                    if m_kw:
+                        main_start = k
+                        break
+            k += 1
+        if main_start != -1:
+            cte_part = sql[m_with.end() : main_start]
+            cte_names = re.findall(r"\b([a-zA-Z0-9_]+)\s+(?:\([^)]*\)\s+)?AS\s*\(", cte_part, re.IGNORECASE)
+            main_sql = sql[main_start:]
+
+    if (no_cte or section in ("where", "no-cte", "no_cte")) and cte_names:
+        cte_summary = f"-- CTE {', '.join(cte_names)} (생략)\n"
+        sql = cte_summary + main_sql
+
+    if section == "where":
+        depth = 0
+        in_str = False
+        k = 0
+        n = len(main_sql)
+        where_start = -1
+        while k < n:
+            c = main_sql[k]
+            if c == "'":
+                in_str = not in_str
+            elif not in_str:
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                elif depth == 0:
+                    m_wh = re.match(r"\bWHERE\b", main_sql[k:], re.IGNORECASE)
+                    if m_wh:
+                        where_start = k
+                        break
+            k += 1
+        if where_start != -1:
+            cte_prefix = f"-- CTE {', '.join(cte_names)} (생략)\n" if cte_names else ""
+            return cte_prefix + main_sql[where_start:].strip()
+
+    return sql
+
+
 def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = None) -> str:
     """결과를 포맷에 맞게 렌더링한다."""
     if opts is None:
@@ -154,7 +217,9 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
                 sys.stderr.write(f"SQL 실행 실패: {e}\n")
                 return "0"
 
-        return sql
+        no_cte_opt = bool(opts.get("no_cte"))
+        section_opt = str(opts.get("section") or "").lower()
+        return _fold_cte_and_section(sql, no_cte=no_cte_opt, section=section_opt)
 
     # 3. md 모드 (요약)
     raw_xml = st.raw

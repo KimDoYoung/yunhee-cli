@@ -460,25 +460,25 @@ def test_extract_buttons_real_files():
 def test_extract_buttons_custom_tsv(tmp_path: Path):
     """임시 TSV 파일을 지정했을 때 사용자 정의 버튼 매핑이 우선 적용되는지 검증."""
     custom_tsv = tmp_path / "button-types.tsv"
-    custom_tsv.write_text("닫기\tclose\n사용자정의\tcustom\n", encoding="utf-8")
+    custom_tsv.write_text("사용자정의\tcustom\n", encoding="utf-8")
 
     code = """
 public class CustomScreen {
-    private ColorButtonBottom closeButton = new ColorButtonBottom("닫기");
+    private ColorButtonBottom customButton = new ColorButtonBottom("사용자정의");
     public CustomScreen() {
-        closeButton.addSelectHandler(e -> hide());
+        customButton.addSelectHandler(e -> doSomething());
     }
-    public void hide() {}
+    public void doSomething() {}
 }
 """
-    # 1. 기본 매핑 시: 닫기 -> unknown
+    # 1. 기본 매핑 시: 사용자정의 -> unknown
     btns_default = extract_buttons(code, file_path="CustomScreen.java")
     assert btns_default[0].button_type == "unknown"
 
-    # 2. 커스텀 TSV 지정 시: 닫기 -> close
+    # 2. 커스텀 TSV 지정 시: 사용자정의 -> custom
     btns_custom = extract_buttons(code, file_path="CustomScreen.java", button_types_path=custom_tsv)
-    assert btns_custom[0].button_type == "close"
-    assert btns_custom[0].jsx == '<Button type="close" onClick={hide}>닫기</Button>'
+    assert btns_custom[0].button_type == "custom"
+    assert btns_custom[0].jsx == '<Button type="custom" onClick={doSomething}>사용자정의</Button>'
 
 
 def test_cli_events_button_types_option(tmp_path: Path):

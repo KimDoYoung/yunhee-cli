@@ -385,8 +385,12 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         except (ValueError, IndexError):
             comp_domain = comp_file.parent.parent.name
 
-        # 같은 도메인 연결 컴포넌트만 대조표에 포함
-        if comp_domain != screen_domain:
+        # 같은 도메인 연결 컴포넌트만 대조표에 포함 (단, --done/--later에 명시된 클래스는 타 도메인이어도 포함, #3)
+        done_raw = opts.get("done", "") or ""
+        done_set = {c.strip() for c in done_raw.split(",") if c.strip()}
+        later_raw = opts.get("later", "") or ""
+        later_set = {c.strip() for c in later_raw.split("=")[-1].split(",") if c.strip()}
+        if comp_domain != screen_domain and comp_name not in done_set and comp_name not in later_set:
             continue
 
         comp_text = comp_file.read_text(encoding="utf-8", errors="replace")

@@ -528,13 +528,14 @@ def outline(
     members: Annotated[bool, typer.Option("--members", "-m", help="interface/type의 필드(멤버) 목록 표시")] = False,
     symbol: Annotated[str | None, typer.Option("--symbol", "-s", help="특정 symbol(interface/type/함수 등)만 추출")] = None,
     tail: Annotated[int | None, typer.Option("--tail", help="파일 마지막 N줄 원문 함께 출력")] = None,
+    range_spec: Annotated[str | None, typer.Option("--range", "-r", help="출력할 줄 번호 범위 (예: L1-60, 1-60)")] = None,
 ):
     """소스 파일·디렉터리의 클래스·메서드 시그니처와 줄 번호 추출
 
 [bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
   TOBE 기존 코드(Service, Controller, Mapper XML 등) 전체를 읽지 마세요. 이 명령으로 메서드 위치와 줄 번호를 파악한 뒤 필요한 줄만 핀포인트로 읽으세요.
 """
-    from yunhee.tools.outliner import outline_path
+    from yunhee.tools.outliner import outline_path, read_file_range
 
     combined_outputs = []
     remaining_limit = limit
@@ -543,6 +544,20 @@ def outline(
         if remaining_limit <= 0:
             combined_outputs.append("// ... [글자 수 예산 초과로 이하 생략]")
             break
+        if range_spec:
+            p_obj = Path(p)
+            if not p_obj.is_file():
+                p_obj = config.WORK_DIR / p
+            if p_obj.is_file():
+                try:
+                    r_lines = read_file_range(p_obj, range_str=range_spec)
+                    out_text = f"// {p_obj} ({range_spec})\n" + "\n".join(f"{num:4d} | {l}" for num, l in r_lines)
+                    combined_outputs.append(out_text)
+                    remaining_limit -= len(out_text)
+                    continue
+                except Exception as e:  # noqa: BLE001
+                    typer.echo(f"오류: {e}", err=True)
+                    raise typer.Exit(code=1)
         res = outline_path(p, char_limit=remaining_limit, members=members, symbol=symbol, tail=tail)
         if not res.ok:
             typer.echo(f"오류: {res.error}", err=True)
@@ -552,6 +567,56 @@ def outline(
         remaining_limit -= len(out_text)
 
     print("\n\n".join(combined_outputs))
+
+
+@app.command(name="cat")
+def cat_cmd(
+    specs: Annotated[list[str], typer.Argument(help="출력할 파일과 줄 범위 목록 (예: a.java:1-30 b.xml:100-140 또는 a.java)")],
+    no_number: Annotated[bool, typer.Option("--no-number", help="줄 번호 생략")] = False,
+):
+    """지정한 파일들의 줄 범위를 핀포인트 출력 (외부 훅 차단 방지용 안전 읽기)"""
+    from yunhee.tools.outliner import read_file_range
+
+    out_sections = []
+    for spec in specs:
+        range_str = None
+        m = re.search(r":([Ll]?\d+(?:[-:,]\d+)?)$", spec)
+        if m:
+            file_part = spec[: m.start()]
+            range_str = m.group(1)
+        else:
+            file_part = spec
+
+        p = Path(file_part)
+        if not p.is_file():
+            cand = config.WORK_DIR / file_part
+            if cand.is_file():
+                p = cand
+            else:
+                typer.echo(f"오류: 파일을 찾을 수 없습니다: {file_part}", err=True)
+                raise typer.Exit(code=1)
+
+        try:
+            lines = read_file_range(p, range_str=range_str)
+        except Exception as e:  # noqa: BLE001
+            typer.echo(f"오류: {p} 읽기 실패: {e}", err=True)
+            raise typer.Exit(code=1)
+
+        header = f"==> {p} "
+        if lines:
+            header += f"(L{lines[0][0]}-{lines[-1][0]}) <=="
+        else:
+            header += "<=="
+
+        body_lines = []
+        for lnum, ltext in lines:
+            if no_number:
+                body_lines.append(ltext)
+            else:
+                body_lines.append(f"{lnum:4d} | {ltext}")
+        out_sections.append(header + "\n" + "\n".join(body_lines))
+
+    print("\n\n".join(out_sections))
 
 
 TENANT_REQUIRED_MSG = (
@@ -567,7 +632,7 @@ def api(
     as_role: Annotated[str, typer.Option("--as", "-u", help="로그인 계정/역할 (사원 ID, 로그인 ID, admin)")] = "admin",
     base: Annotated[str | None, typer.Option("--base", help="기본 URL")] = None,
     login_path: Annotated[str | None, typer.Option("--login-path", help="로그인 엔드포인트 경로 (기본: .env.local의 YUNHEE_API_LOGIN_PATH 또는 /api/auth/login)")] = None,
-    company: Annotated[str | None, typer.Option("--company", "-c", help="로그인 시 전달할 회사 코드 (companyCode)")] = None,
+    company: Annotated[str | None, typer.Option("--company", "-c", help="로그인 시 전달할 회사 코드 (예: admin, kfstest — 회사 ID가 아님)")] = None,
     tenant: Annotated[str | None, typer.Option("--tenant", "-t", help="테넌트 식별자 (세션 분리 및 X-Tenant-Id 헤더)")] = None,
     param: Annotated[list[str] | None, typer.Option("--param", "-p", help="쿼리 파라미터 key=val (반복 가능)")] = None,
     body: Annotated[str | None, typer.Option("--body", "-b", help="JSON 요청 본문")] = None,
@@ -597,7 +662,12 @@ def api(
         for p in param:
             if "=" in p:
                 k, v = p.split("=", 1)
-                params_dict[k] = v
+                k = k.strip()
+                v = v.strip()
+                if v == "null:" or v.startswith("null:"):
+                    params_dict[k] = None
+                else:
+                    params_dict[k] = v
 
     json_body = None
     if body:
@@ -795,7 +865,7 @@ def compare_cmd(
     param: Annotated[list[str] | None, typer.Option("--param", help="SQL 파라미터 (key=value, 반복 가능)")] = None,
     base: Annotated[str | None, typer.Option("--base", "-b", help="API 기본 URL")] = None,
     tenant: Annotated[str | None, typer.Option("--tenant", "-t", help="테넌트 식별자")] = None,
-    company: Annotated[str | None, typer.Option("--company", "-c", help="회사 코드")] = None,
+    company: Annotated[str | None, typer.Option("--company", "-c", help="회사 코드 (예: admin, kfstest — 회사 ID가 아님)")] = None,
     db: Annotated[str, typer.Option("--db", help="대상 DB명 (기본: asseterpdb)")] = "asseterpdb",
     src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
     grid: Annotated[str | None, typer.Option("--grid", help="대조할 화면/그리드 클래스 (예: Sys05_Page_UserRole)")] = None,
@@ -811,7 +881,12 @@ def compare_cmd(
         for p in api_param:
             if "=" in p:
                 k, v = p.split("=", 1)
-                api_params_dict[k.strip()] = v.strip()
+                k = k.strip()
+                v = v.strip()
+                if v == "null:" or v.startswith("null:"):
+                    api_params_dict[k] = None
+                else:
+                    api_params_dict[k] = v
 
     sql_params_dict = {}
     if param:
@@ -1672,9 +1747,13 @@ def analysis_cmd(
         typer.Option("--later", help="2단계 등 이후 클래스 목록"),
     ] = None,
     tobe: Annotated[
-        Path | None,
-        typer.Option("--tobe", help="대조할 TOBE 소스 경로 또는 디렉터리"),
+        str | None,
+        typer.Option("--tobe", help="대조할 TOBE 소스 경로 또는 디렉터리 (쉼표 구분 복수 지정 가능)"),
     ] = None,
+    no_cte: Annotated[
+        bool,
+        typer.Option("--no-cte", help="CTE 블록을 생략하고 본문 SELECT/WHERE만 출력 (sql 분석)"),
+    ] = False,
     stdout: Annotated[
         bool,
         typer.Option("--stdout", help="실행 로그의 STDOUT 부분만 출력"),
@@ -1828,6 +1907,7 @@ def analysis_cmd(
         "done": done,
         "later": later,
         "tobe": tobe,
+        "no_cte": no_cte,
         "stdout": stdout,
         "stderr": stderr,
         "json": json_flag,

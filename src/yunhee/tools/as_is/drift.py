@@ -732,6 +732,9 @@ def record_baseline(
 
     반환: (exit_code, output_message)
     """
+    if note_file and not note_file.is_file():
+        return 1, f"오류: 작업기록 파일이 존재하지 않습니다: {note_file} (현재 디렉터리를 확인하세요)"
+
     code, err_msg, screens, source_meta = _check_index_freshness(src_root, src_index)
     if code != 0:
         return code, err_msg

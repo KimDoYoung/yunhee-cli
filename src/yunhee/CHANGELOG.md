@@ -2,6 +2,21 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.5.5] - 2026-10-26
+수정사항 043 (인자형 명령어 개선, null: 파라미터 지원, 훅 회피용 파일 부분 읽기 `cat`/`outline --range`, API 사전 경로 보정 및 401 재시도, compare 오류 간소화, 도달 판정 정상화) 반영.
+- `cat`: 지정한 파일들의 특정 줄 범위를 핀포인트로 읽는 신규 명령어 `yunhee cat <file>:<range>...` 추가 (예: `yunhee cat a.java:1-30 b.xml:100-140`), 외부 훅 차단 방지 (043-7)
+- `outline`: 특정 줄 번호 범위(`--range`/`-r L1-60`)를 지정하여 원문 코드를 직접 읽을 수 있는 옵션 추가 (043-7)
+- `mapper-run` / `compare` / `analysis sql`: `-p key=null:` (또는 `--param key=null:`) 접두사 구문 지원으로 SQL `NULL` 바인딩 및 MyBatis `<if test="key != null">` 미진입 처리 (043-10)
+- `api` / `compare`: `-c` / `--company` 옵션의 도움말을 명확화하고, 로그인 실패 시 `-c`는 회사코드(예: `admin`, `kfstest`)이며 숫자 입력 시 companyId 오해 여부 힌트 출력 (043-18)
+- `api`: 요청 전 `auto_prefix`(`/api/v1/`)를 사전에 적용하여 서버 404 및 불필요한 리소스 부재 로그 방지 (043-11), `TOKEN_EXPIRED` 수신 시 저장된 세션을 폐기하고 자동 1회 재로그인/재시도 (043-19)
+- `compare`: AS-IS SQL 실행 실패 시 200줄의 SQL 전문 덤프를 생략하고 간결한 1줄 에러와 `TOBE API 결과: rows=N` 출력 (043-15)
+- `analysis sql`: CTE를 `-- CTE ... (생략)`으로 접는 `--no-cte` 옵션 및 WHERE 절 이후만 분리 출력하는 `--section where` 옵션 추가 (043-16)
+- `analysis ui`: `--tobe` 옵션에 쉼표 구분 복수 경로(`dir1,dir2`) 지정 지원 (043-3), `--done` 또는 `--later`에 명시된 클래스는 타 도메인이더라도 대조표에서 제외하지 않고 보존 (043-3)
+- `drift`: `--note-file`로 전달된 파일이 존재하지 않는 경우 신규 생성하지 않고 오류로 안전하게 중단 (043-21)
+- `events`: `this.getButtonBar().add(w)` 및 `getButtonBar().insert(w, ...)` 형태의 창/패널 단추 도달 불가 오판 해결 (043-9, 043-13), `닫기` 버튼 및 `closeButton.hide()` 핸들러는 `type="close"`로 확정 매핑 (043-9)
+- `port-sql`: include 대상 펼침 시 외곽 `<sql id="...">` 태그를 제거하여 MyBatis 구문 오류 방지 (043-11)
+- `hook_guard`: 훅 차단 시 `⚠ 이 명령은 실행되지 않았습니다(앞 명령 포함).` 문구 명시 (043-20)
+
 ## [0.5.4] - 2026-10-25
 수정사항 042 그룹 D (`table` 테이블 반환 함수 DBML 변환, `outline` 마크다운 제목 및 `--tail` 지원, `analysis` 수용 기준 전 항목 마무리) 반영.
 - `table` / `analysis sql`: `RETURNS TABLE(...)` 정의를 가진 PostgreSQL 함수(`getPerson`, `getOrg`, `getTdm30RoleAllc` 등) 및 매퍼 namespace(`emp00_trans_info` 등)를 가상 DBML `Table` 블록으로 출력하고, `analysis sql`의 `- **함수**:` 절에 `(열은 yunhee table <함수명>)` 안내 표시 (042-10)

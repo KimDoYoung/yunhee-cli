@@ -772,7 +772,7 @@ def extract_events_and_methods(
 
     def is_widget_attached(w: str, src_text: str) -> bool:
         for m_call in re.finditer(
-            r"\b\w+\.(?:add\w*|setEditor|setWidget)\s*\(",
+            r"(?:\b\w+|\))\s*\.\s*(?:add\w*|insert\w*|setEditor|setWidget)\s*\(",
             src_text,
         ):
             if m_call.group(0).startswith(f"{w}."):
@@ -1656,6 +1656,10 @@ def extract_buttons(
         b_type = btn_map.get(lbl, "unknown")
         if "생성" in lbl and b_type in ("save", "unknown"):
             b_type = "generate"
+        if b_type == "unknown":
+            var_l = var.lower()
+            if lbl == "닫기" or (("close" in var_l or var_l.endswith("closebutton")) and handler in ("hide", "close")):
+                b_type = "close"
         cand_type = ""
         cand_lbl = ""
         unk_reason = ""

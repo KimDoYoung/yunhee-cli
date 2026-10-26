@@ -272,12 +272,14 @@ def eval_test_condition_status(test: str, params: dict[str, Any]) -> tuple[bool 
 
 
 def _strip_type_prefix(val: Any) -> tuple[str | None, Any]:
-    """파라미터 값에서 명시적 타입 접두사(s:, n:)를 분리한다."""
+    """파라미터 값에서 명시적 타입 접두사(s:, n:, null:)를 분리한다."""
     if isinstance(val, str):
         if val.startswith("s:"):
             return "s", val[2:]
         if val.startswith("n:"):
             return "n", val[2:]
+        if val == "null:" or val.startswith("null:"):
+            return "null", None
     return None, val
 
 
@@ -606,6 +608,11 @@ def render_node(
 
     if mode == "structure":
         # 태그 구조 보존 모드 (port-sql 용): include만 펼치고 나머지는 태그 그대로 출력
+        if tag == "sql":
+            return "".join(
+                render_node(c, current_ns, statements, params, mode, seen, missing_params, branch_log)
+                for c in node.children
+            )
         attrs_str = "".join(f' {k}="{v}"' for k, v in node.attrs.items())
         body = "".join(
             render_node(c, current_ns, statements, params, mode, seen, missing_params, branch_log)
@@ -829,6 +836,8 @@ def render_with_meta(
         if var in local_params and local_params[var] is not None:
             raw_val = local_params[var]
             type_pfx, val = _strip_type_prefix(raw_val)
+            if type_pfx == "null" or val is None:
+                return "NULL"
             val_str = str(val)
             if type_pfx == "s":
                 val_escaped = val_str.replace("'", "''")
@@ -852,7 +861,9 @@ def render_with_meta(
         if "," in var:
             var = var.split(",")[0].strip()
         if var in local_params and local_params[var] is not None:
-            _, val = _strip_type_prefix(local_params[var])
+            type_pfx, val = _strip_type_prefix(local_params[var])
+            if type_pfx == "null" or val is None:
+                return "NULL"
             return str(val)
         return "1"
 

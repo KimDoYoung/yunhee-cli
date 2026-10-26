@@ -712,6 +712,50 @@ def _outline_markdown(content: str) -> list[str]:
     return results
 
 
+def parse_line_range(range_str: str, total_lines: int) -> tuple[int, int]:
+    """'L1-60', '1-60', '1:60', '10' 등의 문자열을 1-based (start, end) 튜플로 파싱한다."""
+    cleaned = range_str.strip().lstrip("L").lstrip("l")
+    if "-" in cleaned:
+        parts = cleaned.split("-", 1)
+    elif ":" in cleaned:
+        parts = cleaned.split(":", 1)
+    elif "," in cleaned:
+        parts = cleaned.split(",", 1)
+    else:
+        parts = [cleaned, cleaned]
+
+    try:
+        start = max(1, int(parts[0].strip())) if parts[0].strip() else 1
+    except ValueError:
+        start = 1
+    try:
+        end = min(total_lines, int(parts[1].strip())) if len(parts) > 1 and parts[1].strip() else total_lines
+    except ValueError:
+        end = total_lines
+
+    end = max(end, start)
+    return start, end
+
+
+def read_file_range(file_path: Path, range_str: str | None = None, max_lines: int = 500) -> list[tuple[int, str]]:
+    """지정된 파일의 특정 줄 범위를 1-based (줄번호, 줄내용) 목록으로 읽어 반환한다."""
+    if not file_path.is_file():
+        raise FileNotFoundError(f"파일이 존재하지 않습니다: {file_path}")
+    content = file_path.read_text(encoding="utf-8", errors="replace")
+    all_lines = content.splitlines()
+    total = len(all_lines)
+    if range_str:
+        start, end = parse_line_range(range_str, total)
+    else:
+        start = 1
+        end = min(total, max_lines)
+
+    selected = []
+    for idx in range(start - 1, min(end, total)):
+        selected.append((idx + 1, all_lines[idx]))
+    return selected
+
+
 def outline_file(file_path: Path, members: bool = False, symbol: str | None = None) -> list[str]:
     if not file_path.is_file():
         return []

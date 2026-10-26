@@ -666,7 +666,15 @@ def compare_api_sql(
             type_hint += "\n힌트: 문자열 컬럼에 숫자 형태 값을 바인딩할 때는 --param <key>=s:<val> 형식을 사용하세요."
         if sql_params_line:
             type_hint += f"\n{sql_params_line}"
-        return ToolResult(ok=False, error=f"SQL 실행 실패: {exc}{type_hint}\n실행 SQL: {sql}")
+
+        is_schema_err = "does not exist" in err_text or "column" in err_text.lower()
+        schema_hint = ""
+        if is_schema_err:
+            schema_hint = "\n[안내] AS-IS SQL이 현재 DB 스키마와 불일치합니다 (03 원칙 4 예외 후보: 원본 SQL 실행 불가)"
+
+        tobe_summary = f"TOBE API 결과: rows={api_row_count}"
+        error_msg = f"{tobe_summary}\n[ERROR] AS-IS SQL 실행 실패: {exc}{type_hint}{schema_hint}"
+        return ToolResult(ok=False, error=error_msg)
 
     # 페이징인 경우 행 수 및 총건수 대조 (#20)
     if is_paging:
