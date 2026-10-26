@@ -141,6 +141,8 @@ def config_cmd():
     table.add_row("API Admin User", cfg["test-admin-user"], ".env.local의 YUNHEE_TEST_ADMIN_USER")
     table.add_row("API Company", cfg["test-company"], ".env.local의 YUNHEE_TEST_COMPANY")
     table.add_row("API Tenant Host", cfg["api-tenant-host"], ".env.local의 YUNHEE_API_TENANT_HOST")
+    table.add_row("Log Docker", cfg.get("log-docker", config.LOG_DOCKER), "설정 파일(.env.yunhee)의 YUNHEE_LOG_DOCKER")
+    table.add_row("Log Dir", cfg.get("log-dir", config.LOG_DIR), "설정 파일(.env.yunhee)의 YUNHEE_LOG_DIR")
 
     console = Console(width=200)
     console.print(table)
@@ -1057,7 +1059,7 @@ def agent_guide():
     - `yunhee analysis ui <화면>`: TOBE 이벤트 구현율 및 `(생략 N)` (TOBE에서 생략하기로 결정된 이벤트 수) 확인 (연결 컴포넌트 포함(`(연결)` 표시)).
 
 ## 6. 서버 로그 및 실제 실행 SQL 확인 시 (grep 금지)
-- ❌ 절대 금지: docker logs나 서버 로그 파일을 직접 grep하지 마세요. (호스트 같은 경로는 로컬 테스트 로그이며, 배포본은 docker 컨테이너 t3600-tomcat 안에 있습니다)
+- ❌ 절대 금지: docker logs나 서버 로그 파일을 직접 grep하지 마세요. (호스트 같은 경로는 로컬 테스트 로그이며, 배포본은 docker 컨테이너(YUNHEE_LOG_DOCKER, 예: omen-tomcat) 안에 있습니다)
 - ✅ 권장 명령:
   - `yunhee api <METHOD> <PATH> --log`: API 호출 직후 서버가 실제로 실행한 SQL과 바인딩 파라미터 요약 출력
   - `yunhee log trace <traceId>`: 특정 요청에서 실행된 모든 SQL 및 파라미터 확인
@@ -1979,6 +1981,7 @@ def log_trace_cmd(
     archived: Annotated[bool, typer.Option("--archived", help="지난 날짜의 압축 로그(archived/*.gz)까지 검색")] = False,
     file: Annotated[str | None, typer.Option("--file", "-f", help="직접 읽을 로그 파일 경로")] = None,
     source: Annotated[str | None, typer.Option("--source", help="로그 소스 (docker 또는 local)")] = None,
+    docker: Annotated[str | None, typer.Option("--docker", help="Docker 컨테이너 이름 (기본: YUNHEE_LOG_DOCKER)")] = None,
     dir: Annotated[str | None, typer.Option("--dir", help="로그 디렉터리 경로")] = None,
     app_name: Annotated[str | None, typer.Option("--app", help="로그 앱 접두어")] = None,
     tz: Annotated[str | None, typer.Option("--tz", help="로그 파일에 쓰인 시각의 시간대 (docker 기본 UTC — 보통 지정하지 않음, --file과 함께 쓸 때만)")] = None,
@@ -1995,6 +1998,7 @@ def log_trace_cmd(
             trace_id=trace_id,
             file_path=file,
             source=source,
+            docker_container=docker,
             log_dir=dir,
             app=app_name,
             log_tz=tz,
@@ -2029,6 +2033,7 @@ def log_req_cmd(
     archived: Annotated[bool, typer.Option("--archived", help="지난 날짜의 압축 로그(archived/*.gz)까지 검색")] = False,
     file: Annotated[str | None, typer.Option("--file", "-f", help="직접 읽을 로그 파일 경로")] = None,
     source: Annotated[str | None, typer.Option("--source", help="로그 소스 (docker 또는 local)")] = None,
+    docker: Annotated[str | None, typer.Option("--docker", help="Docker 컨테이너 이름 (기본: YUNHEE_LOG_DOCKER)")] = None,
     dir: Annotated[str | None, typer.Option("--dir", help="로그 디렉터리 경로")] = None,
     app_name: Annotated[str | None, typer.Option("--app", help="로그 앱 접두어")] = None,
     tz: Annotated[str | None, typer.Option("--tz", help="로그 파일에 쓰인 시각의 시간대 (docker 기본 UTC — 보통 지정하지 않음, --file과 함께 쓸 때만)")] = None,
@@ -2045,6 +2050,7 @@ def log_req_cmd(
             show_trace=trace,
             file_path=file,
             source=source,
+            docker_container=docker,
             log_dir=dir,
             app=app_name,
             log_tz=tz,
@@ -2080,6 +2086,7 @@ def log_errors_cmd(
     archived: Annotated[bool, typer.Option("--archived", help="지난 날짜의 압축 로그(archived/*.gz)까지 검색")] = False,
     file: Annotated[str | None, typer.Option("--file", "-f", help="직접 읽을 로그 파일 경로")] = None,
     source: Annotated[str | None, typer.Option("--source", help="로그 소스 (docker 또는 local)")] = None,
+    docker: Annotated[str | None, typer.Option("--docker", help="Docker 컨테이너 이름 (기본: YUNHEE_LOG_DOCKER)")] = None,
     dir: Annotated[str | None, typer.Option("--dir", help="로그 디렉터리 경로")] = None,
     app_name: Annotated[str | None, typer.Option("--app", help="로그 앱 접두어")] = None,
     tz: Annotated[str | None, typer.Option("--tz", help="로그 파일에 쓰인 시각의 시간대 (docker 기본 UTC — 보통 지정하지 않음, --file과 함께 쓸 때만)")] = None,
@@ -2092,6 +2099,7 @@ def log_errors_cmd(
         res = get_errors_summary(
             file_path=file,
             source=source,
+            docker_container=docker,
             log_dir=dir,
             app=app_name,
             log_tz=tz,
@@ -2131,6 +2139,7 @@ def log_tail_cmd(
     archived: Annotated[bool, typer.Option("--archived", help="지난 날짜의 압축 로그(archived/*.gz)까지 검색")] = False,
     file: Annotated[str | None, typer.Option("--file", "-f", help="직접 읽을 로그 파일 경로")] = None,
     source: Annotated[str | None, typer.Option("--source", help="로그 소스 (docker 또는 local)")] = None,
+    docker: Annotated[str | None, typer.Option("--docker", help="Docker 컨테이너 이름 (기본: YUNHEE_LOG_DOCKER)")] = None,
     dir: Annotated[str | None, typer.Option("--dir", help="로그 디렉터리 경로")] = None,
     app_name: Annotated[str | None, typer.Option("--app", help="로그 앱 접두어")] = None,
     tz: Annotated[str | None, typer.Option("--tz", help="로그 파일에 쓰인 시각의 시간대 (docker 기본 UTC — 보통 지정하지 않음, --file과 함께 쓸 때만)")] = None,
@@ -2147,6 +2156,7 @@ def log_tail_cmd(
             show_all=all,
             file_path=file,
             source=source,
+            docker_container=docker,
             log_dir=dir,
             app=app_name,
             log_tz=tz,

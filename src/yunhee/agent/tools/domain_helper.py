@@ -39,8 +39,11 @@ def read_recent_errors(limit: int = 5) -> str:
     try:
         from yunhee.tools import log_reader
 
-        summary = log_reader.get_errors_summary(limit=limit)
+        summary = log_reader.get_errors_summary()
         if summary and summary.strip():
+            lines = summary.strip().splitlines()
+            if limit > 0 and len(lines) > limit + 2:
+                return "\n".join(lines[: limit + 2])
             return summary.strip()
         return "최근 서버 로그에서 감지된 WARN/ERROR 에러가 없습니다."
     except Exception as e:  # noqa: BLE001

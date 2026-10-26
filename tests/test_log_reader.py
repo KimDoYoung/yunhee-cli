@@ -483,5 +483,37 @@ def test_find_deploy_time_docker(monkeypatch):
     assert res_empty is None
 
 
+def test_resolve_log_source_from_env_and_docker(monkeypatch):
+    import subprocess
+
+    class DummyProc:
+        def __init__(self, stdout="", returncode=0):
+            self.stdout = stdout
+            self.stderr = ""
+            self.returncode = returncode
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kwargs: DummyProc(stdout="/home/kdy987/tmp/asseterp-data/logs\n"),
+    )
+    monkeypatch.setattr(config, "LOG_DOCKER", "omen-tomcat")
+    monkeypatch.setattr(config, "LOG_DIR", "/home/kdy987/tmp/asseterp-data/logs")
+    monkeypatch.setattr(config, "LOG_APP", "AssetERP-backend")
+    monkeypatch.setattr(config, "LOG_TZ", "")
+
+    docker, dir_str, app_str, tz_str = log_reader.resolve_log_source()
+    assert docker == "omen-tomcat"
+    assert dir_str == "/home/kdy987/tmp/asseterp-data/logs"
+    assert app_str == "AssetERP-backend"
+    assert tz_str == "UTC"
+
+    # source="local" 지정 시 docker는 빈 문자열, tz는 KST
+    docker_loc, _, _, tz_loc = log_reader.resolve_log_source(source="local")
+    assert docker_loc == ""
+    assert tz_loc == "KST"
+
+
+
 
 

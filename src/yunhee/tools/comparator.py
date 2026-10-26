@@ -89,13 +89,14 @@ def extract_trace_sql_params(trace_id: str, sql_ref: str, req_path: str = "") ->
 
     raw = ""
     try:
-        if config.LOG_DOCKER:
+        container, dir_str, app_str, _ = log_reader.resolve_log_source()
+        if container:
             raw = log_reader.read_logs_docker(
-                config.LOG_DOCKER, config.LOG_DIR, config.LOG_APP, trace_id=trace_id
+                container, dir_str, app_str, trace_id=trace_id
             )
         else:
             raw = log_reader.read_logs_local(
-                Path(config.LOG_DIR), config.LOG_APP, trace_id=trace_id
+                Path(dir_str), app_str, trace_id=trace_id
             )
     except Exception:  # noqa: BLE001
         return {}

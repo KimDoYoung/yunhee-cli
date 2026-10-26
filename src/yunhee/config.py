@@ -142,7 +142,7 @@ API_TIMEOUT = _float_env("YUNHEE_API_TIMEOUT", 15.0)
 
 # 로그 리더 (yunhee log) 기본 설정
 _log_conf = TOML_CONFIG.get("log", {})
-LOG_DOCKER = _log_conf.get("docker") if "docker" in _log_conf else os.getenv("YUNHEE_LOG_DOCKER", "t3600-tomcat")
+LOG_DOCKER = _log_conf.get("docker") if "docker" in _log_conf else os.getenv("YUNHEE_LOG_DOCKER", "omen-tomcat")
 LOG_DIR = _log_conf.get("dir") if "dir" in _log_conf else os.getenv("YUNHEE_LOG_DIR", "/home/kdy987/tmp/asseterp-data/logs")
 LOG_APP = _log_conf.get("app") if "app" in _log_conf else os.getenv("YUNHEE_LOG_APP", "AssetERP-backend")
 LOG_TZ = _log_conf.get("tz") if "tz" in _log_conf else os.getenv("YUNHEE_LOG_TZ", "")
@@ -198,6 +198,13 @@ def summary() -> dict[str, str]:
         "api-timeout": f"{API_TIMEOUT:g}s",
         "test-admin-user": TEST_ADMIN_USER,
         "test-company": TEST_COMPANY or "(not set)",
+        "log-docker": (
+            f"{LOG_DOCKER} (from {TOML_FILE.name})"
+            if TOML_FILE and "docker" in _log_conf
+            else (f"{LOG_DOCKER} (from {ENV_FILE.name})" if LOG_DOCKER else "(local)")
+        ),
+        "log-dir": LOG_DIR,
+        "log-app": LOG_APP,
     }
 
 

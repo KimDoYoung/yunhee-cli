@@ -906,11 +906,20 @@ def wait_for_deploy_health(
     import time
 
     start_poll = time.time()
-    container = docker_container if docker_container is not None else config.LOG_DOCKER
-    dir_str = log_dir or config.LOG_DIR
-    app_str = app or config.LOG_APP
-    tz_val = (log_tz or config.LOG_TZ).upper() if (log_tz or config.LOG_TZ) else ""
-    is_utc = (tz_val == "UTC") or (not tz_val and bool(container))
+    if file_path:
+        container = ""
+        dir_str = log_dir or config.LOG_DIR
+        app_str = app or config.LOG_APP
+        tz_val = (log_tz or config.LOG_TZ).upper() if (log_tz or config.LOG_TZ) else ""
+        is_utc = (tz_val == "UTC")
+    else:
+        container, dir_str, app_str, tz_str = resolve_log_source(
+            docker_container=docker_container,
+            log_dir=log_dir,
+            app=app,
+            log_tz=log_tz,
+        )
+        is_utc = (tz_str.upper() == "UTC")
 
     while (time.time() - start_poll) <= timeout:
         # 1. 기동 실패 먼저 확인
@@ -961,11 +970,12 @@ def check_deploy_startup_staleness(deploy_dt_log: datetime, log_tz_is_utc: bool 
     if log_dt_utc < deploy_end_dt_utc:
         # 혹시 기동 실패 기록이 있는지 확인
         fail_res = None
-        if config.LOG_DOCKER:
-            fail_res = find_deploy_startup_failure_docker(config.LOG_DOCKER, config.LOG_DIR, config.LOG_APP, since_dt_utc=deploy_start_dt_utc)
+        container, dir_str, app_str, _ = resolve_log_source()
+        if container:
+            fail_res = find_deploy_startup_failure_docker(container, dir_str, app_str, since_dt_utc=deploy_start_dt_utc)
         else:
             fail_res = find_deploy_startup_failure_local(
-                Path(config.LOG_DIR) / f"{config.LOG_APP}-info.log",
+                Path(dir_str) / f"{app_str}-info.log",
                 since_dt_utc=deploy_start_dt_utc,
                 log_tz="UTC" if log_tz_is_utc else "KST",
             )
@@ -1041,13 +1051,14 @@ def check_app_starting_after_deploy() -> tuple[bool, str | None]:
     # 로그에서 최신 기동 시각 조회
     deploy_dt_log = None
     try:
-        if config.LOG_DOCKER:
+        container, dir_str, app_str, _ = resolve_log_source()
+        if container:
             deploy_dt_log = find_deploy_time_docker(
-                config.LOG_DOCKER, config.LOG_DIR, config.LOG_APP, raise_on_error=False
+                container, dir_str, app_str, raise_on_error=False
             )
         else:
             deploy_dt_log = find_deploy_time_local(
-                Path(config.LOG_DIR) / f"{config.LOG_APP}-info.log", raise_on_error=False
+                Path(dir_str) / f"{app_str}-info.log", raise_on_error=False
             )
     except Exception:  # noqa: BLE001, S110
         pass
@@ -1240,6 +1251,60 @@ def resolve_time_range(
     return start_log, end_log, header_tag
 
 
+def _resolve_log_dir_docker(container: str, default_dir: str, app: str) -> str:
+    """컨테이너 내부에서 로그 디렉터리를 결정한다 (설정값 우선, 없을 시 마운트/탐색 fallback)."""
+    # 1. default_dir 안에 로그 파일이나 디렉터리가 존재하거나 마운트되어 있는지 확인
+    check_cmd = (
+        f'if [ -d "{default_dir}" ]; then echo "{default_dir}"; '
+        f'else '
+        f'found=$(find /home /usr/local/tomcat /var/log /tmp -maxdepth 4 -name "{app}-info.log" 2>/dev/null | head -n 1); '
+        f'if [ -n "$found" ]; then dirname "$found"; else echo "{default_dir}"; fi; '
+        f'fi'
+    )
+    proc = subprocess.run(
+        ["docker", "exec", container, "sh", "-c", check_cmd],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode == 0 and proc.stdout.strip():
+        return proc.stdout.strip()
+    return default_dir
+
+
+def resolve_log_source(
+    source: str | None = None,
+    docker_container: str | None = None,
+    log_dir: str | None = None,
+    app: str | None = None,
+    log_tz: str | None = None,
+    file_path: str | None = None,
+) -> tuple[str, str, str, str]:
+    """(docker_container, log_dir, app_str, tz_str)를 일관되게 결정한다."""
+    import os
+
+    docker = (
+        docker_container
+        if docker_container is not None
+        else config.LOG_DOCKER
+    )
+    if source == "local":
+        docker = ""
+    elif source == "docker" and not docker:
+        docker = os.getenv("YUNHEE_LOG_DOCKER") or "omen-tomcat"
+
+    app_str = app or config.LOG_APP
+    if log_dir:
+        dir_str = log_dir
+    elif not file_path and docker and not os.getenv("YUNHEE_LOG_DIR") and "dir" not in config.TOML_CONFIG.get("log", {}):
+        dir_str = _resolve_log_dir_docker(docker, config.LOG_DIR, app_str)
+    else:
+        dir_str = config.LOG_DIR
+
+    tz_str = log_tz or config.LOG_TZ or ("UTC" if docker else "KST")
+    return docker, dir_str, app_str, tz_str
+
+
 def get_trace_summary(
     trace_id: str,
     file_path: str | None = None,
@@ -1258,15 +1323,14 @@ def get_trace_summary(
         sys.stderr.write("오류: trace ID는 16진수 (8~32자)\n")
         raise typer.Exit(2)
 
-    docker = docker_container if docker_container is not None else config.LOG_DOCKER
-    if source == "local":
-        docker = ""
-    elif source == "docker" and not docker:
-        docker = "t3600-tomcat"
-
-    dir_str = log_dir or config.LOG_DIR
-    app_str = app or config.LOG_APP
-    tz_str = log_tz or ("UTC" if docker else "KST")
+    docker, dir_str, app_str, tz_str = resolve_log_source(
+        source=source,
+        docker_container=docker_container,
+        log_dir=log_dir,
+        app=app,
+        log_tz=log_tz,
+        file_path=file_path,
+    )
     log_is_utc = tz_str.upper() == "UTC"
 
     if file_path:
@@ -1476,15 +1540,14 @@ def get_req_summary(
     mask: bool = True,
 ) -> str:
     """접근 로그를 필터링하여 최근 요청 목록 반환."""
-    docker = docker_container if docker_container is not None else config.LOG_DOCKER
-    if source == "local":
-        docker = ""
-    elif source == "docker" and not docker:
-        docker = "t3600-tomcat"
-
-    dir_str = log_dir or config.LOG_DIR
-    app_str = app or config.LOG_APP
-    tz_str = log_tz or ("UTC" if docker else "KST")
+    docker, dir_str, app_str, tz_str = resolve_log_source(
+        source=source,
+        docker_container=docker_container,
+        log_dir=log_dir,
+        app=app,
+        log_tz=log_tz,
+        file_path=file_path,
+    )
 
     if file_path:
         deploy_getter = lambda: find_deploy_time_local(Path(file_path))
@@ -1656,15 +1719,14 @@ def get_errors_summary(
     mask: bool = True,
 ) -> str:
     """WARN/ERROR 로그 그룹화 요약 반환."""
-    docker = docker_container if docker_container is not None else config.LOG_DOCKER
-    if source == "local":
-        docker = ""
-    elif source == "docker" and not docker:
-        docker = "t3600-tomcat"
-
-    dir_str = log_dir or config.LOG_DIR
-    app_str = app or config.LOG_APP
-    tz_str = log_tz or ("UTC" if docker else "KST")
+    docker, dir_str, app_str, tz_str = resolve_log_source(
+        source=source,
+        docker_container=docker_container,
+        log_dir=log_dir,
+        app=app,
+        log_tz=log_tz,
+        file_path=file_path,
+    )
 
     if file_path:
         deploy_getter = lambda: find_deploy_time_local(Path(file_path))
@@ -1882,15 +1944,14 @@ def get_tail_summary(
     mask: bool = True,
 ) -> str:
     """최근 로그를 요청(trace) 단위로 접어서 요약 반환."""
-    docker = docker_container if docker_container is not None else config.LOG_DOCKER
-    if source == "local":
-        docker = ""
-    elif source == "docker" and not docker:
-        docker = "t3600-tomcat"
-
-    dir_str = log_dir or config.LOG_DIR
-    app_str = app or config.LOG_APP
-    tz_str = log_tz or ("UTC" if docker else "KST")
+    docker, dir_str, app_str, tz_str = resolve_log_source(
+        source=source,
+        docker_container=docker_container,
+        log_dir=log_dir,
+        app=app,
+        log_tz=log_tz,
+        file_path=file_path,
+    )
 
     if file_path:
         deploy_getter = lambda: find_deploy_time_local(Path(file_path))
