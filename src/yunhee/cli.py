@@ -52,7 +52,7 @@ def main(
   2. [bold green]DB 스키마[/bold green]: [cyan]yunhee table <패턴>[/cyan] (필요한 테이블 DBML만 추출)
   3. [bold green]빌드/테스트[/bold green]: [cyan]yunhee run "<명령>"[/cyan] (1줄 성공/에러 요약, 셸 직실행 금지)
   4. [bold green]API/로그[/bold green]: [cyan]yunhee api GET <경로> [--log][/cyan] · [cyan]yunhee log trace|req|errors|tail[/cyan]
-  5. [bold green]AS-IS 분석[/bold green]: [cyan]yunhee analysis screen|ui|method|sql|grid <대상>[/cyan]
+  5. [bold green]AS-IS 분석[/bold green]: [cyan]yunhee analysis screen|ui|method|sql|grid <대상>[/cyan] · [cyan]yunhee page-style <화면>[/cyan]
   6. [bold green]원본 변경[/bold green]: [cyan]yunhee drift --all --base baseline[/cyan] · [cyan]drift --record <화면>[/cyan]
   7. [bold green]설정/이력[/bold green]: [cyan]yunhee config[/cyan] · [cyan]yunhee changelog --since <버전>[/cyan]
 """
@@ -1053,6 +1053,7 @@ def agent_guide():
 ## 5. AS-IS 정적 분석 및 폼 레이아웃 파악 (토큰 90% 절약)
 - ❌ 절대 금지: 복잡한 GXT 폼 탭의 컴포넌트 크기, 라벨, 배치, 읽기 전용 속성을 파악하려고 수백 줄의 자바 소스를 직접 열지 마세요.
 - ✅ 권장 명령:
+    - `yunhee page-style <화면.java|tsx>`: 화면 파일의 페이지 스타일(SID: SG, SGP, SGVF, SGEF, SGTP, SGT, TG, GG, CG) 및 분할 레이아웃 판별 (대조: `yunhee page-style --compare <asis.java> <tobe.tsx>`)
     - `yunhee analysis screen <화면> --list`: 클래스 목록 및 줄/버튼/이벤트/그리드 통계 (연결 컴포넌트 포함(`(연결)` 표시), `--no-linked` 지원)
     - `yunhee analysis screen <화면> --section layout`: 폼 탭은 원본 Java를 열기 전에 이것부터 확인하세요.
     - `yunhee analysis screen <화면> --section source`: 색인 시점의 소스 커밋과 의존 파일 개수 요약 확인.
@@ -1660,6 +1661,160 @@ def events_cmd(
     # 기본 마크다운 출력
     md_text = render_events_markdown(file_label, ev_list, method_list, grid_spec=grid_spec, buttons=buttons)
     typer.echo(md_text)
+
+
+@app.command(name="page-style")
+def page_style_cmd(
+    targets: Annotated[
+        list[str] | None,
+        typer.Argument(help="판별할 화면 파일 경로 목록 (.tsx / .java) 또는 화면명"),
+    ] = None,
+    all_scan: Annotated[
+        bool,
+        typer.Option("--all", "-a", help="모든 *_Tab_* 화면 판별 및 SID별 분포 출력"),
+    ] = False,
+    compare: Annotated[
+        bool,
+        typer.Option("--compare", "-c", help="두 화면(AS-IS와 TOBE)의 SID 일치 여부 비교"),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="특징·근거까지 JSON 형식으로 출력"),
+    ] = False,
+):
+    """화면 파일(.tsx / .java)의 페이지 스타일 ID(SID) 판별 및 비교
+
+    사용법:
+      yunhee page-style Fnd01_Tab_FundSearch.tsx          # TOBE → SID만 출력 (SGVF)
+      yunhee page-style Fnd01_Tab_FundSearch.java         # AS-IS → SID만 출력
+      yunhee page-style --json a.tsx b.java               # 특징·근거까지 JSON 출력
+      yunhee page-style --all [디렉터리]                  # 모든 *_Tab_* 판별 + SID별 분포
+      yunhee page-style --compare <asis.java> <tobe.tsx>  # 두 SID가 같은지 (종료코드 0/1)
+    """
+    import json
+
+    from yunhee.tools.page_style import (
+        SIDS,
+        UNKNOWN,
+        analyze,
+        compare_pages,
+        format_line,
+        resolve_target_path,
+        scan_tab_files,
+    )
+
+    args = targets or []
+
+    # 1. --compare 모드
+    if compare:
+        if len(args) != 2:
+            typer.secho("사용법: yunhee page-style --compare <asis.java> <tobe.tsx>", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        p1 = resolve_target_path(args[0], prefer_ext=".java")
+        if not p1:
+            typer.secho(f"오류: 파일을 찾을 수 없습니다: {args[0]}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        p2 = resolve_target_path(args[1], prefer_ext=".tsx")
+        if not p2:
+            typer.secho(f"오류: 파일을 찾을 수 없습니다: {args[1]}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+
+        try:
+            res = compare_pages(p1, p2)
+        except Exception as e:  # noqa: BLE001
+            typer.secho(f"오류: {e}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+
+        if json_output:
+            typer.echo(json.dumps(res, ensure_ascii=False))
+        else:
+            typer.echo(format_line(res["a"]))
+            typer.echo(format_line(res["b"]))
+            typer.echo(res["message"])
+        raise typer.Exit(code=0 if res["same"] else 1)
+
+    # 2. --all 모드 또는 단일 인자가 디렉터리인 경우
+    is_dir_arg = bool(args and len(args) == 1 and Path(args[0]).is_dir())
+    if all_scan or is_dir_arg:
+        target_dir_str = args[0] if is_dir_arg else (args[0] if (args and len(args) == 1) else None)
+        if target_dir_str:
+            target_dir = Path(target_dir_str)
+            if not target_dir.is_dir():
+                cand = config.WORK_DIR / target_dir
+                if cand.is_dir():
+                    target_dir = cand
+                else:
+                    typer.secho(f"오류: 디렉터리를 찾을 수 없습니다: {target_dir_str}", fg=typer.colors.RED, err=True)
+                    raise typer.Exit(code=2)
+        else:
+            target_dir = config.WORK_DIR
+
+        files = scan_tab_files(target_dir)
+        if not files:
+            typer.secho(f"안내: {target_dir} 아래에 *_Tab_* 화면 파일이 없습니다.", fg=typer.colors.YELLOW, err=True)
+            raise typer.Exit(code=0)
+
+        results = []
+        for f in files:
+            try:
+                results.append(analyze(f))
+            except Exception as e:  # noqa: BLE001
+                typer.secho(f"경고: {f.name} 분석 실패: {e}", fg=typer.colors.YELLOW, err=True)
+
+        if json_output:
+            for r in results:
+                typer.echo(json.dumps(r, ensure_ascii=False))
+        else:
+            for r in results:
+                typer.echo(format_line(r))
+            dist: dict[str, int] = {}
+            for r in results:
+                dist[r["sid"]] = dist.get(r["sid"], 0) + 1
+            typer.echo(f"\n# SID별 분포 ({len(results)}개)")
+            for sid in list(SIDS) + [UNKNOWN]:
+                if sid in dist:
+                    typer.echo(f"{sid:<6} {dist[sid]:3d}")
+
+        has_mismatch = any(r.get("declared") and r["declared"] != r["sid"] for r in results)
+        raise typer.Exit(code=1 if has_mismatch else 0)
+
+    # 3. 일반 파일 판별 모드
+    if not args:
+        typer.secho(
+            "사용법: yunhee page-style <파일...> [--all [디렉터리]] [--compare <asis> <tobe>] [--json]",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    resolved_files: list[tuple[str, Path]] = []
+    for t in args:
+        p = resolve_target_path(t)
+        if not p:
+            typer.secho(f"오류: 파일을 찾을 수 없습니다: {t}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        resolved_files.append((t, p))
+
+    bad = False
+    for _, p in resolved_files:
+        try:
+            r = analyze(p)
+        except Exception as e:  # noqa: BLE001
+            typer.secho(f"오류: {e}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+
+        if json_output:
+            typer.echo(json.dumps(r, ensure_ascii=False))
+        elif len(args) == 1 and not r.get("declared"):
+            # 단일 파일이고 선언 머리 주석이 없으면 SID만 출력
+            typer.echo(r["sid"])
+        else:
+            typer.echo(format_line(r))
+
+        if r.get("declared") and r["declared"] != r["sid"]:
+            bad = True
+
+    raise typer.Exit(code=1 if bad else 0)
 
 
 @app.command(name="analysis")

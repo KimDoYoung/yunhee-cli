@@ -44,6 +44,7 @@ uv run yunhee sql-check --tobe src/main/resources/mapper             # TOBE 매�
 uv run yunhee port-sql sys04_role.selectByName                       # AS-IS MyBatis SQL → TOBE 매퍼 조각 및 Java Record DTO 자동 생성
 uv run yunhee port-save sys04_role --cols role_nm,seq,note           # AS-IS 테이블 기반 TOBE CUD 명시적 쿼리 및 채번/사이드이펙트 생성
 uv run yunhee compare GET /api/v1/sys/roles sys04_role.selectByName -c kfstest # HTTP API 결과와 AS-IS SQL 결과 행수/컬럼 커버리지 비교
+uv run yunhee page-style Fnd01_Tab_FundSearch.tsx        # 화면 파일(.tsx/.java) 페이지 스타일 ID(SID) 판별 (--compare, --all, --json)
 uv run yunhee analysis screen <화면> --list # 화면 및 연결 컴포넌트 클래스 목록 통계 (--no-linked 지원)
 uv run yunhee analysis screen <화면> --section layout # GXT 폼 탭 레이아웃(라벨 폭, 행 구조, 위젯 크기, readOnly/disable) 추출
 uv run yunhee api GET /api/v1/emp/others -c kfstest --log # API 호출 직후 서버가 실제로 실행한 SQL과 바인딩 파라미터(이름=값) 요약
@@ -112,6 +113,7 @@ uv tool install --force --reinstall . # yunhee 안정 버전을 전역 PATH에 �
   - `port-sql`: AS-IS MyBatis XML SQL을 TOBE XML 조각 및 Java Record DTO로 결정적 변환.
   - `port-save`: AS-IS 테이블 스키마 및 UpdateDataModel 기반 명시적 CUD SQL과 채번/사이드이펙트 생성.
   - `compare`: HTTP API 응답과 AS-IS SQL 실행 결과를 비교하여 건수 및 화면 그리드 컬럼 커버리지 검증.
+  - `page-style`: 화면 파일(.tsx / .java)의 컴포넌트·레이아웃 정적 분석을 통해 페이지 스타일 ID(SID: SG, SGP, SGVF, SGEF, SGTP, SGT, TG, GG, CG) 판별, 머리 주석 선언 스타일 검증, AS-IS ↔ TOBE 일치 대조(`--compare`), 디렉터리 일괄 스캔 및 분포 집계(`--all`).
 - `src/yunhee/store/run_tracker.py`: SQLite `runs` 테이블에 실행 이력(명령어, exit code, 소요시간, 로그 경로, 요약 등) 저장 및 조회.
 
 ### 3. Tools 및 Context 레이어
@@ -121,6 +123,7 @@ uv tool install --force --reinstall . # yunhee 안정 버전을 전역 PATH에 �
 - `src/yunhee/tools/comparator.py`: HTTP API 호출 결과(Data 봉투 언래핑)와 AS-IS SQL 실행 결과를 비교하여 행수 및 화면 그리드 컬럼(`fields ⊇ grid cols`) 검증.
 - `src/yunhee/tools/outliner.py`: Java, MyBatis XML, TypeScript/TSX, Python 소스의 시그니처와 줄 번호를 추출하는 순수 정적 파서. Java의 여러 줄 파라미터, 점(`.`)이 포함된 제네릭 반환형(`List<MenuRes.Level1>`), 인터페이스 메서드(`SysRoleMapper.java`), TSX 객체 리터럴 함수(`export const sysApi = { ... }`), React.FC 컴포넌트, TS 제네릭 함수(`useTreeGrid<T>`, `editableCol = <T,>`), Java enum 상수 요약(`constants(N): ...`), record 파라미터 구성요소 인라인 및 본문 메서드 보존을 완벽히 지원.
 - `src/yunhee/tools/api_client.py`: 자동 로그인, Host 헤더 기반 테넌트 분리(`_tenant_headers`), 테넌트/회사별 세션 격리(`WORK_DIR/.yunhee/sessions/<host>_<tenant>_<user>_<company>.json`), `companyCode` 지원, 공통 응답 봉투(success·code·data) 언래핑 및 숫자/문자/객체 Data 표기, 로그인 실패 시 즉시 중단(계정 잠금 5회 락 방지) API 스모크 테스트 도구.
+- `src/yunhee/tools/page_style.py`: 화면 파일(.tsx, .java)의 구조적 특징(조회 툴바, 그리드/트리 수, 폼 유형 view/edit, 편집 팝업 여부, split layout 방향, 툴바 전폭 여부, 직접 편집 그리드)을 정적으로 추출하여 페이지 스타일 ID(SID)를 결정적으로 분류하는 판별기.
 - `src/yunhee/tools/as_is/`: AS-IS 마이그레이션 전용 결정적 정적 분석 및 검증 도구 모음 (LLM 미개입, 100% 결정적).
   - `dbml_indexer.py` (`yunhee index-db`): 수 MB에 달하는 DBML 마크다운을 도메인별 소형 마크다운(`tables/{domain}.md`, `functions/{name}.md`, `views.md`, `triggers.md`)으로 분할 색인하고 pgcrypto 암호키를 자동 마스킹.
   - `src_indexer.py` (`yunhee index-src`): GXT 프레임워크 호출 구조(`MenuOpener`/`menus.tsv` → `ServiceRequest` → `ServerMethod` → `MyBatis mapper XML` → `tables`)를 완전 추적하여 `docs/as-is/src/` 아래 도메인/화면별 색인 생성. GXT 위젯, GridBuilder 컬럼, 이벤트 핸들러 및 처리 로직 줄 범위를 정적 추출. `UpdateDataModel` 동적 SQL/사이드이펙트 추적 지원.

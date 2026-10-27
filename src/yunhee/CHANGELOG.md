@@ -2,6 +2,22 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.5.7] - 2026-10-27
+화면 파일 페이지 스타일 판별기(`page-style`)에 신규 SID `SGTP` 추가 반영.
+- `page-style`: 신규 페이지 스타일 ID `SGTP`(SearchGrid+TabPage: 위아래 분할 + 그리드 + 아래 탭 영역 `*_TabPage_*`) 추가
+  - TSX 및 Java에서 하위 탭 영역 컴포넌트(`*_TabPage_*`) 임포트 및 인스턴스화 추적 (`tabpage: true`)
+  - `*_TabPage_*` 내부의 그리드/폼은 메인 화면의 그리드 수에 중복 합산되지 않도록 격리 처리
+  - 위아래 분할 레이아웃 + 그리드 1개 + 아래 탭 영역인 경우 `SGTP`로 결정적 판별
+
+## [0.5.6] - 2026-10-27
+화면 파일(.tsx / .java) 페이지 스타일 ID(SID) 판별 및 대조를 위한 인자형 명령어 `page-style` 추가.
+- `page-style`: 화면 파일(.tsx/.java)의 페이지 스타일 ID(SID: SG, SGP, SGVF, SGEF, SGT, TG, GG, CG, 미분류) 판별 및 대조 신규 명령어 추가
+  - 단일 화면 SID 판별(`yunhee page-style <file>`) 및 머리 주석 선언 스타일(`스타일: XXX`) 불일치 경고
+  - AS-IS와 TOBE 화면 간 SID 일치 여부 검증(`yunhee page-style --compare <asis.java> <tobe.tsx>`) (종료 코드: 일치 0, 불일치 1)
+  - 디렉터리 내 모든 `*_Tab_*` 화면 일괄 판별 및 SID별 분포 통계 집계(`yunhee page-style --all [디렉터리]`)
+  - 특징(features: 그리드·트리·폼·팝업·분할 레이아웃 등) 및 판별 근거(why) JSON 출력 지원(`--json`)
+  - 파일명 지정 시 현재 작업 경로, WORK_DIR, ASIS_SRC_DIR 자동 경로 탐색 지원
+
 ## [0.5.5] - 2026-10-26
 수정사항 043 (인자형 명령어 개선, null: 파라미터 지원, 훅 회피용 파일 부분 읽기 `cat`/`outline --range`, API 사전 경로 보정 및 401 재시도, compare 오류 간소화, 도달 판정 정상화) 반영.
 - `cat`: 지정한 파일들의 특정 줄 범위를 핀포인트로 읽는 신규 명령어 `yunhee cat <file>:<range>...` 추가 (예: `yunhee cat a.java:1-30 b.xml:100-140`), 외부 훅 차단 방지 (043-7)
