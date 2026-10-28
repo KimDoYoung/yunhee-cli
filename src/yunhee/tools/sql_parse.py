@@ -20,7 +20,7 @@ from yunhee.tools.base import ToolResult
 Schema = dict[str, list[str]]  # 테이블명(소문자) → 컬럼명 목록 (스냅샷에서 만든다)
 
 _FALLBACK_TABLE_RE = re.compile(r"\b(?:from|join|into|update)\s+([a-z_][a-z0-9_]*)", re.IGNORECASE)
-_FALLBACK_CTE_RE = re.compile(r"\b([a-z_][a-z0-9_]*)\s+as\s*\(", re.IGNORECASE)
+_FALLBACK_CTE_RE = re.compile(r"\b([a-z_][a-z0-9_]*)\s*(?:\([^()]*\)\s*)?as\s*\(", re.IGNORECASE)  # name AS ( 또는 name(cols) AS (
 _SQL_NOISE = {"select", "set", "values", "where", "lateral", "only", "unnest", "generate_series"}
 
 
@@ -36,9 +36,11 @@ class Assignment:
 @dataclass
 class ParsedSql:
     kind: str = "other"  # select / insert / update / delete / other
-    tables: dict[str, str] = field(default_factory=dict)  # 테이블명 → "R" / "W" / "RW"
+    tables: dict[str, str] = field(default_factory=dict)  # 테이블명 → "R" / "W" / "RW" (SQL에 나온 순서)
     ctes: list[str] = field(default_factory=list)
     functions: list[str] = field(default_factory=list)
+    table_functions: list[str] = field(default_factory=list)  # FROM get_x(...) 처럼 테이블 자리에 쓰인 함수
+    writes: list[tuple[str, str]] = field(default_factory=list)  # (INSERT|UPDATE|DELETE, 테이블) 나온 순서
     columns: dict[str, list[str]] = field(default_factory=dict)  # 테이블명 → 사용된 컬럼
     output_names: list[str | None] | None = None  # 최상위 SELECT 출력 이름. `*`를 알 수 없으면 None
     assignments: list[Assignment] = field(default_factory=list)
@@ -68,8 +70,10 @@ class _Collector:
     """AST를 한 번 훑어 테이블·CTE·함수·컬럼 참조를 모은다."""
 
     def __init__(self) -> None:
-        self.read: set[str] = set()
+        self.read: dict[str, int] = {}  # 테이블명 → 처음 나온 위치(location)
         self.written: set[str] = set()
+        self.writes: list[tuple[str, str]] = []
+        self.table_functions: list[str] = []
         self.ctes: list[str] = []
         self.functions: list[str] = []
         self.alias: dict[str, str] = {}  # 별칭 → 테이블명
@@ -89,15 +93,23 @@ class _Collector:
             self.ctes.append(node.ctename.lower())
         elif isinstance(node, ast.RangeVar):
             name = node.relname.lower()
-            self.read.add(name)
+            self.read.setdefault(name, node.location)
             if node.alias:
                 self.alias[node.alias.aliasname.lower()] = name
         elif isinstance(node, (ast.InsertStmt, ast.UpdateStmt, ast.DeleteStmt)):
             rel = node.relation
             name = rel.relname.lower()
             self.written.add(name)
+            self.writes.append((type(node).__name__.removesuffix("Stmt").upper(), name))
             if rel.alias:
                 self.alias[rel.alias.aliasname.lower()] = name
+        elif isinstance(node, ast.RangeFunction):
+            for pair in node.functions or ():
+                call = pair[0] if isinstance(pair, (list, tuple)) else pair
+                if isinstance(call, ast.FuncCall):
+                    parts = _strings(call.funcname)
+                    if parts:
+                        self.table_functions.append(parts[-1])
         elif isinstance(node, ast.FuncCall):
             parts = _strings(node.funcname)
             if parts:
@@ -113,12 +125,20 @@ def _top_select(stmt: Any) -> Any:
     return stmt
 
 
+_PLAIN_IDENT = re.compile(r"[a-z_][a-z0-9_]*")
+
+
+def _display_name(name: str) -> str:
+    """대소문자·특수문자가 있어 따옴표가 필요한 이름은 "..."로 감싼다 (기존 select_output_names와 같은 표기)."""
+    return name if _PLAIN_IDENT.fullmatch(name) else f'"{name}"'
+
+
 def _output_names(select: Any, resolve_star: Any) -> list[str | None] | None:
     names: list[str | None] = []
     for target in select.targetList or ():
         val = target.val
         if target.name:
-            names.append(target.name)
+            names.append(_display_name(target.name))
         elif isinstance(val, ast.ColumnRef):
             last = val.fields[-1]
             if isinstance(last, ast.A_Star):
@@ -127,9 +147,9 @@ def _output_names(select: Any, resolve_star: Any) -> list[str | None] | None:
                     return None
                 names.extend(expanded)
             else:
-                names.append(last.sval)
+                names.append(_display_name(last.sval))
         elif isinstance(val, ast.FuncCall):
-            names.append(val.funcname[-1].sval)
+            names.append(_display_name(val.funcname[-1].sval))
         else:
             names.append(None)  # 이름을 정할 수 없는 식
     return names
@@ -157,11 +177,14 @@ def parse_sql_text(sql: str, schema: Schema | None = None) -> ParsedSql:
     result.ctes = list(dict.fromkeys(col.ctes))
     result.functions = list(dict.fromkeys(col.functions))
 
-    # 읽기/쓰기: 쓰기 대상은 RangeVar로도 잡히므로, 대상 외에 읽는 곳이 없으면 "W"만 남긴다.
+    # 읽기/쓰기: 쓰기 대상은 RangeVar로도 잡히므로, 대상 외에 읽는 곳이 없으면 "W"만 남긴다. SQL에 나온 순서로 둔다.
     reads = _count_reads(root, col.written)
-    for name in sorted((col.read | col.written) - cte_set):
+    names = (col.read.keys() | col.written) - cte_set
+    for name in sorted(names, key=lambda n: (col.read.get(n, 0), n)):
         flag = ("R" if name in reads or name not in col.written else "") + ("W" if name in col.written else "")
         result.tables[name] = flag
+    result.writes = list(dict.fromkeys(col.writes))
+    result.table_functions = list(dict.fromkeys(col.table_functions))
 
     _resolve_columns(result, col, cte_set, schema)
 
@@ -268,25 +291,59 @@ def _fallback(sql: str, error: str) -> ParsedSql:
     return result
 
 
+MAX_BRANCH_VARIANTS = 8
+
+
+def _merge(base: ParsedSql, other: ParsedSql) -> None:
+    """다른 분기 변형에서만 나온 테이블·CTE·함수·컬럼·변경 작업을 base에 합친다."""
+    for name, flag in other.tables.items():
+        base.tables[name] = "".join(sorted(set(base.tables.get(name, "") + flag), key="RW".index))
+    for attr in ("ctes", "functions", "table_functions", "writes"):
+        have = getattr(base, attr)
+        have += [x for x in getattr(other, attr) if x not in have]
+    for table, cols in other.columns.items():
+        base.columns[table] = sorted(set(base.columns.get(table, [])) | set(cols))
+    for name in base.ctes:  # 어느 변형에서든 CTE로 정의된 이름은 테이블이 아니다
+        base.tables.pop(name, None)
+
+
 def parse_statement(
     key: str,
     statements: dict[str, Any],
     schema: Schema | None = None,
+    all_branches: bool = True,
 ) -> ToolResult:
     """MyBatis statement(`ns.sqlId`)를 `explain` 모드로 순수 SQL로 전개해 해석한다.
 
-    `<if>`는 모두 켠 최대형 SQL이다. `${}`는 explain 렌더링이 `1`로 바꿔 버리므로 structure 렌더링에서
-    따로 찾아 unresolved에 남긴다.
+    `<if>`는 모두 켠 최대형 SQL이다. `<choose>`는 explain 렌더링이 한 분기만 고르므로, `all_branches`면
+    다른 분기를 차례로 고른 변형도 해석해 테이블·CTE·함수·컬럼을 합친다 (kind·출력 이름·대입·WHERE는 기본 변형 기준).
+    `${}`는 explain 렌더링이 `1`로 바꿔 버리므로 structure 렌더링에서 따로 찾아 unresolved에 남긴다.
     """
     from yunhee.tools.as_is.mybatis_render import render
 
     try:
         sql, _ = render(key, mode="explain", statements=statements)
         structure, _ = render(key, mode="structure", statements=statements)
-    except ValueError as exc:
+    except Exception as exc:  # noqa: BLE001 - 호출한 쪽은 ok=False면 정규식 추정으로 되돌리므로 렌더 실패는 예외로 올리지 않는다
         return ToolResult(ok=False, error=str(exc))
 
     parsed = parse_sql_text(sql, schema)
+    if all_branches and "<choose" in structure:
+        seen = {sql}
+        for variant in range(1, MAX_BRANCH_VARIANTS):
+            alt, _ = render(key, params={"__pick__": variant}, mode="explain", statements=statements)
+            if alt in seen:
+                break
+            seen.add(alt)
+            other = parse_sql_text(alt, schema)
+            if other.fallback:
+                # Tibero 계층 쿼리(START WITH) 등 PostgreSQL 문법이 아닌 분기: 정규식으로 추정한 테이블만 합치고 알린다
+                _merge(parsed, other)
+                note = "일부 분기가 PostgreSQL 문법이 아니라 정규식으로 추정한 테이블을 합침"
+                if note not in parsed.unresolved:
+                    parsed.unresolved.append(note)
+            else:
+                _merge(parsed, other)
     dollars = sorted(set(re.findall(r"\$\{[^}]*\}", structure)))
     if dollars:
         parsed.unresolved.append("${} 치환은 값을 알 수 없어 1로 대체함: " + ", ".join(dollars))

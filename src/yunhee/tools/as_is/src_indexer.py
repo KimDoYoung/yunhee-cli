@@ -496,6 +496,7 @@ class Statement:
         self.functions: set[str] = set()
         self.includes: list[str] = []
         self.ctes: set[str] = set()
+        self.resolved = False  # True면 tables/ctes/functions가 <include> 전개 후 AST 해석 결과다
 
     @property
     def key(self) -> str:
@@ -776,12 +777,27 @@ def strip_sql(text: str) -> str:
     return re.sub(r"--[^\n]*", "", text)
 
 
+def _parse_statement_ast(key: str, kind: str, mr_statements: dict) -> Any:
+    """statement를 <include>까지 전개해 AST로 해석한다. `<sql>` 조각이거나 해석할 수 없으면 None."""
+    from yunhee.tools.sql_parse import parse_statement
+
+    if kind == "sql":
+        return None
+    res = parse_statement(key, mr_statements)
+    if res.ok and not res.data.fallback:
+        return res.data
+    return None
+
+
 def parse_mappers(
     app: Path,
     known_tables: dict[str, str],
     known_functions: set[str],
     known_columns: set[str] = frozenset(),
 ) -> tuple[dict[str, Statement], dict[str, list[Path]]]:
+    from yunhee.tools.as_is.mybatis_render import load_statements
+
+    mr_statements = load_statements(app)  # <include> 전개·AST 해석용 (mapper 전체)
     statements: dict[str, Statement] = {}
     ns_files: dict[str, list[Path]] = defaultdict(list)
     for path in sorted(app.rglob("*.xml")):
@@ -800,19 +816,29 @@ def parse_mappers(
             body = text[m.end(): end if end > 0 else len(text)]
             st = Statement(ns_str, m.group(2), kind, rel, line_of(text, m.start()), domain)
             sql = re.sub(r"</?[a-zA-Z0-9_]+(?:'[^']*'|\"[^\"]*\"|[^>'])*>", " ", body)
-            st.ctes = {c.lower() for c in CTE_RE.findall(sql)}
-            st.tables = {
-                t.lower() for t in TABLE_KEYWORD_RE.findall(sql)
-                if re.match(r"[a-z]+\d", t.lower()) and t.lower() not in (known_functions | known_columns)
-            }
-            if known_tables:
-                st.tables |= {t for t in re.findall(r"\b[a-z_][a-z0-9_]*\b", sql.lower()) if t in known_tables}
-            if known_functions:
-                st.functions = {f for f in re.findall(r"\b([a-z_][a-z0-9_]*)\s*\(", sql.lower()) if f in known_functions}
+            parsed = _parse_statement_ast(st.key, kind, mr_statements)
+            if parsed is not None:
+                # <include> 조각은 전개된 SQL에 이미 들어 있으므로 아래 resolve()에서 따로 합치지 않는다.
+                st.ctes = set(parsed.ctes)
+                st.tables = set(parsed.tables)
+                st.functions = {f for f in parsed.functions if f in known_functions}
+                st.resolved = True
+            else:
+                st.ctes = {c.lower() for c in CTE_RE.findall(sql)}
+                st.tables = {
+                    t.lower() for t in TABLE_KEYWORD_RE.findall(sql)
+                    if re.match(r"[a-z]+\d", t.lower()) and t.lower() not in (known_functions | known_columns)
+                }
+                if known_tables:
+                    st.tables |= {t for t in re.findall(r"\b[a-z_][a-z0-9_]*\b", sql.lower()) if t in known_tables}
+                if known_functions:
+                    st.functions = {f for f in re.findall(r"\b([a-z_][a-z0-9_]*)\s*\(", sql.lower()) if f in known_functions}
             st.includes = INCLUDE_RE.findall(body)
             statements[st.key] = st
 
     def resolve(st: Statement, seen: set[str]) -> None:
+        if st.resolved:
+            return  # 전개된 SQL을 해석한 결과라 조각을 다시 합칠 필요가 없다
         for ref in st.includes:
             target = statements.get(ref) or statements.get(f"{st.ns}.{ref}")
             if target and target.key not in seen:

@@ -635,6 +635,10 @@ def render_node(
                 or next((w for w in whens if "isTibero" not in w.attrs.get("test", "")), None)
                 or other
             )
+            variant = params.get("__pick__", 0)  # 0이면 위 기본 선택. 1 이상이면 다른 분기를 차례로 고른다 (분기 전수 조사용)
+            if variant and pick:
+                rest = [w for w in [*whens, other] if w is not None and w is not pick and "isTibero" not in w.attrs.get("test", "")]
+                pick = [pick, *rest][min(variant, len(rest))]
             if pick:
                 return render_node(pick, current_ns, statements, params, mode, seen, missing_params, branch_log)
             return ""

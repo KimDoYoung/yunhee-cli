@@ -12,6 +12,8 @@ import xml.etree.ElementTree as ET
 
 from yunhee.config import ASIS_SRC_DIR
 from yunhee.store.db import get_connection
+from yunhee.tools.as_is.mybatis_render import get_all_statements
+from yunhee.tools.sql_parse import parse_statement
 
 STATEMENT_TAGS = {"select", "insert", "update", "delete", "sql"}
 
@@ -19,12 +21,25 @@ TABLE_RE = re.compile(r"\b(?:from|join|into|update)\s+([a-zA-Z_][a-zA-Z0-9_]*)",
 
 
 def _extract_tables(sql_text: str) -> list[str]:
+    """정규식 추정. AST로 해석할 수 없는 `<sql>` 조각과 파싱 실패 statement에만 쓴다."""
     names = {m.group(1).lower() for m in TABLE_RE.finditer(sql_text)}
     # 테이블은 이 프로젝트 관례상 전부 밑줄 포함 소문자(act01_journal 등) - SQL 키워드/별칭 노이즈를 걸러낸다.
     return sorted(n for n in names if "_" in n)
 
 
-def _parse_mapper_file(path: str) -> list[tuple[str, str, str, str]]:
+def _statement_tables(namespace: str, sql_id: str, tag: str, sql_text: str, statements: dict | None) -> list[str]:
+    """statement의 참조 테이블. mapper 전체를 전개해 AST로 해석하고, 안 되면 정규식으로 되돌린다.
+
+    `<sql>` 조각은 단독으로는 SQL이 아니므로 정규식을 쓴다 (이 조각을 include하는 statement가 전개 결과로 해석된다).
+    """
+    if statements and tag != "sql":
+        res = parse_statement(f"{namespace}.{sql_id}", statements)
+        if res.ok and not res.data.fallback:
+            return sorted(res.data.tables)
+    return _extract_tables(sql_text)
+
+
+def _parse_mapper_file(path: str, statements: dict | None = None) -> list[tuple[str, str, str, str]]:
     root = ET.parse(path).getroot()
     namespace = root.get("namespace", "")
     rows = []
@@ -35,7 +50,7 @@ def _parse_mapper_file(path: str) -> list[tuple[str, str, str, str]]:
         if not sql_id:
             continue
         sql_text = "".join(el.itertext())
-        tables = _extract_tables(sql_text)
+        tables = _statement_tables(namespace, sql_id, el.tag, sql_text, statements)
         rows.append((namespace, sql_id, el.tag, ",".join(tables)))
     return rows
 
@@ -67,6 +82,7 @@ def build_index() -> int:
         """
     )
 
+    statements = get_all_statements(ASIS_SRC_DIR)  # include 전개용 (mapper 전체)
     count = 0
     skipped = 0
     for root_dir, dirs, files in os.walk(ASIS_SRC_DIR):
@@ -78,7 +94,7 @@ def build_index() -> int:
                 continue
             path = os.path.join(root_dir, filename)
             try:
-                rows = _parse_mapper_file(path)
+                rows = _parse_mapper_file(path, statements)
             except ET.ParseError as e:
                 print(f"경고: 파싱 실패, 건너뜀 - {path} ({e})")
                 skipped += 1

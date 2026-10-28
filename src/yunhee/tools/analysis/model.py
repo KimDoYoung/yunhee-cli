@@ -181,11 +181,17 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             sbody_clean = re.sub(r"<!--.*?-->", " ", sbody, flags=re.DOTALL)
             sbody_clean = re.sub(r"/\*.*?\*/", " ", sbody_clean, flags=re.DOTALL)
             sbody_clean = re.sub(r"--[^\n]*", " ", sbody_clean)
-            # 테이블 탐색
-            for t in re.findall(r"\bFROM\s+([a-zA-Z0-9_]+)|\bJOIN\s+([a-zA-Z0-9_]+)", sbody_clean, re.IGNORECASE):
-                tbl_n = (t[0] or t[1]).lower()
-                if tbl_n not in sql_tables:
-                    sql_tables.append(tbl_n)
+            # 테이블 탐색: include까지 전개한 SQL을 AST로 해석하고, 안 되면 정규식으로 추정한다
+            from yunhee.tools.sql_parse import parse_statement
+
+            parsed_res = parse_statement(st.key, stmts)
+            if parsed_res.ok and not parsed_res.data.fallback:
+                sql_tables.extend(parsed_res.data.tables)
+            else:
+                for t in re.findall(r"\bFROM\s+([a-zA-Z0-9_]+)|\bJOIN\s+([a-zA-Z0-9_]+)", sbody_clean, re.IGNORECASE):
+                    tbl_n = (t[0] or t[1]).lower()
+                    if tbl_n not in sql_tables:
+                        sql_tables.append(tbl_n)
             # 컬럼/별칭 탐색
             for c in re.findall(r"\b([a-zA-Z0-9_]+)\b", sbody_clean):
                 sql_select_cols.add(c.lower())

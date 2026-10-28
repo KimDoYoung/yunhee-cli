@@ -149,3 +149,41 @@ def test_real_snapshot_sys06_menu():
     r = parse_sql_text("select * from sys06_menu", schema)
     assert r.output_names == schema["sys06_menu"]
     assert len(r.output_names) >= 10
+
+
+CHOOSE_MAPPER = """<mapper namespace="msc01">
+  <select id="calendar" resultType="map">
+    SELECT * FROM msc01_schedule m WHERE 1 = 1
+    <choose>
+      <when test="level == '0010'"> AND m.a = #{a} </when>
+      <when test="level != '0030'">
+        AND m.org_id IN (SELECT org_id FROM org00_org_info START WITH org_id = #{o} CONNECT BY parent_id = PRIOR org_id)
+      </when>
+      <otherwise> AND m.b IN (SELECT b FROM sys12_calendar) </otherwise>
+    </choose>
+  </select>
+</mapper>"""
+
+
+def test_choose_branches_are_all_covered():
+    _, statements = parse_xml_statements(CHOOSE_MAPPER)
+    single = parse_statement("msc01.calendar", statements, all_branches=False).data
+    assert list(single.tables) == ["msc01_schedule"]
+    merged = parse_statement("msc01.calendar", statements).data
+    assert set(merged.tables) == {"msc01_schedule", "org00_org_info", "sys12_calendar"}
+    # PostgreSQL 문법이 아닌 분기(START WITH)에서 온 테이블은 추정이라는 사실을 알린다
+    assert any("정규식으로 추정" in u for u in merged.unresolved)
+
+
+def test_commented_out_sql_is_not_counted():
+    xml = """<mapper namespace="n"><select id="s">
+      <!-- SELECT * FROM old_table -->
+      SELECT f_create_no(#{a})
+    </select></mapper>"""
+    _, statements = parse_xml_statements(xml)
+    assert parse_statement("n.s", statements).data.tables == {}
+
+
+def test_alias_that_looks_like_table_is_not_counted():
+    r = parse_sql_text("SELECT sys01_company_id AS sys09_code FROM sys01_company")
+    assert list(r.tables) == ["sys01_company"]

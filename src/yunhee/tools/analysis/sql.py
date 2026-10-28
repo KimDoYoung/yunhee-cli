@@ -109,6 +109,74 @@ def _fold_cte_and_section(sql: str, no_cte: bool = False, section: str = "") -> 
     return sql
 
 
+def _regex_ctes(body: str, includes: list[str], st: Any, stmts: dict[str, Any]) -> tuple[list[str], set[str]]:
+    """정규식 추정: include 조각과 본문의 CTE 이름 (AST 해석에 실패했을 때만 쓴다)."""
+    cte_names: list[str] = []
+    cte_set: set[str] = set()
+
+    def _extract_ctes(text: str) -> None:
+        for m in re.finditer(r"\bWITH\s+(?:RECURSIVE\s+)?([a-zA-Z0-9_]+)\s+AS\s*\(|,\s*([a-zA-Z0-9_]+)\s+AS\s*\(", text, re.IGNORECASE):
+            c_name = m.group(1) or m.group(2)
+            if c_name and c_name.lower() not in cte_set:
+                cte_names.append(c_name)
+                cte_set.add(c_name.lower())
+
+    for inc in includes:
+        target_st = stmts.get(inc) or stmts.get(f"{st.ns}.{inc}") or next((s for s in stmts.values() if s.sid == inc), None)
+        if target_st:
+            fm = re.search(rf'<{target_st.kind}\b[^>]*\bid="{re.escape(target_st.sid)}"[^>]*>(.*?)</{target_st.kind}>', target_st.raw, re.DOTALL)
+            if fm:
+                _extract_ctes(fm.group(1))
+
+    _extract_ctes(body)
+    return cte_names, cte_set
+
+
+def _regex_tables(body: str, cte_set: set[str]) -> tuple[list[str], list[str]]:
+    """정규식 추정: (테이블, 테이블 자리에 쓰인 함수). AST 해석에 실패했을 때만 쓴다."""
+    table_matches = re.finditer(
+        r"\b(?:FROM|JOIN|UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+([a-zA-Z0-9_]+)(\s*\()?",
+        body,
+        re.IGNORECASE,
+    )
+    table_names: list[str] = []
+    seen_tables: set[str] = set()
+    table_funcs: list[str] = []
+    for tm in table_matches:
+        t = tm.group(1)
+        is_func_call = bool(tm.group(2))
+        t_lower = t.lower()
+        if t_lower in ("where", "select", "set", "values", "into", "dual"):
+            continue
+        if is_func_call:
+            if t not in table_funcs:
+                table_funcs.append(t)
+            continue
+        if t_lower in cte_set:
+            continue
+        if t_lower not in seen_tables:
+            seen_tables.add(t_lower)
+            table_names.append(t)
+    return table_names, table_funcs
+
+
+def _regex_changes(body: str) -> list[str]:
+    """정규식 추정: 변경 대상(INSERT/UPDATE/DELETE 테이블). AST 해석에 실패했을 때만 쓴다."""
+    change_targets: list[str] = []
+    seen_changes: set[str] = set()
+    for cm in re.finditer(r"\b(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+([a-zA-Z0-9_]+)", body, re.IGNORECASE):
+        act = cm.group(1).upper()
+        if act.startswith("INSERT"):
+            act = "INSERT"
+        elif act.startswith("DELETE"):
+            act = "DELETE"
+        item = f"{act} {cm.group(2)}"
+        if item not in seen_changes:
+            seen_changes.add(item)
+            change_targets.append(item)
+    return change_targets
+
+
 def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = None) -> str:
     """결과를 포맷에 맞게 렌더링한다."""
     if opts is None:
@@ -247,76 +315,35 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     for i in re.finditer(r'<if\s+test="([^"]+)"', body):
         branches.append(f"if: `{i.group(1)}`")
 
-    # CTE 이름 집합 (include 조각 및 본문)
-    cte_names: list[str] = []
-    cte_set: set[str] = set()
+    # 테이블·CTE·변경 대상: include까지 전개한 SQL을 AST로 해석한다. 해석할 수 없으면 정규식으로 추정한다.
+    from yunhee.tools.sql_parse import parse_statement
 
-    def _extract_ctes(text: str) -> None:
-        for m in re.finditer(r"\bWITH\s+(?:RECURSIVE\s+)?([a-zA-Z0-9_]+)\s+AS\s*\(|,\s*([a-zA-Z0-9_]+)\s+AS\s*\(", text, re.IGNORECASE):
-            c_name = m.group(1) or m.group(2)
-            if c_name and c_name.lower() not in cte_set:
-                cte_names.append(c_name)
-                cte_set.add(c_name.lower())
-
-    for inc in includes:
-        target_st = stmts.get(inc) or stmts.get(f"{st.ns}.{inc}") or next((s for s in stmts.values() if s.sid == inc), None)
-        if target_st:
-            fm = re.search(rf'<{target_st.kind}\b[^>]*\bid="{re.escape(target_st.sid)}"[^>]*>(.*?)</{target_st.kind}>', target_st.raw, re.DOTALL)
-            if fm:
-                _extract_ctes(fm.group(1))
-
-    _extract_ctes(body)
-
-    # 테이블 / DB 함수
-    table_matches = re.finditer(
-        r"\b(?:FROM|JOIN|UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+([a-zA-Z0-9_]+)(\s*\()?",
-        body,
-        re.IGNORECASE,
-    )
-    table_names: list[str] = []
-    seen_tables: set[str] = set()
-    table_funcs: list[str] = []
-    for tm in table_matches:
-        t = tm.group(1)
-        is_func_call = bool(tm.group(2))
-        t_lower = t.lower()
-        if t_lower in ("where", "select", "set", "values", "into", "dual"):
-            continue
-        if is_func_call:
-            if t not in table_funcs:
-                table_funcs.append(t)
-            continue
-        if t_lower in cte_set:
-            continue
-        if t_lower not in seen_tables:
-            seen_tables.add(t_lower)
-            table_names.append(t)
+    res = parse_statement(st.key, stmts)
+    parsed = res.data if res.ok and not res.data.fallback else None
+    if parsed is not None:
+        cte_names = list(parsed.ctes)
+        cte_set = {c.lower() for c in cte_names}
+        table_names = list(parsed.tables)
+        table_funcs = list(parsed.table_functions)
+        change_targets = [f"{act} {tbl}" for act, tbl in parsed.writes]
+    else:
+        cte_names, cte_set = _regex_ctes(body, includes, st, stmts)
+        table_names, table_funcs = _regex_tables(body, cte_set)
+        change_targets = _regex_changes(body)
 
     funcs = sorted(set(re.findall(r"\b(f_\w+|to_\w+|coalesce|get\w+|find_\w+)\s*\(", body, re.IGNORECASE)))
     for tf in table_funcs:
         if tf not in funcs and tf.lower() not in {f.lower() for f in funcs}:
             funcs.append(tf)
 
-    # 변경 대상 (insert/update/delete)
-    change_targets: list[str] = []
-    seen_changes: set[str] = set()
-    for cm in re.finditer(r"\b(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+([a-zA-Z0-9_]+)", body, re.IGNORECASE):
-        act = cm.group(1).upper()
-        if act.startswith("INSERT"):
-            act = "INSERT"
-        elif act.startswith("DELETE"):
-            act = "DELETE"
-        tbl = cm.group(2)
-        item = f"{act} {tbl}"
-        if item not in seen_changes:
-            seen_changes.add(item)
-            change_targets.append(item)
-
     # 최상위 별칭 목록 (select 전용)
     output_names = []
     if st.kind == "select":
-        from yunhee.tools.as_is.sql_checker import select_output_names
-        output_names = select_output_names(body) or []
+        if parsed is not None:
+            output_names = parsed.output_names or []
+        else:
+            from yunhee.tools.as_is.sql_checker import select_output_names
+            output_names = select_output_names(body) or []
 
     # ORDER BY
     order_m = re.search(r"\bORDER\s+BY\s+([^;\n<]+)", body, re.IGNORECASE)

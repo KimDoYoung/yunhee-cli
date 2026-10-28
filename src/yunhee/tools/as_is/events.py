@@ -1,5 +1,6 @@
 """AS-IS GXT 소스에서 위젯/화면 이벤트 및 메서드를 결정적(정규식/파서)으로 정밀 추출하는 모듈."""
 
+import contextlib
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -1153,6 +1154,23 @@ def _find_result_map_cols(roots: list[Path], ns: str, rm_id: str, current_xml: s
     return cols
 
 
+def _first_table(xml_text: str) -> str | None:
+    """mapper XML에서 처음 나오는 SELECT의 첫 테이블 (모델의 대표 테이블). AST 해석 실패 시 첫 `from` 뒤 단어로 추정."""
+    from yunhee.tools.as_is.mybatis_render import parse_xml_statements
+    from yunhee.tools.sql_parse import parse_statement
+
+    with contextlib.suppress(Exception):  # 대표 테이블은 보조 정보라 해석 실패 시 아래 정규식으로 되돌린다
+        _, statements = parse_xml_statements(xml_text)
+        for st in dict.fromkeys(statements.values()):
+            if st.kind != "select":
+                continue
+            res = parse_statement(st.key, statements)
+            if res.ok and not res.data.fallback and res.data.tables:
+                return next(iter(res.data.tables))
+    m = re.search(r"\bfrom\s+([a-z0-9_]+)", xml_text, re.IGNORECASE)
+    return m.group(1).lower() if m else None
+
+
 def find_mapper_for_model(model_name: str, roots: list[Path]) -> tuple[dict[str, str], str, str, dict[str, tuple[str, str]]]:
     """AS-IS MyBatis 매퍼 XML을 찾아 model의 resultMap 속성→컬럼 매핑 및 select 별칭 목록을 반환한다."""
     if not model_name:
@@ -1204,8 +1222,7 @@ def find_mapper_for_model(model_name: str, roots: list[Path]) -> tuple[dict[str,
 
         ns_m = re.search(r'<mapper\s+namespace="([^"]+)"', xml_text)
         ns = ns_m.group(1) if ns_m else ""
-        tbl_m = re.search(r"\bfrom\s+([a-z0-9_]+)", xml_text, re.IGNORECASE)
-        tbl = tbl_m.group(1).lower() if tbl_m else ns
+        tbl = _first_table(xml_text) or ns
         _ALIAS_ALL_CACHE[model_name] = extract_select_aliases_all(xml_text)
         alias_map = extract_select_aliases(xml_text)
         res = (prop_to_col, ns, tbl, alias_map)

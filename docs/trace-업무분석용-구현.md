@@ -150,6 +150,15 @@ mapper를 읽는 경로도 3가지가 따로 있다: `parse_mapper.py`(`xml.etre
 - 기존 전체 테스트(`uv run pytest`) 통과. 실제 ASIS 소스에 의존하는 기존 테스트의 현재 실패 5건(`test_comparator`, `test_events`)은 이번 변경과 무관하게 유지되는지 확인한다.
 - 출력 형식 불변 확인: `yunhee analysis sql …`, `index-src` 결과의 기존 문자열을 grep하는 검증 스크립트(수정사항 문서의 `*-check.sh`)가 있다면 다시 돌린다.
 
+### 구현 결과 (2026-10-28, 0.6.0)
+Step 0-b/0-c를 구현하며 확정한 사항과 회귀 확인 결과.
+
+- **`<choose>` 분기 전수 조사**: `explain` 모드는 `<choose>`에서 한 분기만 고르므로 그대로 쓰면 다른 `<when>`의 테이블이 누락된다. `mybatis_render`의 `explain`에 `__pick__` 파라미터를 추가하고(기본값 0은 기존 동작), `parse_statement`가 분기를 바꿔 가며(최대 8회) 전개해 결과를 합친다. PostgreSQL 문법이 아닌 분기(Tibero `START WITH` 등)는 정규식으로 추정한 테이블만 합치고 `unresolved`에 알린다. 이 변형 전개는 Step 2(`trace-branch`)의 분기별 SQL로 재사용한다.
+- **Tibero 전용 분기 제외**: `explain` 모드가 `isTibero` 분기를 버리므로 그 분기에만 있는 테이블은 나오지 않는다(예: `msc01_schedule.selectCalendar2`의 `org00_org_info`). PostgreSQL 기준 동작이다.
+- **적용 범위**: `parse_mapper.py`, `src_indexer.parse_mappers`, `analysis sql`(md), `analysis model`, `events.find_mapper_for_model`, `sql_checker.select_output_names`. 해석할 수 없는 statement와 `<sql>` 조각은 기존 정규식 경로를 유지한다. 별칭 호환을 위해 따옴표가 필요한 출력 이름은 `"fooBar"`처럼 따옴표를 유지한다.
+- **회귀 확인** (`tools/dump_sql_tables.py`, ASIS 소스 3,480 statement): 교체 전후 덤프를 비교했다. 스키마에 실제로 있는 테이블이 새로 빠진 statement는 2건인데 둘 다 의도된 차이다(`emp00_trans_info.selectByStepTypeCode`는 `<include refid>` 조각 이름이 테이블로 오인되던 것, `msc01_schedule.selectCalendar2`는 Tibero 전용 분기). 그 밖의 "빠짐"은 주석 처리된 SQL, `AS 별칭`, `EXTRACT(… FROM 컬럼)`, CTE 이름 같은 오탐 제거였다. 실존하지 않는 이름의 비율은 parse_mapper 216/7,264 → 146/8,139, analysis 189/6,923 → 105/7,811로 줄었다.
+- **영향**: `mapper_index`가 바뀌므로 `uv run tools/parse_mapper.py`를 다시 실행해야 한다. 기존 출력 형식은 바꾸지 않았다.
+
 ### 사용예
 사용자 명령은 그대로고, 결과가 정확해진다.
 ```

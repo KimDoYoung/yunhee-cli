@@ -2,6 +2,16 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.6.0] - 2026-10-28
+`trace-*` 구현 기반(공통 렌더러·대상 해석기, SQL 해석 어댑터)과 기존 SQL 해석 코드를 pglast 기반으로 통합.
+- 신규 의존성 `pglast>=8.7` (PostgreSQL 서버 파서 libpg_query 바인딩, 바이너리 휠)
+- `tools/trace/render.py`·`resolve.py`: `trace-*` 공통 출력(facts/evidence/unresolved 3블록, `--max` 절단은 unresolved를 숨기지 않음)과 `--side`/색인/화면 이름 해석. 기존 `trace-*` stub 출력은 이 렌더러를 쓴다 (md의 facts 첫 줄에도 `- ` 표시가 붙는다)
+- `tools/sql_parse.py`: MyBatis를 `explain` 모드로 전개해 AST로 해석하는 어댑터. 테이블(R/W)·CTE·함수·컬럼 귀속·SELECT 출력 이름(`SELECT *`는 스냅샷으로 확장)·UPDATE/INSERT 대입·WHERE를 구한다. 문법 오류는 정규식 추정(`fallback`)으로 되돌리고, `${}`는 unresolved로 알린다. `<choose>`는 분기를 바꿔 가며 전개해 테이블을 합친다
+- `mybatis_render`: `explain` 모드의 `<choose>` 분기를 `__pick__` 파라미터로 고를 수 있다 (기본값은 기존 동작과 동일)
+- 통합: `tools/parse_mapper.py`(`mapper_index`), `src_indexer.parse_mappers`(호출 경로 색인), `analysis sql`(md), `analysis model`, `events.find_mapper_for_model`, `sql_checker.select_output_names`가 어댑터를 쓴다. 해석할 수 없는 statement와 `<sql>` 조각은 기존 정규식 경로를 유지한다
+- **결과 변화**: 주석 처리된 SQL(`<!-- -->`)의 테이블, `AS 별칭`, `EXTRACT(... FROM 컬럼)`, CTE 이름, `<include refid>` 조각 이름이 테이블로 잡히던 오탐이 사라지고, `<include>`로 가져온 테이블이 포함된다. Tibero 전용 분기(`isTibero`)의 테이블은 제외된다. `mapper_index`가 바뀌므로 `uv run tools/parse_mapper.py`를 다시 실행해야 한다
+- `tools/dump_sql_tables.py`: 교체 전후 테이블 해석 결과를 덤프·비교하는 회귀 확인 스크립트
+
 ## [0.5.10] - 2026-10-28
 `trace-*` 업무파악 인자형 명령어 계층 껍질(stub) 18개 구현 및 log request 별칭 추가.
 - `trace-*`: 업무 개념(탐색·데이터·규칙·대조·카탈로그) 중심의 18개 명령어 껍질(stub) 등록 (`trace-map`, `trace-menu`, `trace-screen`, `trace-table`, `trace-column`, `trace-code`, `trace-state`, `trace-crud`, `trace-flow`, `trace-branch`, `trace-dblogic`, `trace-pair`, `trace-diff`, `trace-gap`, `trace-rule`, `trace-term`, `trace-doc`, `trace-guide`)

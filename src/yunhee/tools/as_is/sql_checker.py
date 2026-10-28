@@ -371,8 +371,18 @@ def _depth0_matches(sql: str, pattern: str) -> list[re.Match]:
 def select_output_names(sql: str) -> list[str | None] | None:
     """최상위 SELECT 목록의 출력 이름들. 이름을 정할 수 없는 식은 None, `*`가 있으면 전체가 None.
 
-    WITH … AS (…)의 CTE·서브쿼리 SELECT는 괄호 안이라 건너뛰고, 깊이 0의 첫 SELECT(본 SELECT)만 본다.
+    PostgreSQL 파서(AST)로 해석하고, 파싱할 수 없는 SQL(`#{}`가 남은 TOBE mapper 등)은 정규식 추정으로 되돌린다.
     """
+    from yunhee.tools.sql_parse import parse_sql_text
+
+    parsed = parse_sql_text(sql)
+    if not parsed.fallback and parsed.kind == "select":
+        return parsed.output_names
+    return _select_output_names_regex(sql)
+
+
+def _select_output_names_regex(sql: str) -> list[str | None] | None:
+    """정규식 추정: 깊이 0의 첫 SELECT 목록을 직접 잘라 이름을 구한다. WITH … AS (…)·서브쿼리 SELECT는 괄호 안이라 건너뛴다."""
     sql = _mask_sql(sql)
     sel = _depth0_matches(sql, r"\bSELECT\b")
     if not sel:
