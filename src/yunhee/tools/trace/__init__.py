@@ -23,6 +23,10 @@ MaxOption = Annotated[
     int | None,
     typer.Option("--max", help="출력 항목 상한"),
 ]
+TobeOption = Annotated[
+    Path | None,
+    typer.Option("--tobe", help="TOBE 프로젝트 루트 또는 frontend/src (기본: 작업 폴더)"),
+]
 SrcOption = Annotated[
     Path | None,
     typer.Option("--src", help="AS-IS 소스 루트 (기본: YUNHEE_ASIS_SRC_DIR)"),
@@ -100,7 +104,7 @@ def register_trace_commands(app: typer.Typer) -> None:
     def trace_screen_cmd(
         screen_id: Annotated[str, typer.Argument(help="화면 클래스명, 접두사, 또는 메뉴 번호 (예: Emp00_Tab_TransInfo, Emp00, #1029)")],
         class_name: Annotated[str | None, typer.Option("--class", "-c", help="하위 클래스의 UI·서비스 상세 (예: Emp02_TabPage_Others)")] = None,
-        tobe: Annotated[Path | None, typer.Option("--tobe", help="TOBE frontend/src 경로 (기본: 작업 폴더의 frontend/src)")] = None,
+        tobe: Annotated[Path | None, typer.Option("--tobe", help="TOBE 프로젝트 루트 또는 frontend/src (기본: 작업 폴더)")] = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
@@ -229,7 +233,7 @@ def register_trace_commands(app: typer.Typer) -> None:
     @app.command(name="trace-branch")
     def trace_branch_cmd(
         target: Annotated[str, typer.Argument(help="화면 클래스명·메뉴 번호, 또는 mapper id (예: Emp00_Tab_TransInfo, #1029, emp00_trans_info.selectByText)")],
-        tobe: Annotated[Path | None, typer.Option("--tobe", help="TOBE frontend/src 경로 (기본: 작업 폴더의 frontend/src)")] = None,
+        tobe: Annotated[Path | None, typer.Option("--tobe", help="TOBE 프로젝트 루트 또는 frontend/src (기본: 작업 폴더)")] = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
@@ -265,60 +269,51 @@ def register_trace_commands(app: typer.Typer) -> None:
 
     @app.command(name="trace-pair")
     def trace_pair_cmd(
-        screen_id: Annotated[str, typer.Argument(help="화면 ID 또는 클래스명")],
+        screen_id: Annotated[str, typer.Argument(help="ASIS 화면 클래스명, 접두사, 또는 메뉴 번호 (예: Emp00_Tab_TransInfo, #1029)")],
+        tobe: TobeOption = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
-        """ASIS↔TOBE 짝지어진 항목과 매칭 근거 (동일 mapper id, 테이블 조합, 명칭)"""
-        out = format_trace_stub(
-            cmd_name="trace-pair",
-            desc="짝지어진 항목과 매칭 근거(같은 mapper id, 같은 테이블 조합, 같은 이름)",
-            params={"screen_id": screen_id},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """ASIS↔TOBE 짝지어진 항목과 매칭 근거 (AS-IS 주석, 같은 테이블 조합, 같은 이름)"""
+        from yunhee.tools.trace.pair import trace_pair
+
+        _emit(lambda ctx: trace_pair(screen_id, ctx, tobe), "asis", format, max, src, src_index)
 
     @app.command(name="trace-diff")
     def trace_diff_cmd(
-        target: Annotated[str, typer.Argument(help="화면ID, 클래스명, 또는 mapper id")],
+        target: Annotated[str, typer.Argument(help="화면 클래스명·메뉴 번호, 또는 ASIS mapper id (예: #1029, emp00_trans_info.selectByText)")],
         sql: Annotated[bool, typer.Option("--sql", help="SQL 정규화 diff")] = False,
         branch: Annotated[bool, typer.Option("--branch", help="분기 대응표")] = False,
-        ui: Annotated[bool, typer.Option("--ui", help="UI 필드 대응표")] = False,
+        ui: Annotated[bool, typer.Option("--ui", help="UI 필드·버튼·이벤트 대응표")] = False,
+        tobe: TobeOption = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
-        """SQL 정규화 diff, 분기 대응표, UI 필드 대응표"""
-        out = format_trace_stub(
-            cmd_name="trace-diff",
-            desc="SQL 정규화 diff, 분기 대응표, UI 필드 대응표",
-            params={"target": target, "sql": sql, "branch": branch, "ui": ui},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """SQL 정규화 diff, 분기 대응표, UI 필드 대응표 (옵션을 하나도 안 주면 셋 다)"""
+        from yunhee.tools.trace.diff import trace_diff
+
+        _emit(lambda ctx: trace_diff(target, ctx, tobe, sql, branch, ui), "asis", format, max, src, src_index)
 
     @app.command(name="trace-gap")
     def trace_gap_cmd(
-        domain: Annotated[str | None, typer.Option("--domain", "-d", help="업무 영역 필터")] = None,
+        domain: Annotated[str | None, typer.Option("--domain", "-d", help="업무 영역 (예: emp, sys, fnd). 생략하면 전체")] = None,
+        tobe: TobeOption = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
-        """ASIS에만 있는 것, TOBE에만 있는 것, 미추적 지점 전체"""
-        out = format_trace_stub(
-            cmd_name="trace-gap",
-            desc="ASIS에만 있는 것, TOBE에만 있는 것, 추적하지 못한 지점 전체",
-            params={"domain": domain},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """ASIS에만 있는 것, TOBE에만 있는 것, 추적하지 못한 지점 전체"""
+        from yunhee.tools.trace.gap import trace_gap
+
+        _emit(lambda ctx: trace_gap(ctx, tobe, domain), "asis", format, max, src, src_index)
 
     # -------------------------------------------------------------------------
     # 5. 카탈로그 및 가이드 계층 (Catalog & Guide)

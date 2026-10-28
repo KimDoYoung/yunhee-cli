@@ -2,6 +2,15 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.6.3] - 2026-10-28
+`trace-pair`, `trace-diff`, `trace-gap` 구현 (trace-* Step 3) + TOBE 호출 체인 색인.
+- `tools/trace/tobe.py`: TOBE의 `TSX → api/*.ts 함수 → 컨트롤러 엔드포인트 → 서비스 → mapper 인터페이스 → XML 문장` 체인과 `AS-IS` 주석(서비스 키 `emp.Emp00_TransInfo.selectByText`, SQL id, TSX 헤더의 메뉴 번호·AS-IS 클래스)을 색인한다. 이름이 비슷하다는 이유만으로 짝짓지 않고 TOBE 소스에 적힌 AS-IS 주석을 근거로 쓴다
+- `trace-pair <화면>`: 화면(같은 클래스명·TSX 헤더 AS-IS·메뉴 번호 일치), 서비스(RPC)↔API, SQL↔mapper 문장, 테이블 집합 비교를 **근거와 함께** 낸다. ASIS에만 있는 항목과 TOBE에만 있는 API(AS-IS 주석 없음 포함)를 따로 보이고, 같은 ASIS SQL을 다른 화면 쪽에서 이식한 문장은 "이 화면의 API 체인 밖"으로 표시한다. 테이블 조합만 같은 짝은 후보가 하나일 때만 "약한 근거"로 짝짓는다
+- `trace-diff <화면|mapper id> [--sql|--branch|--ui]` (옵션이 없으면 셋 다): `--sql`은 짝지어진 두 문장을 AST로 비교(테이블·쓰기 작업·사용 컬럼·출력 이름·WHERE 조건·CTE·함수·CASE 수·정규화 SQL 동일 여부), `--branch`는 식별자 집합이 같은 조건끼리 짝짓는 분기 대응표(`isSeparateAddTitle`↔`separateAddTitle`), `--ui`는 라벨로 짝짓는 그리드 열(필드명 변경 포함)·버튼·이벤트(구현/생략/도달 불가/표시 없음)
+- `trace-gap [--domain <영역>]`: 화면·서비스(RPC)·SQL의 ASIS에만/TOBE에만 있는 것과, 근거를 찾지 못한 지점(AS-IS 주석이 없는 엔드포인트·mapper 문장·TSX, 컨트롤러까지 이어지지 않는 API 호출)을 따로 집계한다
+- 모든 `trace-*`의 `--tobe`는 TOBE 프로젝트 루트 또는 `frontend/src`를 받는다 (생략하면 작업 폴더). `sql_parse`의 `SELECT *` 미해석 문구를 사유별로 정리
+- 구현된 명령 7개가 stub 테스트에서 빠지고 `test_trace_tobe/pair/diff/gap.py`가 검증한다. 공용 fixture는 `tests/conftest.py`의 `world`
+
 ## [0.6.2] - 2026-10-28
 `trace-flow`, `trace-branch` 구현 (trace-* Step 2).
 - `trace-flow <화면> --event <En>`: 이벤트 → 핸들러 메서드 → 서비스(RPC) → 서버 메서드 → SQL → 테이블 사슬. 화면 색인의 이벤트·메서드(줄 범위)·서비스 호출 위치(`클래스:줄`)를 **줄 범위로** 이어 결정적으로 만든다. 메서드 표의 호출처를 따라 `E5 → insert() → retrieve()`처럼 간접 호출 경로를 보존하고, 인라인 핸들러·생성자(E0)도 줄 범위로 처리한다. SQL의 테이블은 `sql_parse`로 R/C/U/D 해석, `UpdateDataModel` 동적 쓰기 포함. 이벤트가 여는 하위 화면은 `--class`로 이어서 추적하도록 안내한다. `--event`를 생략하면 이벤트 목록, 없는 이벤트는 가능한 목록과 그 이벤트가 있는 다른 클래스를 알려 준다

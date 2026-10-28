@@ -30,8 +30,8 @@ ALL_TRACE_COMMANDS = [
 ]
 
 
-# 구현이 끝난 명령은 전용 테스트(test_trace_screen/table/flow/branch.py)가 검증한다
-IMPLEMENTED = {"trace-screen", "trace-table", "trace-flow", "trace-branch"}
+# 구현이 끝난 명령은 전용 테스트(test_trace_screen/table/flow/branch/pair/diff/gap.py)가 검증한다
+IMPLEMENTED = {"trace-screen", "trace-table", "trace-flow", "trace-branch", "trace-pair", "trace-diff", "trace-gap"}
 STUB_COMMANDS = [(name, args) for name, args in ALL_TRACE_COMMANDS if name not in IMPLEMENTED]
 
 

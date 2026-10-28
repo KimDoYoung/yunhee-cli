@@ -197,7 +197,7 @@ def parse_sql_text(sql: str, schema: Schema | None = None) -> ParsedSql:
         select = _top_select(root)
         result.output_names = _output_names(select, lambda q: _expand_star(q, col, schema, cte_set))
         if result.output_names is None:
-            result.unresolved.append("SELECT * 를 풀 스키마(스냅샷)가 없어 출력 이름을 알 수 없음")
+            result.unresolved.append("SELECT *를 풀 수 없어(스키마 스냅샷이 없거나 CTE·서브쿼리 별칭의 *) 출력 이름을 알 수 없음")
     if isinstance(root, (ast.UpdateStmt, ast.DeleteStmt)) and root.whereClause is not None:
         result.where.append(_text(root.whereClause))
     if isinstance(root, ast.SelectStmt) and root.whereClause is not None:

@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from yunhee import config
 from yunhee.tools.as_is.drift import parse_frontmatter
 from yunhee.tools.trace.render import TraceResult
 from yunhee.tools.trace.resolve import (
@@ -330,9 +329,12 @@ def _asis_result(doc: ScreenDoc, ctx: TraceContext, detail_class: str | None, re
 
 
 def _find_tobe(name: str, tobe_dir: Path | None) -> Path | None:
-    roots = [tobe_dir] if tobe_dir else [config.WORK_DIR / "frontend" / "src", config.WORK_DIR / "src"]
-    for root in roots:
-        if root and root.is_dir():
+    """같은 클래스명의 TOBE TSX. tobe_dir은 TOBE 프로젝트 루트 또는 frontend/src (생략하면 작업 폴더)."""
+    from yunhee.tools.trace.tobe import find_layout
+
+    layout = find_layout(tobe_dir)
+    for root in (layout.pages_dir, layout.frontend):
+        if root.is_dir():
             found = sorted(root.rglob(f"{name}.tsx"))
             if found:
                 return found[0]
@@ -344,7 +346,7 @@ def _tobe_result(name: str, tobe_dir: Path | None, res: TraceResult) -> None:
 
     path = _find_tobe(name, tobe_dir)
     if path is None:
-        res.unresolved.append(f"TOBE 화면 {name}.tsx를 찾지 못함 (--tobe로 frontend/src 경로 지정)")
+        res.unresolved.append(f"TOBE 화면 {name}.tsx를 찾지 못함 (--tobe로 TOBE 프로젝트 루트 또는 frontend/src 지정)")
         return
     summary = tobe._summarize_tsx(path, path.read_text(encoding="utf-8", errors="replace"))
     res.facts.append(f"TOBE 소스: {path}")

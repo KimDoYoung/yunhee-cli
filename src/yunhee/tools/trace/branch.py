@@ -362,7 +362,7 @@ def _tobe_result(name: str, tobe_dir: Path | None, res: TraceResult) -> None:
 
     path = _find_tobe(name, tobe_dir)
     if path is None:
-        res.unresolved.append(f"TOBE 화면 {name}.tsx를 찾지 못함 (--tobe로 frontend/src 경로 지정)")
+        res.unresolved.append(f"TOBE 화면 {name}.tsx를 찾지 못함 (--tobe로 TOBE 프로젝트 루트 또는 frontend/src 지정)")
         return
     conds = scan_tsx_conditions(path.read_text(encoding="utf-8", errors="replace"))
     if conds:

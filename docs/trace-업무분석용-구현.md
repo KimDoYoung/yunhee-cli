@@ -197,15 +197,53 @@ $ yunhee trace-branch Emp00_Tab_TransInfo --side tobe --tobe <frontend/src>   # 
 - 이미 변환이 끝난 화면(수정사항·작업기록에 있는 화면)으로 `compare`, `sql-check`의 결과와 trace-diff 결과가 모순되지 않는지 대조.
 - `--sql`/`--branch`/`--ui`를 지정하지 않으면 3가지를 모두 요약하는지, 중복 지정이 가능한지 확인.
 
-### 사용예
-```
-$ yunhee trace-pair Fnd01_Tab_FundSearch
-## facts
-- fnd01_fund.selectList ↔ FundMapper.selectList (근거: 같은 mapper id, 같은 테이블)
-- 저장 버튼(E2) ↔ FundPage.tsx handleSave (근거: 이름 유사 — 약함)
+### 구현 결과 (2026-10-28, 0.6.3)
+- **짝은 TOBE 소스의 AS-IS 주석을 근거로 짓는다**: 실제 TOBE에서 TSX 707/708개가 `AS-IS:` 헤더를, 컨트롤러 엔드포인트 1,501개 중 1,299개가 `AS-IS <서비스 키>` 주석을, mapper XML 문장 2,545개 중 1,445개가 `AS-IS <SQL id>` 주석을 갖고 있다. 이름이 비슷하다는 이유만으로는 짝짓지 않는다. 근거는 항목마다 `[근거: …]`로 함께 낸다.
+- **TOBE 호출 체인 색인** (`tools/trace/tobe.py`): `TSX → api/*.ts → 컨트롤러 → 서비스 → mapper 인터페이스 → XML 문장`을 정규식으로 따라간다. 엔드포인트 1,501개 전부에서 서비스 호출을 찾았고 94%(1,417개)가 mapper 문장까지 이어진다. 한 번 만들면 프로세스 안에서 캐시한다(0.4초).
+- **`--tobe`**: TOBE 프로젝트 루트 또는 `frontend/src`. `trace-screen`·`trace-branch`의 `--tobe`도 같은 규칙으로 통일했다.
+- **trace-pair**: 화면(같은 클래스명, TSX 헤더 AS-IS, 메뉴 번호 일치), 서비스↔API, SQL↔문장, 테이블 집합 비교. ASIS에만 있는 서비스와 근거 없는 TOBE API를 따로 보인다. 같은 ASIS SQL을 다른 화면 쪽에서 이식한 문장은 "이 화면의 API 체인 밖"으로 표시한다. 테이블 조합만 같은 짝은 후보가 하나일 때만 "약한 근거"로 짓는다.
+- **trace-diff**: `--sql`은 두 문장을 AST로 구조 비교(테이블·쓰기·사용 컬럼·출력 이름·WHERE·CTE·함수·CASE 수), `--branch`는 같은 식별자끼리의 분기 대응(`isSeparateAddTitle`↔`separateAddTitle`), `--ui`는 라벨로 짝짓는 그리드 열·버튼·이벤트. 차이는 사실로만 내고 의도 여부는 에이전트가 판정해 `trace-rule`에 남긴다.
+- **trace-gap**: 화면·서비스·SQL의 ASIS에만/TOBE에만 있는 것과, **근거를 찾지 못한 지점**(AS-IS 주석 없는 엔드포인트·mapper 문장·TSX)을 "대응 없음"과 구분해 `unresolved`로 센다.
+- **한계(출력에 명시)**: 화면 분기는 Java와 React의 식이 달라 대응이 적게 나온다. TOBE 버튼은 `<Button>` 글자와 이벤트 주석의 라벨만 센다. 결합 서비스(`dbConfig.*`)는 짝짓기 대상에서 뺀다.
 
-$ yunhee trace-diff fnd01_fund.selectList --sql
-$ yunhee trace-gap --domain fnd
+### 사용예
+실제 실행 결과(AssetERP 색인 + TOBE 프로젝트, 줄임 표시는 `…`).
+```
+$ yunhee trace-pair "#1029" --tobe ~/work/framework-sprt/AssetERP
+## facts
+- 화면 짝(22/29):
+  - Emp00_Tab_TransInfo ↔ frontend/src/pages/emp/Emp00_Tab_TransInfo.tsx (근거: 같은 클래스명; TSX 헤더 AS-IS 일치; 메뉴 번호 일치 #1029,#1452)
+- 서비스(RPC) ↔ API 짝(15/66):
+  - emp.Emp00_TransInfo.selectByText ↔ GET /api/v1/emp/trans-infos (EmpTransInfoController.searchTransInfos) — TOBE 호출: Emp00_Tab_TransInfo(empApi.searchTransInfos) [근거: 컨트롤러 주석의 AS-IS 서비스 키]
+- ASIS에만 있음 — TOBE에 대응 API 없음(51): …
+- TOBE에만 있음 — 화면이 부르는데 이 ASIS 화면의 서비스와 짝이 없는 API(46): …  [AS-IS 주석 없음]
+- SQL ↔ mapper 문장 짝(70):
+  - emp00_trans_info.selectByText ↔ EmpTransInfoMapper.searchTransInfos [근거: 문장 주석의 AS-IS id]
+- 테이블 비교: 같음 18 / ASIS만 18 / TOBE만 2
+
+$ yunhee trace-diff emp00_trans_info.selectByText --sql --tobe <TOBE>
+- emp00_trans_info.selectByText ↔ EmpTransInfoMapper.searchTransInfos [근거: 문장 주석의 AS-IS id]
+  테이블: ASIS만 [sys01_company, sys04_role, sys05_user_role, sys06_menu, sys07_role_menu] / TOBE만 []
+  WHERE 조건: ASIS만 [exists (select 1 from sys06_menu inner join sys07_role_menu … )]   ← 권한 조건이 TOBE에 없다
+  함수: ASIS만 [f_org_parent_info_nm, substr, to_decrypts] / TOBE만 []
+  정규화 SQL: 다름
+
+$ yunhee trace-diff "#1029" --ui --tobe <TOBE>
+  그리드 열: ASIS 18 / TOBE 17 — 같은 라벨 17 [근거: 라벨 일치]
+    필드 이름이 바뀜(7): 성명(empKorName→korNm), 이메일(emailAddress→emailAddr), …
+    ASIS에만: 책무임원(tdmTargetYn)
+  이벤트: ASIS 14 — 구현 표시 10, 생략 표시 3, 도달 불가 1, 표시 없음 1 [E13]
+
+$ yunhee trace-diff emp00_trans_info.selectByText --branch --tobe <TOBE>
+- 분기 대응 emp00_trans_info.selectByText ↔ searchTransInfos: ASIS 15 / TOBE 5 — 대응 2, ASIS만 13, TOBE만 3
+  ≈ ASIS L381 when isSeparateAddTitle == true  ↔  TOBE L120 when separateAddTitle  [근거: 같은 식별자 separateaddtitle]
+
+$ yunhee trace-gap --domain emp --tobe <TOBE> --max 6
+- 화면: ASIS 40 / TOBE 61 — TOBE에 대응 TSX가 있는 ASIS 화면 21
+- 서비스(RPC): ASIS 395 / TOBE 주석에 적힌 서비스 키 95 — 대응 95
+- SQL: ASIS 324 — TOBE 문장 주석이 가리키는 것 119
+## unresolved
+- AS-IS 서비스 키 주석이 없어 ASIS 출처를 추적하지 못한 TOBE 엔드포인트(44): …
 ```
 
 ---
