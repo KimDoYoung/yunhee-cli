@@ -20,10 +20,6 @@ MaxOption = Annotated[
     int | None,
     typer.Option("--max", help="출력 항목 상한"),
 ]
-RefsOnlyOption = Annotated[
-    bool,
-    typer.Option("--refs-only", help="사실 없이 근거 위치만 출력"),
-]
 
 
 def register_trace_commands(app: typer.Typer) -> None:
@@ -39,7 +35,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """업무 영역별 화면 수, 테이블 수, ASIS↔TOBE 매핑 상태 요약"""
         out = format_trace_stub(
@@ -49,7 +44,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -59,7 +53,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """메뉴 트리 → ASIS 화면 클래스 → TOBE 화면/API 추적"""
         out = format_trace_stub(
@@ -69,7 +62,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -79,7 +71,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """화면 팩트 시트 (필드·라벨, 그리드 컬럼, 버튼, 이벤트, RPC/API, SQL, 테이블, 코드)"""
         out = format_trace_stub(
@@ -89,7 +80,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -103,7 +93,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """컬럼·코멘트, C/R/U/D SQL과 화면, 동명 컬럼 테이블, 행 수·최근 갱신일"""
         out = format_trace_stub(
@@ -113,7 +102,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -123,7 +111,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """컬럼 읽기/쓰기/WHERE 사용 SQL, 표시 화면 라벨, 값 분포"""
         out = format_trace_stub(
@@ -133,7 +120,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -143,7 +129,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """공통 코드값·명칭, 사용처 (콤보, SQL 리터럴, Java/TS 상수 비교)"""
         out = format_trace_stub(
@@ -153,7 +138,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -163,7 +147,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """컬럼에 값을 쓰는 모든 INSERT/UPDATE 대입 값과 WHERE 조건 (상태 전이 재료)"""
         out = format_trace_stub(
@@ -173,7 +156,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -185,7 +167,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """CRUD 매트릭스 도출"""
         out = format_trace_stub(
@@ -195,7 +176,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -210,7 +190,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """이벤트 하나의 끝까지 이어진 사슬: 버튼 → 핸들러 → RPC/API → 서비스 → mapper → SQL → 테이블"""
         out = format_trace_stub(
@@ -220,7 +199,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -230,7 +208,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """조건 지점 전체 목록 (if/switch/throw, validator, 버튼 활성, <if test>, CASE WHEN, TSX 조건부 렌더링)"""
         out = format_trace_stub(
@@ -240,7 +217,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -250,7 +226,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """DB 함수·프로시저·트리거 본문과 이를 호출하는 SQL"""
         out = format_trace_stub(
@@ -260,7 +235,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -274,7 +248,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """ASIS↔TOBE 짝지어진 항목과 매칭 근거 (동일 mapper id, 테이블 조합, 명칭)"""
         out = format_trace_stub(
@@ -284,7 +257,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -297,7 +269,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """SQL 정규화 diff, 분기 대응표, UI 필드 대응표"""
         out = format_trace_stub(
@@ -307,7 +278,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -317,7 +287,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """ASIS에만 있는 것, TOBE에만 있는 것, 미추적 지점 전체"""
         out = format_trace_stub(
@@ -327,7 +296,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -343,7 +311,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """에이전트 규칙 저장·조회 (add/list/show/update) 및 근거 검증 (verify)"""
         out = format_trace_stub(
@@ -353,7 +320,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -363,7 +329,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """용어 교차 참조 (화면 라벨 ↔ DB 컬럼 ↔ 공통 코드명)"""
         out = format_trace_stub(
@@ -373,7 +338,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -383,7 +347,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """카탈로그와 팩트를 신규 인원용 문서 골격으로 조립"""
         out = format_trace_stub(
@@ -393,7 +356,6 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)
 
@@ -402,7 +364,6 @@ def register_trace_commands(app: typer.Typer) -> None:
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
-        refs_only: RefsOnlyOption = False,
     ) -> None:
         """에이전트용 업무파악 워크플로우 지침"""
         out = format_trace_stub(
@@ -412,6 +373,5 @@ def register_trace_commands(app: typer.Typer) -> None:
             side=side,
             fmt=format,
             max_n=max,
-            refs_only=refs_only,
         )
         typer.echo(out)

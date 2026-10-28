@@ -5,7 +5,7 @@
 ## [0.5.10] - 2026-10-28
 `trace-*` 업무파악 인자형 명령어 계층 껍질(stub) 18개 구현 및 log request 별칭 추가.
 - `trace-*`: 업무 개념(탐색·데이터·규칙·대조·카탈로그) 중심의 18개 명령어 껍질(stub) 등록 (`trace-map`, `trace-menu`, `trace-screen`, `trace-table`, `trace-column`, `trace-code`, `trace-state`, `trace-crud`, `trace-flow`, `trace-branch`, `trace-dblogic`, `trace-pair`, `trace-diff`, `trace-gap`, `trace-rule`, `trace-term`, `trace-doc`, `trace-guide`)
-- 공통 옵션 지원: 모든 `trace-*` 명령어에 `--side (asis|tobe|both)`, `--format/-o (md|json)`, `--max <N>`, `--refs-only` 지원
+- 공통 옵션 지원: 모든 `trace-*` 명령어에 `--side (asis|tobe|both)`, `--format/-o (md|json)`, `--max <N>` 지원
 - 표준 3단계 블록 출력: Markdown(`## facts`, `## evidence`, `## unresolved`) 및 JSON 일관된 규격 반환
 - `log request`: 실시간 요청 로그 명령어 `yunhee log trace`와 신규 `trace-*` 간 혼동 방지를 위해 `yunhee log request` (단축 `req`) 별칭 추가 및 상호 호환 보존
 

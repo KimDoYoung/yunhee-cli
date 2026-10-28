@@ -38,7 +38,6 @@ def test_all_trace_commands_help():
         assert "Usage: " in result.output
         assert "--side" in result.output
         assert "--format" in result.output
-        assert "--refs-only" in result.output
 
 
 def test_all_trace_commands_markdown():
@@ -68,23 +67,6 @@ def test_all_trace_commands_json():
         assert len(data["facts"]) > 0
         assert isinstance(data["evidence"], list)
         assert isinstance(data["unresolved"], list)
-
-
-def test_refs_only_suppresses_facts():
-    """Verify --refs-only suppresses facts in both md and json formats."""
-    # Markdown
-    r_md = runner.invoke(app, ["trace-map", "--refs-only"])
-    assert r_md.exit_code == 0
-    assert "(사실 생략: --refs-only 지정됨)" in r_md.output
-    assert "## evidence" in r_md.output
-    assert "## unresolved" in r_md.output
-
-    # JSON
-    r_json = runner.invoke(app, ["trace-map", "--refs-only", "-o", "json"])
-    assert r_json.exit_code == 0
-    data = json.loads(r_json.output)
-    assert data["facts"] == []
-    assert data["options"]["refs_only"] is True
 
 
 def test_max_option():
