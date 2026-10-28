@@ -331,6 +331,9 @@ def _parse_single_grid(
                 if "TextField" in ed_arg:
                     editor_kind = "text"
                     has_editors = True
+                elif "TextArea" in ed_arg or "MyTextArea" in ed_arg:
+                    editor_kind = "largeText"
+                    has_editors = True
                 elif "DateField" in ed_arg or "MyDateField" in ed_arg:
                     editor_kind = "date"
                     has_editors = True

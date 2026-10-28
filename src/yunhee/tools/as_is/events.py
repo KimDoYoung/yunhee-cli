@@ -764,13 +764,44 @@ def extract_events_and_methods(
     method_infos.sort(key=lambda m: (cat_order.get(m.category, 99), m.line_start))
 
     # 10. 도달 불가(Unreachable) 이벤트 판정
+    ENTRYPOINT_METHODS = {
+        "open", "show", "openNull", "openLookup", "lookup", "init",
+        "view", "edit", "insert", "update", "delete", "retrieve",
+    }
+    cls_stem = class_name or p.stem
+    is_dialog_class = any(k in cls_stem for k in ("Lookup", "Dialog", "Window", "Page", "Popup"))
+
     uncalled_meth_spans: dict[str, tuple[int, int]] = {}
     for m in method_infos:
         if m.callers in (["공개 메서드"], ["미사용 후보"], []):
             m_pure_name = m.name.split()[1].removesuffix("()")
+            if m_pure_name in ENTRYPOINT_METHODS:
+                continue
+            if is_dialog_class and m.callers == ["공개 메서드"]:
+                continue
+            is_cross_called = False
+            if p.is_file():
+                try:
+                    for sibling in p.parent.glob("*.java"):
+                        if sibling != p:
+                            sib_text = sibling.read_text(encoding="utf-8", errors="replace")
+                            if cls_stem in sib_text and (f".{m_pure_name}(" in sib_text or f"new {cls_stem}" in sib_text):
+                                is_cross_called = True
+                                break
+                except OSError:
+                    pass
+            if is_cross_called:
+                continue
             uncalled_meth_spans[m_pure_name] = (m.line_start, m.line_end)
 
-    def is_widget_attached(w: str, src_text: str) -> bool:
+    def is_widget_attached(w: str, src_text: str, visited: set[str] | None = None) -> bool:
+        if visited is None:
+            visited = set()
+        if w in visited:
+            return False
+        visited.add(w)
+
+        # 1) 직접 부착 확인 (.add, .insert, setEditor, setWidget 등)
         for m_call in re.finditer(
             r"(?:\b\w+|\))\s*\.\s*(?:add\w*|insert\w*|setEditor|setWidget)\s*\(",
             src_text,
@@ -782,6 +813,18 @@ def extract_events_and_methods(
             args_text = src_text[open_p + 1 : close_p]
             if re.search(rf"\b{re.escape(w)}\b", args_text):
                 return True
+
+        # 2) 그룹/컨테이너(ToggleGroup 등): w.add(child)로 등록된 자식이 부착되었는지 재귀 확인
+        for m_child in re.finditer(
+            rf"\b{re.escape(w)}\s*\.\s*(?:add\w*|insert\w*)\s*\(",
+            src_text,
+        ):
+            open_p = m_child.end() - 1
+            close_p = paren_end(src_text, open_p)
+            args_text = src_text[open_p + 1 : close_p]
+            for child in re.findall(r"\b([a-zA-Z_]\w*)\b", args_text):
+                if child != w and is_widget_attached(child, src_text, visited):
+                    return True
         return False
 
     DIALOG_TYPES = {"dialoghide", "hide", "close"}

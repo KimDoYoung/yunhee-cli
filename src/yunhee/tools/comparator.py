@@ -58,6 +58,14 @@ def _field_covered(expected_col: str, api_fields: set[str]) -> bool:
     cand_name = re.sub(r"Nm$", "Name", expected_col)
     if cand_nm in api_fields or cand_name in api_fields:
         return True
+    cand_fnm = re.sub(r"FullName$", "FNm", expected_col)
+    cand_fullname = re.sub(r"FNm$", "FullName", expected_col)
+    if cand_fnm in api_fields or cand_fullname in api_fields:
+        return True
+    cand_cd = re.sub(r"Code$", "Cd", expected_col)
+    cand_code = re.sub(r"Cd$", "Code", expected_col)
+    if cand_cd in api_fields or cand_code in api_fields:
+        return True
     cand_addr = re.sub(r"Address$", "Addr", expected_col)
     cand_address = re.sub(r"Addr$", "Address", expected_col)
     if cand_addr in api_fields or cand_address in api_fields:
@@ -67,12 +75,20 @@ def _field_covered(expected_col: str, api_fields: set[str]) -> bool:
         unprefixed_camel = unprefixed[0].lower() + unprefixed[1:]
         cand_u_nm = re.sub(r"Name$", "Nm", unprefixed_camel)
         cand_u_name = re.sub(r"Nm$", "Name", unprefixed_camel)
+        cand_u_fnm = re.sub(r"FullName$", "FNm", unprefixed_camel)
+        cand_u_fullname = re.sub(r"FNm$", "FullName", unprefixed_camel)
+        cand_u_cd = re.sub(r"Code$", "Cd", unprefixed_camel)
+        cand_u_code = re.sub(r"Cd$", "Code", unprefixed_camel)
         cand_u_addr = re.sub(r"Address$", "Addr", unprefixed_camel)
         cand_u_address = re.sub(r"Addr$", "Address", unprefixed_camel)
         if (
             unprefixed_camel in api_fields
             or cand_u_nm in api_fields
             or cand_u_name in api_fields
+            or cand_u_fnm in api_fields
+            or cand_u_fullname in api_fields
+            or cand_u_cd in api_fields
+            or cand_u_code in api_fields
             or cand_u_addr in api_fields
             or cand_u_address in api_fields
         ):
@@ -444,7 +460,13 @@ def _extract_all_grids(
             if p.lower() in NON_DATA_PROPS or p.lower().endswith("actioncell") or p.lower().startswith("new "):
                 continue
             col = prop_to_col.get(p, "")
-            tobe_props.add(col_to_tobe_prop(col, tbl_pfx) if col else p)
+            if col:
+                col_prop = col_to_tobe_prop(col, tbl_pfx)
+                tobe_props.add(col_prop)
+                if not _GENERIC_PROP_RE.match(p) and p != col_prop:
+                    tobe_props.add(p)
+            else:
+                tobe_props.add(p)
         g["cols"] = tobe_props
 
     return grids
@@ -676,6 +698,8 @@ def compare_api_sql(
         error_msg = f"{tobe_summary}\n[ERROR] AS-IS SQL 실행 실패: {exc}{type_hint}{schema_hint}"
         return ToolResult(ok=False, error=error_msg)
 
+    scalar_matched = False
+
     # 페이징인 경우 행 수 및 총건수 대조 (#20)
     if is_paging:
         if sql_total_ref:
@@ -713,19 +737,64 @@ def compare_api_sql(
                 f"SQL rows={sql_row_count} {page_mark}, total SQL {sql_total} {total_mark}"
             )
         else:
-            if api_row_count == sql_row_count:
-                rows_match = True
-                count_part = f"API rows={api_row_count} (total {api_total}), SQL rows={sql_row_count} ✅"
-            elif api_total == sql_row_count:
-                rows_match = True
-                count_part = f"API rows={api_row_count} (total {api_total}), SQL total={sql_row_count} ✅"
-            else:
-                rows_match = False
-                count_part = f"API rows={api_row_count} (total {api_total}), SQL rows={sql_row_count} ❌"
+            is_scalar_sql = (sql_row_count == 1 and len(sql_cols) == 1)
+            scalar_matched = False
+            if is_scalar_sql:
+                sql_scalar = sql_rows[0][0]
+                api_data = (api_res.data or {}).get("data")
+                if api_total is not None and str(api_total) == str(sql_scalar):
+                    scalar_matched = True
+                    rows_match = True
+                    count_part = f"API total={api_total}, SQL count={sql_scalar} ✅"
+                elif str(api_row_count) == str(sql_scalar):
+                    scalar_matched = True
+                    rows_match = True
+                    count_part = f"API rows={api_row_count}, SQL count={sql_scalar} ✅"
+                elif api_data is not None and str(api_data) == str(sql_scalar):
+                    scalar_matched = True
+                    rows_match = True
+                    count_part = f"API val={api_data}, SQL count={sql_scalar} ✅"
+                elif isinstance(api_data, dict) and any(str(api_data.get(k)) == str(sql_scalar) for k in ("total", "count", sql_cols[0])):
+                    scalar_matched = True
+                    rows_match = True
+                    count_part = f"API {sql_cols[0]}={sql_scalar}, SQL count={sql_scalar} ✅"
+
+            if not scalar_matched:
+                if api_row_count == sql_row_count:
+                    rows_match = True
+                    count_part = f"API rows={api_row_count} (total {api_total}), SQL rows={sql_row_count} ✅"
+                elif api_total == sql_row_count:
+                    rows_match = True
+                    count_part = f"API rows={api_row_count} (total {api_total}), SQL total={sql_row_count} ✅"
+                elif is_scalar_sql and api_total is not None:
+                    rows_match = False
+                    count_part = f"API total={api_total} (rows {api_row_count}), SQL count={sql_rows[0][0]} ❌"
+                else:
+                    rows_match = False
+                    count_part = f"API rows={api_row_count} (total {api_total}), SQL rows={sql_row_count} ❌"
     else:
-        rows_match = (api_row_count == sql_row_count)
-        rows_mark = "✅" if rows_match else "❌"
-        count_part = f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}"
+        is_scalar_sql = (sql_row_count == 1 and len(sql_cols) == 1)
+        scalar_matched = False
+        if is_scalar_sql:
+            sql_scalar = sql_rows[0][0]
+            api_data = (api_res.data or {}).get("data")
+            if str(api_row_count) == str(sql_scalar):
+                scalar_matched = True
+                rows_match = True
+                count_part = f"API rows={api_row_count}, SQL count={sql_scalar} ✅"
+            elif api_data is not None and str(api_data) == str(sql_scalar):
+                scalar_matched = True
+                rows_match = True
+                count_part = f"API val={api_data}, SQL count={sql_scalar} ✅"
+            elif isinstance(api_data, dict) and any(str(api_data.get(k)) == str(sql_scalar) for k in ("total", "count", sql_cols[0])):
+                scalar_matched = True
+                rows_match = True
+                count_part = f"API {sql_cols[0]}={sql_scalar}, SQL count={sql_scalar} ✅"
+
+        if not scalar_matched:
+            rows_match = (api_row_count == sql_row_count)
+            rows_mark = "✅" if rows_match else "❌"
+            count_part = f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}"
 
     # 테이블 접두어 추출
     tbl_pfx_m = re.match(r"^([a-z]+\d*)_", ns)
@@ -786,7 +855,11 @@ def compare_api_sql(
 
     cols_mark = "✅" if cols_covered else "⚠️"
 
-    if api_row_count == 0:
+    if scalar_matched:
+        cols_covered = True
+        missing_fields = set()
+        summary_line = f"{count_part}  단일 집계값 일치 ({sql_cols[0]}={sql_scalar})"
+    elif api_row_count == 0:
         summary_line = f"{count_part}  필드 비교 못 함 (행 0건){cols_desc}"
     elif naming_rule_diff:
         summary_line = (

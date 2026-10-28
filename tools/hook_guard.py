@@ -131,8 +131,9 @@ def inspect_command(cmd: str) -> tuple[bool, str, str]:
     segments = split_shell_commands(cmd)
     read_reason = (
         "AS-IS 원본·색인과 TOBE 소스를 cat/sed/head/tail/awk나 grep 문맥 출력(-A/-B/-C)으로 직접 읽지 않는다(05 §7, 사용자 지시 2026-10-12). 대신:\n"
+        "- 소스/문서 범위 확인: yunhee cat <파일>:<시작>-<끝>\n"
         "- AS-IS: yunhee analysis screen <화면> --class <클래스> --section …, analysis method <클래스>.<메서드> [-o code], analysis grid <클래스>, analysis sql <ns.id>, yunhee table <테이블>\n"
-        "- TOBE: yunhee outline <파일…> 또는 yunhee analysis tobe <파일> → 필요한 줄만 Read(offset/limit)\n"
+        "- TOBE: yunhee outline <파일…> 또는 yunhee analysis tobe <파일> → 필요한 줄만 Read(offset/limit) 또는 yunhee cat <파일>:<시작>-<끝>\n"
         "- 메뉴 찾기(docs/as-is/**/menus.md·menus.tsv)의 grep은 된다\n"
         "yunhee로 정말 안 되면 작업기록에 사유를 쓰지 말고 yunhee 수정사항으로 제안할 것."
     )

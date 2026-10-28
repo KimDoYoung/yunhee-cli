@@ -272,12 +272,15 @@ def eval_test_condition_status(test: str, params: dict[str, Any]) -> tuple[bool 
 
 
 def _strip_type_prefix(val: Any) -> tuple[str | None, Any]:
-    """파라미터 값에서 명시적 타입 접두사(s:, n:, null:)를 분리한다."""
+    """파라미터 값에서 명시적 타입 접두사(s:, n:, b:, null:)를 분리한다."""
     if isinstance(val, str):
         if val.startswith("s:"):
             return "s", val[2:]
         if val.startswith("n:"):
             return "n", val[2:]
+        if val.startswith("b:"):
+            b_val = val[2:].strip().lower()
+            return "b", (b_val in ("true", "1", "t", "y"))
         if val == "null:" or val.startswith("null:"):
             return "null", None
     return None, val
@@ -331,8 +334,8 @@ def _eval_single_condition_status(expr: str, params: dict[str, Any]) -> bool | N
         val = params.get(var)
         val_str = str(val).lower() if val is not None else ""
         if target_val == "true":
-            return val_str in ("true", "1", "y")
-        return val_str in ("false", "0", "n") or val is None
+            return val is True or val_str in ("true", "1", "y", "t")
+        return val is False or val_str in ("false", "0", "n", "f") or val is None
 
     # x != true / x != false
     m_bool_ne = re.match(r"^(\w+)\s*!=\s*(true|false)$", expr, re.IGNORECASE)
@@ -341,8 +344,8 @@ def _eval_single_condition_status(expr: str, params: dict[str, Any]) -> bool | N
         val = params.get(var)
         val_str = str(val).lower() if val is not None else ""
         if target_val == "true":
-            return val_str not in ("true", "1", "y")
-        return val_str not in ("false", "0", "n") and val is not None
+            return not (val is True or val_str in ("true", "1", "y", "t"))
+        return not (val is False or val_str in ("false", "0", "n", "f") or val is None)
 
     # x != null
     m_not_null = re.match(r"^(\w+)\s*!=\s*null$", expr, re.IGNORECASE)
@@ -844,6 +847,8 @@ def render_with_meta(
                 return f"'{val_escaped}'"
             if type_pfx == "n":
                 return val_str
+            if type_pfx == "b":
+                return "TRUE" if bool(val) else "FALSE"
             sql_before = rendered[max(0, m.start() - 80):m.start()]
             if (
                 val_str.lstrip("-").isdigit()
@@ -864,6 +869,8 @@ def render_with_meta(
             type_pfx, val = _strip_type_prefix(local_params[var])
             if type_pfx == "null" or val is None:
                 return "NULL"
+            if type_pfx == "b":
+                return "TRUE" if bool(val) else "FALSE"
             return str(val)
         return "1"
 

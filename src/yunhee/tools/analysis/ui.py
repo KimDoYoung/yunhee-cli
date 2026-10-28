@@ -458,9 +458,33 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             raw_paths = [str(p).strip() for p in tobe_path_raw if str(p).strip()]
         else:
             raw_paths = [p.strip() for p in str(tobe_path_raw).split(",") if p.strip()]
+
+        valid_paths_found = 0
         for p_str in raw_paths:
             tobe_target = Path(p_str)
+            if not tobe_target.exists():
+                from yunhee import config
+                from yunhee.tools.as_is import find_repo_root
+
+                cands = [
+                    config.WORK_DIR / p_str,
+                    config.WORK_DIR.parent / p_str,
+                ]
+                if config.TOML_FILE:
+                    cands.append(config.TOML_FILE.parent / p_str)
+                    cands.append(config.TOML_FILE.parent / "frontend" / p_str)
+                r_root = find_repo_root(Path.cwd())
+                if r_root:
+                    cands.append(r_root / p_str)
+                    cands.append(r_root / "frontend" / p_str)
+                    cands.append(r_root / "AssetERP" / "frontend" / p_str)
+                for cand in cands:
+                    if cand.exists():
+                        tobe_target = cand
+                        break
+
             if tobe_target.is_dir():
+                valid_paths_found += 1
                 for f in tobe_target.rglob("*.tsx"):
                     try:
                         f_text = f.read_text(encoding="utf-8", errors="replace")
@@ -487,6 +511,7 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
                         "grids": t_grid,
                     }
             elif tobe_target.is_file():
+                valid_paths_found += 1
                 try:
                     f_text = tobe_target.read_text(encoding="utf-8", errors="replace")
                     t_btn = count_tobe_buttons(f_text)
@@ -502,6 +527,9 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
                     }
                 except OSError:
                     pass
+
+        if raw_paths and valid_paths_found == 0:
+            raise ValueError(f"[ERROR] --tobe 경로를 찾을 수 없습니다: {', '.join(raw_paths)} (cwd={Path.cwd()})")
 
     # --no-e0 옵션 적용
     no_e0 = bool(opts.get("no_e0", False))

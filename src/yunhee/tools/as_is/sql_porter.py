@@ -665,6 +665,28 @@ def expand_includes(text: str, sql_fragments: dict[str, str]) -> str:
     return text
 
 
+def _convert_colon_to_sharp(sql: str) -> str:
+    """SQL 본문의 :param을 #{param}으로 치환한다. 단 ::cast, 문자열 리터럴, 주석은 보존한다."""
+    pattern = re.compile(
+        r"('(?:''|[^'])*')|"           # 'string literal'
+        r"(/\*.*?\*/)|"                # /* comment */
+        r"(--[^\n]*)|"                 # -- comment
+        r"(?<!:):([a-zA-Z_]\w*)"       # :param (not preceded by :)
+        , re.DOTALL,
+    )
+
+    def repl(m: re.Match) -> str:
+        if m.group(1):
+            return m.group(1)
+        if m.group(2):
+            return m.group(2)
+        if m.group(3):
+            return m.group(3)
+        return f"#{{{m.group(4)}}}"
+
+    return pattern.sub(repl, sql)
+
+
 def port_sql(
     sql_id: str,
     cols: list[str] | None = None,
@@ -672,10 +694,14 @@ def port_sql(
     src_root: Path | None = None,
     db_env: str = SCHEMA_ENV,
     dto_package: str | None = None,
+    raw: bool = False,
+    insert_into: str | None = None,
+    insert_cols: str | None = None,
 ) -> ToolResult:
     """AS-IS MyBatis SQL을 TOBE 매퍼 조각과 Record DTO로 변환한다.
 
     cols를 주면 그 순서(화면 그리드 순서)대로 컬럼을 낸다.
+    raw=True이면 컬럼 파싱 및 DTO 생성을 생략하고 원본 SQL을 verbatim CDATA로 낸다.
     """
     if "." not in sql_id:
         return ToolResult(ok=False, error=f"올바른 형식(namespace.sqlId)으로 입력해 주세요. 예: sys04_role.selectByName (입력값: {sql_id})")
@@ -708,6 +734,70 @@ def port_sql(
             sbody = m_tag.group(1)
     else:
         sbody = expand_includes(sel_info["body"], sql_fragments)
+
+    if raw:
+        converted_sql = _convert_colon_to_sharp(sbody.strip())
+        # 중첩 CDATA 방지: 이미 CDATA 태그가 있다면 내용만 추출
+        clean_cdata_sql = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", converted_sql, flags=re.DOTALL)
+
+        warnings: list[str] = []
+        # 원본 첫 줄이 SELECT *이고 조인이 있으면 모호 열 경고
+        m_first_sel = re.search(r"^\s*SELECT\s+.*?\bFROM\b", clean_cdata_sql, re.IGNORECASE | re.DOTALL)
+        if m_first_sel and re.search(r"\*", m_first_sel.group(0)) and re.search(r"\bJOIN\b", clean_cdata_sql, re.IGNORECASE):
+            warnings.append("SELECT *와 JOIN이 함께 사용되어 서브쿼리로 감싸 쓸 때 컬럼명이 중복될 수 있습니다")
+
+        warn_comment = ("    <!-- ⚠ " + "; ".join(warnings) + " -->\n") if warnings else ""
+
+        # <sql id="{sid}">
+        sql_fragment = f"""    <sql id="{sid}">
+<![CDATA[
+{clean_cdata_sql}
+]]>
+    </sql>"""
+
+        insert_fragment = ""
+        if insert_into:
+            insert_lines_target = []
+            insert_lines_select = []
+            if insert_cols:
+                col_pairs = [c.strip() for c in insert_cols.split(",") if c.strip()]
+                for cp in col_pairs:
+                    if "=" in cp:
+                        t_col, s_expr = cp.split("=", 1)
+                        insert_lines_target.append(t_col.strip())
+                        insert_lines_select.append(s_expr.strip())
+                    else:
+                        insert_lines_target.append(cp)
+                        insert_lines_select.append(f"y.{cp}")
+            target_cols_str = ",\n               ".join(insert_lines_target) if insert_lines_target else "..."
+            select_exprs_str = ",\n             ".join(insert_lines_select) if insert_lines_select else "..."
+            entity_base = re.sub(r"^[a-z]+\d*_", "", insert_into)
+            entity_name = to_camel_case(entity_base)
+            entity_title = entity_name[0].upper() + entity_name[1:]
+            insert_fragment = f"""
+
+    <insert id="insert{entity_title}">
+        INSERT INTO {insert_into}
+               ( {target_cols_str} )
+        SELECT {select_exprs_str}
+          FROM (<include refid="{sid}"/>) y
+    </insert>"""
+
+        full_output = f"<!-- AS-IS {ns}.{sid} verbatim query -->\n{warn_comment}{sql_fragment}{insert_fragment}"
+        return ToolResult(
+            ok=True,
+            data={
+                "output": full_output,
+                "mapper_fragment": sql_fragment,
+                "insert_fragment": insert_fragment,
+                "record_dto": "",
+                "columns_sql_id": sid,
+                "dto_name": "",
+                "params": [],
+                "item_count": 0,
+                "warnings": warnings,
+            },
+        )
 
     rm_id = sel_info["attrs"].get("resultMap", "mapper").split(".")[-1]
     rm_info = result_maps.get(rm_id) or next(iter(result_maps.values()), None)

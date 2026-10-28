@@ -441,8 +441,8 @@ def check_tobe_sql(
     import fnmatch
     import subprocess
 
-    if not mapper_dir.is_dir():
-        return ToolResult(ok=False, error=f"TOBE 매퍼 디렉터리를 찾을 수 없습니다: {mapper_dir}")
+    if not mapper_dir.is_dir() and not mapper_dir.is_file():
+        return ToolResult(ok=False, error=f"TOBE 매퍼 경로를 찾을 수 없습니다: {mapper_dir}")
 
     target_db, db_env = get_db_env(db)
     test_err = explain("SELECT 1", target_db, extra_env=db_env)
@@ -486,7 +486,16 @@ def check_tobe_sql(
     xml_errors_by_cls: dict[str, list[str]] = defaultdict(list)
     has_failure = bool(xml_errors_by_cls)
 
-    for path in sorted(mapper_dir.rglob("*.xml")):
+    if mapper_dir.is_file():
+        xml_files = [mapper_dir]
+        base_dir = mapper_dir.parent
+    else:
+        xml_files = sorted(mapper_dir.rglob("*.xml"))
+        base_dir = mapper_dir
+
+    all_candidates = [p.stem for p in xml_files]
+
+    for path in xml_files:
         full_path = path.resolve()
         if changed_xml_paths is not None and full_path not in changed_xml_paths:
             continue
@@ -500,12 +509,18 @@ def check_tobe_sql(
 
         if only:
             matched_cls = any(
-                fnmatch.fnmatch(cls_name, pat) or fnmatch.fnmatch(xml_stem, pat)
+                pat.lower() in cls_name.lower()
+                or pat.lower() in xml_stem.lower()
+                or fnmatch.fnmatch(cls_name.lower(), pat.lower())
+                or fnmatch.fnmatch(xml_stem.lower(), pat.lower())
+                or fnmatch.fnmatch(cls_name.lower(), f"*{pat.lower()}*")
                 for pat in only
             )
             raw_ids = re.findall(r'<[a-zA-Z0-9_]+\b[^>]*\bid\s*=\s*"([^"]+)"', raw)
             matched_id = any(
-                fnmatch.fnmatch(sid, pat) or fnmatch.fnmatch(f"{ns}.{sid}", pat)
+                pat.lower() in sid.lower()
+                or fnmatch.fnmatch(sid.lower(), pat.lower())
+                or fnmatch.fnmatch(f"{ns}.{sid}".lower(), pat.lower())
                 for pat in only
                 for sid in raw_ids
             )
@@ -518,7 +533,7 @@ def check_tobe_sql(
             ET.fromstring(raw_bytes)
         except ET.ParseError as e:
             line, col = e.position if hasattr(e, "position") and e.position else (0, 0)
-            rel_path = path.relative_to(mapper_dir)
+            rel_path = path.relative_to(base_dir) if path.is_relative_to(base_dir) else path.name
             err_msg = str(e)
             hint = " (힌트: 본문의 <, <=, <>, & 는 &lt;, &lt;=, &lt;&gt;, &amp; 또는 <![CDATA[ … ]]> 로 이스케이프 필요)"
             xml_errors_by_cls[cls_name].append(f"❌ XML 오류: {rel_path}:{line}:{col} {err_msg}{hint}")
@@ -535,17 +550,24 @@ def check_tobe_sql(
             if isinstance(child, Node) and child.tag in STATEMENT_TAGS and "id" in child.attrs:
                 pos = re.search(rf'<{child.tag}\b[^>]*\bid\s*=\s*"{re.escape(child.attrs["id"])}"', raw)
                 line = raw.count("\n", 0, pos.start()) + 1 if pos else 0
-                st = Statement(ns, child.attrs["id"], child.tag, child, path.relative_to(mapper_dir), line)
+                st = Statement(ns, child.attrs["id"], child.tag, child, path.relative_to(base_dir), line)
                 statements[st.key] = st
 
     all_targets = [s for s in statements.values() if s.kind != "sql"]
     if not all_targets and not xml_errors_by_cls:
+        if only:
+            cand_list = sorted(dict.fromkeys(all_candidates))[:10]
+            cand_str = f" (후보: {', '.join(cand_list)})" if cand_list else ""
+            return ToolResult(
+                ok=False,
+                error=f"--only '{only[0]}' 와 일치하는 매퍼가 없습니다{cand_str}",
+            )
         return ToolResult(ok=False, error=f"{mapper_dir} 아래에서 검증할 매퍼 SQL을 찾지 못했습니다.")
 
     # 필터링 적용 (--changed, --only)
     targets = []
     for st in all_targets:
-        full_path = (mapper_dir / st.rel).resolve()
+        full_path = (base_dir / st.rel).resolve()
         if changed_xml_paths is not None and full_path not in changed_xml_paths:
             continue
 
@@ -565,6 +587,18 @@ def check_tobe_sql(
         targets.append(st)
 
     if not targets and not xml_errors_by_cls:
+        if only:
+            cand_list = sorted(dict.fromkeys(all_candidates))[:10]
+            cand_str = f" (후보: {', '.join(cand_list)})" if cand_list else ""
+            return ToolResult(
+                ok=False,
+                error=f"--only '{only[0]}' 와 일치하는 매퍼가 없습니다{cand_str}",
+                data={
+                    "summary": f"[ERROR] --only '{only[0]}' 와 일치하는 매퍼가 없습니다{cand_str}",
+                    "total": 0,
+                    "results": {},
+                },
+            )
         return ToolResult(
             ok=True,
             data={

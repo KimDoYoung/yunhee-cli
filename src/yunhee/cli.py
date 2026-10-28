@@ -756,11 +756,19 @@ def sql_cmd(
     no_header: Annotated[bool, typer.Option("--no-header", help="tsv·csv 출력 시 헤더 줄 생략")] = False,
     null: Annotated[str, typer.Option("--null", help="tsv·csv에서 NULL 값을 표기할 문자열 (기본: 빈 칸)")] = "",
     out: Annotated[Path | None, typer.Option("--out", help="결과를 파일에 저장하고 화면에는 요약 한 줄만 출력")] = None,
+    scalar: Annotated[bool, typer.Option("--scalar", help="첫 행 첫 열 값만 단일 문자열로 출력 (쉘 스크립트 변수 할당용)")] = False,
 ):
     """PostgreSQL 읽기 전용 쿼리 실행 또는 --rollback 시험
 
 [bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
   psql 대신 이 명령으로 중복 검사나 행 수를 확인하고, 저장 SQL 시험 시 --rollback 옵션을 사용하세요.
+
+[bold cyan]💡 쉘 스크립트 / 변수 할당 예시:[/bold cyan]
+  # 단일 스칼라 값 추출 (행 수, ID 등):
+  COUNT=$(yunhee sql "SELECT count(*) FROM sys01_company" --scalar)
+
+  # TSV 및 헤더 생략을 통한 단일 행/열 추출:
+  ID=$(yunhee sql "SELECT company_id FROM sys01_company LIMIT 1" -o tsv --no-header)
 """
     from yunhee.tools import sql_runner
 
@@ -784,6 +792,7 @@ def sql_cmd(
         no_header=no_header,
         null_str=null,
         out_file=out,
+        scalar=scalar,
     )
     if not res.ok:
         exit_code = (res.data or {}).get("exit_code", 1) if isinstance(res.data, dict) else 1
@@ -805,6 +814,9 @@ def port_sql_cmd(
     src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
     db: Annotated[str, typer.Option("--db", help="스키마 환경 (기본 LOCAL_DB)")] = SCHEMA_ENV,
     package: Annotated[str | None, typer.Option("--package", help="DTO 패키지 (예: kr.co.kfs.asseterp.biz.sys.dto) — resultType FQN에 사용")] = None,
+    raw: Annotated[bool, typer.Option("--raw", "--verbatim", help="원본 SQL을 그대로 #{var} 치환하여 CDATA <sql id>로 출력")] = False,
+    insert_into: Annotated[str | None, typer.Option("--insert-into", help="INSERT INTO <table> 대상 테이블명")] = None,
+    insert_cols: Annotated[str | None, typer.Option("--insert-cols", help="INSERT INTO 대상 컬럼 매핑 (쉼표 구분, 예: 'col=expr' 또는 'col')")] = None,
 ) -> None:
     """AS-IS SQL을 TOBE 매퍼 조각과 Record DTO로 변환"""
     from yunhee.tools.as_is.sql_porter import port_sql
@@ -817,6 +829,9 @@ def port_sql_cmd(
         src_root=src,
         db_env=db,
         dto_package=package,
+        raw=raw,
+        insert_into=insert_into,
+        insert_cols=insert_cols,
     )
     if not res.ok:
         typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
@@ -1523,8 +1538,8 @@ def sql_check_cmd(
         return
 
     if tobe:
-        if not tobe.is_dir():
-            typer.secho(f"[ERROR] TOBE 매퍼 디렉터리를 찾을 수 없습니다: {tobe}", fg=typer.colors.RED)
+        if not tobe.is_dir() and not tobe.is_file():
+            typer.secho(f"[ERROR] TOBE 매퍼 경로를 찾을 수 없습니다: {tobe}", fg=typer.colors.RED)
             raise typer.Exit(1)
         res = check_tobe_sql(tobe, db=db, only=only, changed=changed, summary=summary)
         if not res.ok and not res.data:
@@ -1981,6 +1996,10 @@ def analysis_cmd(
         bool,
         typer.Option("--layout", help="ui 분석 시 폼 레이아웃 상세 함께 출력"),
     ] = False,
+    all_overloads: Annotated[
+        bool,
+        typer.Option("--all-overloads", help="오버로드된 모든 메서드를 한 번에 출력 (method 분석)"),
+    ] = False,
 ):
     """AS-IS·TOBE 통합 분석 (method/sql/model/grid/screen/ui/tobe/run)
 
@@ -2082,6 +2101,7 @@ def analysis_cmd(
         "type": file_type,
         "branch": branch or [],
         "unreachable": unreachable,
+        "all_overloads": all_overloads,
         "extra_targets": extra_targets or [],
         "raw": raw,
         "layout": layout_flag,

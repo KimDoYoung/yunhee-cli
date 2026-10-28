@@ -379,6 +379,18 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             + (f"  → #{c['delegates_to']} 위임" if c.get("delegates_to") else "")
             for c in candidates
         ]
+        if opts.get("all_overloads"):
+            if opts.get("output") == "code":
+                return {
+                    **candidates[0],
+                    "multi_candidates": candidates,
+                    "cand_descs": cand_descs,
+                }
+            return {
+                **candidates[0],
+                "multi_methods": candidates,
+                "cand_descs": cand_descs,
+            }
         if opts.get("output") == "code" and is_short_or_delegated:
             return {
                 **candidates[0],

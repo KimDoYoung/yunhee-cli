@@ -381,8 +381,6 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
 
         if sec_filter in ("events", "event"):
             m_ev = re.search(r"##\s*이벤트.*?(?=\n##\s*|\Z)|####\s*이벤트.*?(?=####\s*|###\s*|\Z)", combined, re.DOTALL)
-            if m_ev and "도달 불가" in m_ev.group(0):
-                return m_ev.group(0).strip()
             _, java_text = _find_java_source(target_cls, obj, combined, full_text)
             if java_text:
                 from yunhee.tools.as_is.events import (

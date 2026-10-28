@@ -329,6 +329,7 @@ def run_sql(
     no_header: bool = False,
     null_str: str = "",
     out_file: Path | str | None = None,
+    scalar: bool = False,
 ) -> ToolResult:
     """PostgreSQL 쿼리를 읽기 전용 또는 롤백 모드로 안전하게 실행한다."""
     if output_fmt not in SUPPORTED_OUTPUT_FORMATS:
@@ -482,6 +483,35 @@ def run_sql(
             pass
 
     warnings: list[str] = []
+
+    if scalar:
+        cols = last_table_data["columns"] if last_table_data else []
+        p_rows = last_table_data["rows"] if last_table_data else []
+        if p_rows and cols:
+            row0 = p_rows[0]
+            val = row0.get(cols[0]) if isinstance(row0, dict) else row0[0]
+            scalar_str = str(val) if val is not None else null_str
+        else:
+            scalar_str = null_str
+
+        if out_file is not None:
+            out_path = Path(out_file)
+            try:
+                _write_atomic(out_path, scalar_str)
+            except Exception as exc:  # noqa: BLE001
+                return ToolResult(ok=False, error=f"출력 파일 저장 실패: {exc}")
+
+        return ToolResult(
+            ok=True,
+            data={
+                "summary": scalar_str,
+                "formatted": scalar_str,
+                "scalar": scalar_str,
+                "table": last_table_data,
+                "warnings": warnings,
+                "rollback": rollback,
+            },
+        )
 
     if output_fmt in ("tsv", "csv", "json"):
         tot = last_table_data["total_rows"] if last_table_data else 0

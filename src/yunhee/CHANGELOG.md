@@ -2,6 +2,20 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.5.9] - 2026-10-28
+수정사항 044 (도달 불가 오판 개선, ui --tobe 경로 오류, sql-check 단일 파일 및 후보 제시, port-sql --raw, sql --scalar, 불리언 파라미터, 그리드 속성 보존, 단일 스칼라 비교, 오버로드 일괄 출력, MyTextArea, 훅 안내 개선) 반영.
+- `events`: `ToggleGroup` 등 컨테이너에 `add`된 위젯이 툴바에 부착되면 그룹 이벤트도 도달 가능으로 판정, `Lookup`/`Dialog`/`Window` 클래스의 `open()`/`show()` 등 공개 진입점 메서드의 도달 불가 오판 수정 (044-22)
+- `analysis ui`: `--tobe` 경로가 cwd 기준 미존재 시 프로젝트 루트/frontend 경로 자동 폴백 및 미발견 시 명시적 오류 발생 (044-23)
+- `sql-check`: `--tobe`에 XML 단일 파일 경로 직접 전달 허용, `--only` 매퍼 필터 0건 일치 시 후보 목록 안내 및 대소문자 무시 부분 일치 지원 (044-24)
+- `port-sql`: `--raw` (또는 `--verbatim`) 옵션 추가로 원본 SQL을 변경 없이 `:param → #{param}`만 치환하여 `<![CDATA[ ]]>` 블록으로 출력, `SELECT *` + `JOIN` 모호 열 경고, `--insert-into` / `--insert-cols`를 통한 명시적 INSERT-SELECT 매퍼 생성 지원 (044-25)
+- `sql`: `--scalar` 옵션 추가로 첫 행 첫 열 값만 단일 문자열로 출력 (쉘 스크립트 변수 할당용), `--help`에 쉘 변수 할당 예시 추가 (044-26)
+- `mybatis_render`: `b:true` / `b:false` 타입 강제 접두사 지원 및 불리언 분기 조건(`x == true`, `x != true`, `!x`) 정확한 평가 (044-3)
+- `comparator`: 그리드 스펙 속성명 보존(비범용 속성명의 DB 약어 치환 방지) 및 `FullName` ↔ `FNm`, `Code` ↔ `Cd` 필드 커버리지 매칭 추가 (044-4)
+- `comparator`: 1행 1열 반환 단일 집계(count/sum 등) SQL에 대해 API `total`/행 수/스칼라 응답과 직접 비교 지원 (044-5)
+- `analysis method`: `--all-overloads` 옵션 추가로 오버로드된 모든 메서드 본문/요약을 Exit 2 중단 없이 한 번에 확인 (044-6)
+- `analysis grid`: `addTextArea(..., new MyTextArea())` 등 편집기 인자가 있는 경우 `editor_kind: largeText`로 표시 (044-7)
+- `tools/hook_guard`: 훅 차단 시 안내 메시지 최상단에 `yunhee cat <파일>:<시작>-<끝>` 최우선 제시 (044-8)
+
 ## [0.5.8] - 2026-10-28
 수정사항 044-1: compare --src-index 지원 및 하위 디렉터리 색인 자동 감지/일관성 개선.
 - `compare`: `--src-index` 옵션 추가 및 `compare_api_sql`, `find_screen_grid_info`에 `src_index` 경로 전달 지원 (044-1)
