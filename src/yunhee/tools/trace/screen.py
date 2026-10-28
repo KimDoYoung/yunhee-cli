@@ -36,6 +36,29 @@ class ServiceRow:
 
 
 @dataclass
+class EventRow:
+    id: str  # E3
+    text: str  # 원문 한 줄
+    desc: str  # transName[재직].Collapse (L225)
+    guard: str  # 이벤트 조건 대괄호 (예: Enter, 선택>0). 없으면 ""
+    handlers: str  # → 뒤의 핸들러 설명
+    handler_methods: list[str] = field(default_factory=list)  # retrieve, insert
+    ranges: list[tuple[int, int]] = field(default_factory=list)  # 인라인·생성자 줄 범위
+    unreachable: bool = False
+
+
+@dataclass
+class MethodRow:
+    name: str
+    signature: str
+    start: int
+    end: int
+    callers: list[str]  # E1, 생성자, insert
+    does: str
+    kind: str
+
+
+@dataclass
 class ClassUi:
     name: str
     java: str = ""
@@ -46,6 +69,8 @@ class ClassUi:
     events: list[str] = field(default_factory=list)
     events_note: str = ""
     buttons: list[str] = field(default_factory=list)
+    event_rows: list[EventRow] = field(default_factory=list)
+    methods: list[MethodRow] = field(default_factory=list)
 
 
 @dataclass
@@ -100,6 +125,57 @@ def _parse_services(body: str) -> list[ServiceRow]:
     return rows
 
 
+_LINE_RANGE = re.compile(r"L(\d+)(?:-(\d+))?")
+_EVENT_LINE = re.compile(r"^\[(E\d+)\]\s+(.*?)\s+→\s+(.*)$")
+_GUARD = re.compile(r"\.\w+ \[([^\]]+)\] \(")
+
+
+def _ranges(text: str) -> list[tuple[int, int]]:
+    return [(int(a), int(b or a)) for a, b in _LINE_RANGE.findall(text)]
+
+
+def parse_event_line(line: str) -> EventRow | None:
+    """`[E3] transName[재직].Collapse (L225) → retrieve()` 한 줄을 구조화한다."""
+    m = _EVENT_LINE.match(line.strip())
+    if not m:
+        m0 = re.match(r"^\[(E\d+)\]\s+(.*)$", line.strip())  # 핸들러가 없는 이벤트
+        return EventRow(m0.group(1), line.strip(), m0.group(2), "", "") if m0 else None
+    ev_id, desc, handlers = m.groups()
+    guard = _GUARD.search(desc)
+    row = EventRow(ev_id, line.strip(), desc, guard.group(1) if guard else "", handlers)
+    row.unreachable = "도달 불가" in handlers
+    # 핸들러 설명: `a(), b()` 또는 `인라인 L243-248 (...)`. 인라인·생성자는 줄 범위가 곧 코드 위치다
+    row.handler_methods = re.findall(r"(?<![\w.])([A-Za-z_]\w*)\(\)", re.sub(r"인라인 L[\d-]+ \(.*", "", handlers))
+    if "생성자" in desc:
+        row.ranges += _ranges(desc)
+    for inline in re.findall(r"인라인 (L\d+(?:-\d+)?)", handlers):
+        row.ranges += _ranges(inline)
+    return row
+
+
+def _parse_methods(block: str) -> list[MethodRow]:
+    rows: list[MethodRow] = []
+    m = re.search(r"^#### 메서드\s*$", block, re.MULTILINE)
+    if not m:
+        return rows
+    for line in block[m.end():].splitlines()[1:]:
+        if line.startswith("#") or not line.strip():
+            break
+        if not line.startswith("|") or line.startswith(("| ---", "| 메서드")):
+            continue
+        cells = _cells(line)
+        if len(cells) < 3:
+            continue
+        name = re.search(r"([A-Za-z_]\w*)\(", cells[0])
+        rng = _ranges(cells[1])
+        if not name or not rng:
+            continue
+        callers = [c.strip() for c in cells[2].split(",") if c.strip() and c.strip() != "-"]
+        rows.append(MethodRow(name.group(1), cells[0], rng[0][0], rng[0][1], callers,
+                              cells[3] if len(cells) > 3 else "", cells[4] if len(cells) > 4 else ""))
+    return rows
+
+
 def _handler_text(raw: str) -> str:
     """버튼 onClick 식을 짧게: 인라인 핸들러는 줄 범위만, 그 밖은 식 그대로."""
     inline = re.search(r"인라인 (L[\d-]+)", raw)
@@ -136,6 +212,9 @@ def _parse_ui_class(name: str, block: str, head: str) -> ClassUi:
             if line.startswith("#") or not line.strip():
                 break
             ui.events.append(line.strip())
+            if (row := parse_event_line(line)) is not None:
+                ui.event_rows.append(row)
+    ui.methods = _parse_methods(block)
     if m_bt := re.search(r"^#### 사용된 버튼들\s*$", block, re.MULTILINE):
         for line in block[m_bt.end():].splitlines()[1:]:
             if line.startswith("#") or not line.strip():

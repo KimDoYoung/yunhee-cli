@@ -2819,7 +2819,7 @@ wheels = [
 
 [[package]]
 name = "yunhee"
-version = "0.6.1"
+version = "0.6.2"
 source = { editable = "." }
 dependencies = [
     { name = "chromadb" },

@@ -212,40 +212,34 @@ def register_trace_commands(app: typer.Typer) -> None:
 
     @app.command(name="trace-flow")
     def trace_flow_cmd(
-        screen_id: Annotated[str, typer.Argument(help="화면 ID 또는 클래스명")],
-        event: Annotated[str | None, typer.Option("--event", "-e", help="이벤트 번호 (예: E1, E3)")] = None,
+        screen_id: Annotated[str, typer.Argument(help="화면 클래스명, 접두사, 또는 메뉴 번호 (예: Emp00_Tab_TransInfo, #1029)")],
+        event: Annotated[str | None, typer.Option("--event", "-e", help="이벤트 번호 (예: E3). 생략하면 이벤트 목록")] = None,
+        class_name: Annotated[str | None, typer.Option("--class", "-c", help="하위 클래스의 이벤트 (예: Emp02_TabPage_Others)")] = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
-        """이벤트 하나의 끝까지 이어진 사슬: 버튼 → 핸들러 → RPC/API → 서비스 → mapper → SQL → 테이블"""
-        out = format_trace_stub(
-            cmd_name="trace-flow",
-            desc="이벤트 하나의 끝까지 이어진 사슬: 버튼 → 핸들러 → RPC/API → 서비스 → mapper → SQL → 테이블",
-            params={"screen_id": screen_id, "event": event},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """이벤트 하나의 끝까지 이어진 사슬: 이벤트 → 핸들러 → 서비스(RPC) → 서버 → SQL → 테이블"""
+        from yunhee.tools.trace.flow import trace_flow
+
+        _emit(lambda ctx: trace_flow(screen_id, ctx, event, class_name), side, format, max, src, src_index)
 
     @app.command(name="trace-branch")
     def trace_branch_cmd(
-        target: Annotated[str, typer.Argument(help="화면ID, 클래스명, 또는 mapper id")],
+        target: Annotated[str, typer.Argument(help="화면 클래스명·메뉴 번호, 또는 mapper id (예: Emp00_Tab_TransInfo, #1029, emp00_trans_info.selectByText)")],
+        tobe: Annotated[Path | None, typer.Option("--tobe", help="TOBE frontend/src 경로 (기본: 작업 폴더의 frontend/src)")] = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
-        """조건 지점 전체 목록 (if/switch/throw, validator, 버튼 활성, <if test>, CASE WHEN, TSX 조건부 렌더링)"""
-        out = format_trace_stub(
-            cmd_name="trace-branch",
-            desc="조건 지점 전체 목록: if/switch/throw, validator, 버튼 활성 조건, <if test>, CASE WHEN, TSX disabled·조건부 렌더링",
-            params={"target": target},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """조건 지점 전체 목록 (이벤트 조건, if/switch/throw, 활성·표시 조건, <if test>, CASE WHEN, TSX 조건부 렌더링)"""
+        from yunhee.tools.trace.branch import trace_branch
+
+        _emit(lambda ctx: trace_branch(target, ctx, tobe), side, format, max, src, src_index)
 
     @app.command(name="trace-dblogic")
     def trace_dblogic_cmd(

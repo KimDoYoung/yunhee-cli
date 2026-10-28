@@ -2,6 +2,14 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.6.2] - 2026-10-28
+`trace-flow`, `trace-branch` 구현 (trace-* Step 2).
+- `trace-flow <화면> --event <En>`: 이벤트 → 핸들러 메서드 → 서비스(RPC) → 서버 메서드 → SQL → 테이블 사슬. 화면 색인의 이벤트·메서드(줄 범위)·서비스 호출 위치(`클래스:줄`)를 **줄 범위로** 이어 결정적으로 만든다. 메서드 표의 호출처를 따라 `E5 → insert() → retrieve()`처럼 간접 호출 경로를 보존하고, 인라인 핸들러·생성자(E0)도 줄 범위로 처리한다. SQL의 테이블은 `sql_parse`로 R/C/U/D 해석, `UpdateDataModel` 동적 쓰기 포함. 이벤트가 여는 하위 화면은 `--class`로 이어서 추적하도록 안내한다. `--event`를 생략하면 이벤트 목록, 없는 이벤트는 가능한 목록과 그 이벤트가 있는 다른 클래스를 알려 준다
+- `trace-branch <화면|mapper id>`: mapper는 `<if test>`/`<when test>`/`<otherwise>`/`<foreach>`(`<include>` 조각 안까지, 조각이 있는 파일:줄을 근거로), DB 방언 분기(`isTibero`/`isPostgreSql`)를 따로, SQL의 `CASE WHEN`을 낸다. 화면·클래스는 이벤트 조건(`[Enter]` 등)과 도달 불가 이벤트, Java의 `if`/`else if`/`switch`/`throw`(여러 줄 조건, 주석·문자열 속 코드는 무시, 메서드·생성자별 묶음), `setEnabled`/`setVisible`/`setReadOnly`(고정값과 식 구분). `--side tobe`는 TSX의 `disabled`/`readOnly`/`hidden`, `&&`·삼항 조건부 렌더링, `if`
+- 조건식은 소스에 적힌 그대로 내고 참/거짓 판정은 하지 않는다. 읽지 못한 조건과 `${}`는 unresolved
+- `sql_parse`: `ParsedSql.cases`(CASE WHEN 식) 추가. `screen.py`: 이벤트·메서드 표를 구조화(`EventRow`, `MethodRow`)
+- 구현된 명령 4개가 stub 테스트에서 빠지고 `test_trace_flow.py`, `test_trace_branch.py`가 검증한다
+
 ## [0.6.1] - 2026-10-28
 `trace-screen`, `trace-table` 구현 (trace-* Step 1).
 - `trace-screen <화면>`: 화면 색인 문서(`index-src` 결과)를 읽어 facts/evidence/unresolved로 재구성. 종류·메뉴(번호)·소스·함께 쓰는 클래스, 레이아웃·툴바·입력 위젯, 그리드 컬럼, 이벤트(도달 불가 표시), 버튼(인라인 핸들러는 줄 범위), 서비스(RPC)→SQL ID, 테이블, DB 함수, 서블릿 호출. 근거는 호출 위치(`클래스:줄`)·서버 메서드 줄·SQL의 mapper 파일:줄·색인 커밋/시각, 해석 못 한 호출은 unresolved

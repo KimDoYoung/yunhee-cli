@@ -133,18 +133,52 @@ $ yunhee trace-table sys06_menu -o json --max 2        # 키: command, descripti
 - 실제 ASIS 소스로 `trace-flow X --event E1`의 사슬 끝 테이블이 `analysis sql`/`events`의 결과와 같은지 대조.
 - 존재하지 않는 `--event` → 오류 대신 가능한 이벤트 목록을 `unresolved`에 안내.
 
-### 사용예
-```
-$ yunhee trace-flow Fnd01_Tab_FundSearch --event E3
-## facts
-- E3 삭제 버튼 → onDelete() → fnd01.FundService.delete → fnd01_fund.delete → fnd01_fund(D)
-## evidence
-- Fnd01_Tab_FundSearch.java:188, FundService.java:57, mapper/fnd01_fund.xml:140
+### 구현 결과 (2026-10-28, 0.6.2)
+- **trace-flow는 줄 범위로 사슬을 잇는다**: 화면 색인 문서에 이벤트(`[E3] … → retrieve()`), 메서드 표(`retrieve() L394-432`, 호출처), 서비스 표(호출 위치 `Emp00_Tab_TransInfo:418`)가 모두 있으므로, 서비스 호출 줄이 핸들러의 줄 범위 안인지로 이벤트와 서비스를 결정적으로 잇는다. 메서드 표의 호출처로 간접 호출을 따라가고(`E5 → insert() → retrieve()`), 생성자(E0)와 인라인 핸들러는 이벤트가 알려 주는 줄 범위를 쓴다.
+- **끊기는 곳은 거기서 멈춘다**: 핸들러가 다른 클래스(팝업·조회창)를 열면 "이 이벤트가 여는 하위 화면"으로 알리고 `--class`로 이어서 추적하게 한다. SQL ID가 없는 서비스, 해석 못 한 서비스 호출, 도달 불가 이벤트는 unresolved.
+- **trace-branch의 대상 구분**: `ns.id` 형태가 mapper statement면 mapper 분기, 아니면 화면·클래스(메뉴 번호 포함)로 푼다. 없는 mapper id는 종료 코드 1.
+- **Java 스캔**: 주석과 문자열 리터럴 속 코드를 무시하고(리터럴은 가린 텍스트에서 키워드를 찾고 표시는 원문에서 자른다), 여러 줄 조건은 괄호 짝으로 읽는다. 메서드·생성자별로 묶고, 메서드 표에 없는 구간은 "(메서드 구분 없음)"이다.
+- **mapper 분기**: `<include>` 조각 안의 분기는 조각이 있는 파일:줄을 근거로 낸다. `<choose>` 자체는 `<when>`/`<otherwise>`로 충분해 빼고, `<where>`/`<trim>`/`<set>`은 속성이 있을 때만 알린다. DB 방언(`isTibero` 등) 분기는 업무 분기와 분리한다.
+- **보류**: TOBE 쪽 사슬(컨트롤러 → 서비스 → mapper)과 TOBE mapper 분기는 `trace-pair`/`trace-diff --branch`(Step 3)에서 추가한다. 분기별 SQL 변형(`__pick__`)은 Step 0-c에서 이미 쓰고 있으며 `trace-diff --branch`의 분기 대응표에서 다시 쓴다.
 
-$ yunhee trace-branch fnd01_fund.selectList
+### 사용예
+실제 실행 결과(AssetERP 색인, 줄임 표시는 `…`).
+```
+$ yunhee trace-flow "#1029" -e E3 --side asis
 ## facts
-- <if test="stat != null"> (mapper/fnd01_fund.xml:31)
-- CASE WHEN use_yn = 'Y' ... (mapper/fnd01_fund.xml:35)
+- 이벤트(Emp00_Tab_TransInfo): [E3] transName[재직].Collapse (L225)
+- 핸들러 메서드:
+  - public retrieve() L394-432 (호출처 생성자, E1, E2, E3, E4, insert)
+- 사슬(1):
+  E3 → retrieve() (L418) → 서비스 emp.Emp00_TransInfo.selectByText → 서버 Emp00_TransInfo.java:33
+      SQL emp00_trans_info.selectByText: emp03_trans(R), sys01_company(R), org01_code(R), …
+- 쓰는 테이블: R: emp01_person, emp02_others, emp03_trans, …
+## evidence
+- Emp00_Tab_TransInfo:418 서비스 emp.Emp00_TransInfo.selectByText 호출 / 서버 Emp00_TransInfo.java:33
+
+$ yunhee trace-flow "#1029" -e E5      # E5 → insert() → retrieve(), 여는 하위 화면: Emp03_Edit_Person
+$ yunhee trace-flow "#1029" -e E4 --class Emp02_TabPage_Others   # 하위 클래스의 이벤트: updateOne → emp02_others(CU)
+$ yunhee trace-flow "#1029"            # --event 생략: 이벤트 목록
+
+$ yunhee trace-branch "#1029" --side asis
+## facts
+- 이벤트 조건(3) — 이 조건일 때만 핸들러가 실행됨:
+  - [E2] searchText.KeyPress [Enter] (L209) → 조건 [Enter]
+  - [E12] grid.SelectionChanged [선택>0] (L285) → 조건 [선택>0]
+- 도달 불가 이벤트(1): …
+- 소스 분기(12) — if / else if / switch / throw:
+  생성자:
+    - L95 if (LoginUser.getIsManager())
+  retrieve():
+    - L403 if ("겸직".equals(transName.getText()))
+    - L406 else if ("퇴직".equals(transName.getText()))
+- 활성·표시 조건(4, 식으로 정해지는 것 0): …
+
+$ yunhee trace-branch emp00_trans_info.selectByText --side asis
+- 동적 SQL 분기(18):
+  - L1440 <when test> emp00CompanyId != null  (include common.emp00_trans_info → server/utils/db/mapper/Common.xml)
+  - L381 <when test> isSeparateAddTitle == true
+$ yunhee trace-branch Emp00_Tab_TransInfo --side tobe --tobe <frontend/src>   # TSX 조건
 ```
 
 ---

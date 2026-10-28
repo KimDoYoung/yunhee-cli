@@ -40,6 +40,7 @@ class ParsedSql:
     ctes: list[str] = field(default_factory=list)
     functions: list[str] = field(default_factory=list)
     table_functions: list[str] = field(default_factory=list)  # FROM get_x(...) 처럼 테이블 자리에 쓰인 함수
+    cases: list[str] = field(default_factory=list)  # CASE WHEN … END 식 (분기 지점)
     writes: list[tuple[str, str]] = field(default_factory=list)  # (INSERT|UPDATE|DELETE, 테이블) 나온 순서
     columns: dict[str, list[str]] = field(default_factory=dict)  # 테이블명 → 사용된 컬럼
     output_names: list[str | None] | None = None  # 최상위 SELECT 출력 이름. `*`를 알 수 없으면 None
@@ -74,6 +75,7 @@ class _Collector:
         self.written: set[str] = set()
         self.writes: list[tuple[str, str]] = []
         self.table_functions: list[str] = []
+        self.cases: list[str] = []
         self.ctes: list[str] = []
         self.functions: list[str] = []
         self.alias: dict[str, str] = {}  # 별칭 → 테이블명
@@ -103,6 +105,8 @@ class _Collector:
             self.writes.append((type(node).__name__.removesuffix("Stmt").upper(), name))
             if rel.alias:
                 self.alias[rel.alias.aliasname.lower()] = name
+        elif isinstance(node, ast.CaseExpr):
+            self.cases.append(re.sub(r"\s+", " ", _text(node)))
         elif isinstance(node, ast.RangeFunction):
             for pair in node.functions or ():
                 call = pair[0] if isinstance(pair, (list, tuple)) else pair
@@ -185,6 +189,7 @@ def parse_sql_text(sql: str, schema: Schema | None = None) -> ParsedSql:
         result.tables[name] = flag
     result.writes = list(dict.fromkeys(col.writes))
     result.table_functions = list(dict.fromkeys(col.table_functions))
+    result.cases = list(dict.fromkeys(col.cases))
 
     _resolve_columns(result, col, cte_set, schema)
 
@@ -298,7 +303,7 @@ def _merge(base: ParsedSql, other: ParsedSql) -> None:
     """다른 분기 변형에서만 나온 테이블·CTE·함수·컬럼·변경 작업을 base에 합친다."""
     for name, flag in other.tables.items():
         base.tables[name] = "".join(sorted(set(base.tables.get(name, "") + flag), key="RW".index))
-    for attr in ("ctes", "functions", "table_functions", "writes"):
+    for attr in ("ctes", "functions", "table_functions", "writes", "cases"):
         have = getattr(base, attr)
         have += [x for x in getattr(other, attr) if x not in have]
     for table, cols in other.columns.items():
