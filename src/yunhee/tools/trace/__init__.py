@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
 from typing import Annotated
 
 import typer
 
+from yunhee.tools.trace.render import TraceResult, limit, render
 from yunhee.tools.trace.stub import format_trace_stub
 
 SideOption = Annotated[
@@ -20,6 +23,34 @@ MaxOption = Annotated[
     int | None,
     typer.Option("--max", help="출력 항목 상한"),
 ]
+SrcOption = Annotated[
+    Path | None,
+    typer.Option("--src", help="AS-IS 소스 루트 (기본: YUNHEE_ASIS_SRC_DIR)"),
+]
+SrcIndexOption = Annotated[
+    Path | None,
+    typer.Option("--src-index", help="index-src 색인 폴더 (기본: YUNHEE_SRC_INDEX_DIR 또는 docs/as-is/src)"),
+]
+
+
+def _emit(build: Callable[..., TraceResult], side: str, fmt: str, max_n: int | None, src: Path | None, src_index: Path | None) -> None:
+    """색인을 읽어 결과를 만들고 출력한다. 모호한 대상은 종료 코드 2, 찾지 못하면 1."""
+    from yunhee.tools.analysis.common import AmbiguousTargetError
+    from yunhee.tools.trace.resolve import TargetNotFoundError, load_context
+
+    try:
+        ctx = load_context(side, src=src, src_index=src_index)
+        result = build(ctx)
+    except AmbiguousTargetError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(2) from exc
+    except TargetNotFoundError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(2) from exc
+    typer.echo(render(limit(result, max_n), fmt))
 
 
 def register_trace_commands(app: typer.Typer) -> None:
@@ -67,21 +98,19 @@ def register_trace_commands(app: typer.Typer) -> None:
 
     @app.command(name="trace-screen")
     def trace_screen_cmd(
-        screen_id: Annotated[str, typer.Argument(help="화면 ID 또는 클래스명 (예: Fnd01_Tab_FundSearch, FND0101)")],
+        screen_id: Annotated[str, typer.Argument(help="화면 클래스명, 접두사, 또는 메뉴 번호 (예: Emp00_Tab_TransInfo, Emp00, #1029)")],
+        class_name: Annotated[str | None, typer.Option("--class", "-c", help="하위 클래스의 UI·서비스 상세 (예: Emp02_TabPage_Others)")] = None,
+        tobe: Annotated[Path | None, typer.Option("--tobe", help="TOBE frontend/src 경로 (기본: 작업 폴더의 frontend/src)")] = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
-        """화면 팩트 시트 (필드·라벨, 그리드 컬럼, 버튼, 이벤트, RPC/API, SQL, 테이블, 코드)"""
-        out = format_trace_stub(
-            cmd_name="trace-screen",
-            desc="화면 팩트 시트: 필드·라벨, 그리드 컬럼, 버튼, 이벤트, 호출 RPC/API, SQL, 테이블, 사용 코드 그룹",
-            params={"screen_id": screen_id},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """화면 팩트 시트 (필드·라벨, 그리드 컬럼, 버튼, 이벤트, RPC/API, SQL, 테이블, DB 함수)"""
+        from yunhee.tools.trace.screen import trace_screen
+
+        _emit(lambda ctx: trace_screen(screen_id, ctx, class_name, tobe), side, format, max, src, src_index)
 
     # -------------------------------------------------------------------------
     # 2. 데이터 중심 계층 (Data Centric)
@@ -89,21 +118,19 @@ def register_trace_commands(app: typer.Typer) -> None:
 
     @app.command(name="trace-table")
     def trace_table_cmd(
-        table_name: Annotated[str, typer.Argument(help="테이블명 (예: sys01_company)")],
+        table_name: Annotated[str, typer.Argument(help="테이블명 (예: sys06_menu) 또는 스키마.테이블")],
+        stats: Annotated[bool, typer.Option("--stats", help="DB에 접속해 행 수를 조회 (읽기 전용)")] = False,
+        db: Annotated[str | None, typer.Option("--db", help="스키마 스냅샷 이름 (기본: YUNHEE_SCHEMA_ENV)")] = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
-        """컬럼·코멘트, C/R/U/D SQL과 화면, 동명 컬럼 테이블, 행 수·최근 갱신일"""
-        out = format_trace_stub(
-            cmd_name="trace-table",
-            desc="테이블 컬럼·코멘트, 이 테이블을 C/R/U/D 하는 SQL과 화면, 같은 이름 컬럼을 가진 테이블, 행 수·최근 갱신일",
-            params={"table_name": table_name},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """컬럼·코멘트, C/R/U/D SQL과 화면, 같은 이름의 컬럼을 가진 테이블, 행 수"""
+        from yunhee.tools.trace.table import trace_table
+
+        _emit(lambda ctx: trace_table(table_name, ctx, db, stats), side, format, max, src, src_index)
 
     @app.command(name="trace-column")
     def trace_column_cmd(

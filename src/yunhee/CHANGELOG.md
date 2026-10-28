@@ -2,6 +2,14 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.6.1] - 2026-10-28
+`trace-screen`, `trace-table` 구현 (trace-* Step 1).
+- `trace-screen <화면>`: 화면 색인 문서(`index-src` 결과)를 읽어 facts/evidence/unresolved로 재구성. 종류·메뉴(번호)·소스·함께 쓰는 클래스, 레이아웃·툴바·입력 위젯, 그리드 컬럼, 이벤트(도달 불가 표시), 버튼(인라인 핸들러는 줄 범위), 서비스(RPC)→SQL ID, 테이블, DB 함수, 서블릿 호출. 근거는 호출 위치(`클래스:줄`)·서버 메서드 줄·SQL의 mapper 파일:줄·색인 커밋/시각, 해석 못 한 호출은 unresolved
+- 화면 지정: 클래스명(대소문자 무시), 접두사(`Emp00`), **메뉴 번호**(`#1029` 또는 `1029`, 색인의 `menus.md`). 모호하면 후보와 함께 종료 코드 2, 찾지 못하면 1
+- `--class <하위클래스>`: 그 클래스의 UI와 그 클래스가 호출하는 서비스만 상세 출력. `--side tobe|both`는 같은 클래스명의 TSX를 찾아 `analysis tobe` 요약을 붙인다(`--tobe`로 frontend/src 지정)
+- `trace-table <테이블>`: 스키마 스냅샷의 컬럼·PK·UNIQUE·코멘트, 같은 이름의 컬럼을 가진 테이블(FK가 없어 조인 후보로 제시, 백업·임시 테이블 제외), 참조하는 뷰, mapper 전체를 `sql_parse`로 해석한 C/R/U/D SQL 목록(AST 해석 불가 statement는 `*` 표시), 이 테이블을 쓰는 서비스(`UpdateDataModel` 동적 쓰기 포함)와 호출 클라이언트 클래스·소속 화면(메뉴 번호). `--stats`는 읽기 전용으로 행 수를 조회(최근 갱신일은 컬럼 규칙 미확정이라 제외)
+- 공통: `--src`, `--src-index`로 소스·색인 위치 지정, `--max`는 facts·evidence에만 적용. 구현된 두 명령은 stub 테스트에서 빠지고 `test_trace_screen.py`, `test_trace_table.py`가 검증한다
+
 ## [0.6.0] - 2026-10-28
 `trace-*` 구현 기반(공통 렌더러·대상 해석기, SQL 해석 어댑터)과 기존 SQL 해석 코드를 pglast 기반으로 통합.
 - 신규 의존성 `pglast>=8.7` (PostgreSQL 서버 파서 libpg_query 바인딩, 바이너리 휠)

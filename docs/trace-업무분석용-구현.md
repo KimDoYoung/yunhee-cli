@@ -59,158 +59,54 @@
 - `tests/test_trace_render.py`: 3블록 순서, json 키, `--max` 절단과 "나머지 N건", 빈 facts.
 - `tests/test_trace_resolve.py`: 화면ID/클래스명 해석, 모호 대상 오류, 색인 없음 → `unresolved`.
 
+### 구현 결과 (2026-10-28, 0.6.1)
+- **화면ID는 메뉴 번호로 푼다**: 색인의 `menus.md`(`sys06_menu.sys06_menu_no`)가 번호 → 화면 클래스를 잇는다. `trace-screen #1029`(또는 `1029`), 클래스명, 접두사(`Emp00`)를 모두 받는다. 앞서 미결이던 "화면ID 정규화"의 답이다.
+- **trace-screen은 새 파서 없이 색인 문서를 재구성한다**: `index-src`가 이미 화면 문서에 메뉴·서비스(RPC)→서버→SQL ID·테이블·DB 함수·이벤트·Grid Spec·버튼을 담아 두므로 `tools/trace/screen.py`가 그 마크다운을 구조화해 3블록으로 낸다. SQL의 mapper 파일:줄은 `_index.json`에서 찾는다. 인라인 핸들러가 있는 버튼은 줄 범위(`인라인 L269-276`)로 줄인다.
+- **`--class`**: 하위 클래스(탭 페이지·팝업)의 UI와 그 클래스가 호출하는 서비스만 보여 준다. 기본 출력은 주 클래스 상세 + 하위 클래스별 이벤트·버튼·그리드 개수 요약이다.
+- **trace-table의 화면 역추적**: SQL → 서버 메서드(`server_classes[].methods[].sqls`) → 서비스 키 → 호출 클라이언트 클래스(`client_classes[].services`) → 소속 화면(`refs` 역탐색)으로 잇는다. 화면을 만나면 더 올라가지 않고(화면을 여는 화면은 호스트가 아니다), 클래스당 3개까지만 보이고 나머지는 개수로 접는다. `UpdateDataModel(테이블)`의 동적 INSERT/UPDATE/DELETE도 서비스에 포함한다.
+- **FK 없음**: 스냅샷의 `refs`가 비어 있어(DB에 FK가 정의돼 있지 않음) "같은 이름의 컬럼을 가진 테이블"을 조인 후보로 제시한다. 백업·임시 테이블(`_20211118`, `bak` 등)은 개수만 알리고 뺀다.
+- **성능**: `trace-table`은 mapper 3,480개를 해석하므로 첫 호출에 3초쯤 걸린다(프로세스 안에서만 캐시).
+- **보류**: `trace-table`의 최근 갱신일(갱신 일시 컬럼 규칙 미확정), TOBE 쪽 SQL·화면 사용처(Step 3 `trace-pair`와 함께).
+- **옵션**: `--src`, `--src-index`(색인 위치), `trace-screen`의 `--class`, `--tobe`, `trace-table`의 `--stats`, `--db`(스냅샷 이름).
+
 ### 사용예
+실제 실행 결과(AssetERP 색인 `~/work/framework-sprt/AssetERP/docs/as-is/src`, 줄임 표시는 `…`).
 ```
-$ yunhee trace-screen Fnd01_Tab_FundSearch --max 5
-$ yunhee trace-screen FND9999
+$ yunhee trace-screen "#1029" --side asis --src-index <색인 경로> --max 4
 ## facts
-(없음)
-## unresolved
-- 화면 'FND9999'를 색인에서 찾지 못함. 후보: Fnd01_Tab_FundSearch, Fnd09_Tab_Report
-```
-
----
-
-## Step 0-b. SQL 파싱 어댑터
-
-`trace-table`, `trace-column`, `trace-state`, `trace-crud`, `trace-branch`, `trace-diff`가 모두 SQL을 해석하므로 먼저 만든다. 현재 `src_indexer`의 `TABLE_KEYWORD_RE`는 정규식이라 `UPDATE`/`INSERT INTO` 대상과 CTE 구분이 부정확하다(수정사항 021 A-2 참고).
-
-### 구현내용
-`src/yunhee/tools/sql_parse.py` (`tools/sql/`은 `menus.sql` 같은 데이터 폴더라 평평한 모듈로 둔다. 의존성 `pglast>=8.7` — PostgreSQL 서버 파서 `libpg_query`의 Python 바인딩, PostgreSQL 전용).
-
-1. **MyBatis 전개**: `mybatis_render.py` / `comparator.render_mybatis_sql`을 재사용한다.
-   - `#{x}` → `$n` 또는 `NULL`, `<include>` 전개, CDATA 보존.
-   - `<if>`/`<choose>`는 **모든 분기를 켠 최대형 SQL**(`explain` 모드)로 만든다. 테이블·컬럼 추출은 이것으로 한다. **분기별 변형은 Step 2(`trace-branch`)에서 만든다.**
-   - `${}` 치환은 풀 수 없으므로 `unresolved`에 남긴다.
-2. **AST 파싱**: `pglast.parse_sql()`.
-   - 테이블: `RangeVar`. 읽기/쓰기는 최상위 노드 종류(Select/Insert/Update/Delete)로 구분하고 CTE 이름은 제외한다.
-   - 컬럼: `ColumnRef`. UPDATE의 SET 대입(`ResTarget`)과 WHERE는 별도로 모은다(`trace-state` 재료). INSERT 컬럼 목록도 모은다.
-3. **별칭 해석**: FROM/JOIN의 `RangeVar.alias`로 `{별칭: 테이블}` 맵을 만들어 직접 해석한다. 한정자 없는 컬럼과 `SELECT *`는 스냅샷 스키마(`schema_snapshot`)로 보강하고, 보강할 수 없으면 `unresolved`.
-4. **실패 폴백**: 파싱이 실패하면 기존 정규식으로 추정하되 결과에 `파싱 실패, 정규식 추정`을 표시한다. 틀린 값을 사실처럼 내지 않는다.
-5. 파서 호출은 이 모듈 한 곳에만 둔다(나중에 교체 가능하도록).
-
-### 구현검증
-- `uv add pglast` 후 실제 사용 Python에서 `import pglast`가 되는지, **바이너리 휠로 설치되는지(소스 빌드 없음)** 확인한다. pglast 7.x는 Python 3.14 바이너리 휠을 제공한다고 알려져 있으므로 `requires-python`(현재 `>=3.13`)과 맞는지 먼저 확인하고, 안 맞으면 `pyproject.toml`을 조정한다.
-- `tests/test_trace_sqlparse.py` 단위 테스트: `WITH upsert AS (...) INSERT ...`(CTE 제외), `::` 캐스트, `ON CONFLICT`, `RETURNING`, `f_create_seq()` 호출, UPDATE SET/WHERE 추출, 별칭 해석, `${}` → `unresolved`.
-- **스모크**: `mapper_index`(또는 ASIS `mapper/*.xml`) 전체를 전개 + 파싱해 성공률과 실패 목록을 출력하는 스크립트(`tools/` 아래). 실패는 원인별로 분류해 어댑터를 보강한다. 이 결과를 이후 단계의 정확도 기준선으로 삼는다.
-- (선택) 서버 로그의 실제 실행 SQL(`log trace`)에서 뽑은 테이블 집합과 비교한다.
-
-### 사용예
-내부 모듈이라 CLI는 없다. 코드 사용:
-```python
-from yunhee.tools.sql_parse import parse_statement, parse_sql_text
-res = parse_statement("emp02_others.upsert", statements, schema)   # MyBatis statement
-res.data.tables       # {"emp02_others": "W"}   (upsert는 CTE라 제외, R/W/RW)
-res.data.ctes         # ["upsert"]
-res.data.unresolved   # []
-parse_sql_text("select * from sys06_menu", schema).output_names   # 스냅샷으로 15개 컬럼 확장
-```
-
----
-
-## Step 0-c. 기존 SQL 해석 코드 통합
-
-pglast 어댑터(Step 0-b)가 생기면 같은 일을 정규식·괄호 깊이 계산으로 하던 기존 코드가 어댑터와 다른 결과를 내게 된다. `trace-*`와 기존 명령(`analysis sql`, `prepare`, `index-src`)이 서로 다른 테이블 목록을 말하지 않도록, 기존 코드를 어댑터로 옮긴다. `trace-*`의 정확도 기준을 한 곳에 두는 선행 작업이다.
-
-### 현황 (교체 대상)
-
-| 위치 | 하는 일 | 문제 |
-|---|---|---|
-| `tools/parse_mapper.py` `TABLE_RE` | mapper 참조 테이블을 `mapper_index`에 저장 | `from\|join\|into\|update` 뒤 단어를 그대로 잡는다. CTE 제외가 없고 `EXTRACT(year FROM col)`의 `FROM`도 테이블로 잡는다. 노이즈는 `"_" in n` 관례로만 거른다. |
-| `tools/as_is/src_indexer.py` `parse_mappers` | 화면→SQL→테이블 호출 경로 색인 | 별도 정규식(`TABLE_KEYWORD_RE`, `CTE_RE`). `CTE_RE`는 `\w+ as (`라 CTE가 아닌 곳도 잡고, `known_tables`와 같은 단어는 전부 테이블로 간주해 컬럼명과 겹치면 오탐이 난다. |
-| `tools/analysis/sql.py` | `analysis sql`의 테이블·CTE 추출, CTE 접기, WHERE 분리 | `'` 토글과 괄호 깊이를 직접 세는 스캐너(`''` 이스케이프, 주석 미처리). UPDATE/INSERT 대상을 못 잡는다(수정사항021 A-2). |
-| `tools/analysis/model.py` | 모델 ↔ SQL 대조 | `FROM\|JOIN`만 보고, "컬럼"을 본문의 모든 단어로 둔다. |
-| `tools/as_is/events.py` `find_mapper_for_model` | 모델의 대표 테이블 | XML의 첫 `from` 뒤 단어를 테이블로 본다. |
-| `tools/as_is/sql_checker.py` `select_output_names` 외 | SELECT 출력 이름 추출 | `_mask_sql`, `_depth0_matches`, `split_top_level`을 직접 구현. AS 없는 별칭은 정규식 휴리스틱. |
-
-mapper를 읽는 경로도 3가지가 따로 있다: `parse_mapper.py`(`xml.etree`), `src_indexer.parse_mappers`(정규식 + `strip_sql`), `mybatis_render.load_statements`(자체 `parse_xml`, 별개의 `Statement` 클래스). 그래서 `mapper_index`(`page_schema`, `mapper_verify`, `prepare`가 사용)와 색인의 테이블 목록이 달라질 수 있다.
-
-### 구현내용
-통합 기준은 **`mybatis_render.render(mode="explain")`로 만든 SQL을 Step 0-b 어댑터에 넣는 것**이다. 이 모드가 이미 `#{}`와 `<if>`를 풀어 EXPLAIN 가능한 SQL을 만든다. `<include>` 조각도 전개되므로 조각의 테이블 상속(`src_indexer`의 `resolve()`)이 렌더링 결과로 해결된다.
-
-1. `parse_mapper.py`: `_extract_tables()`를 어댑터 호출로 교체(CTE 제외, 쓰기 대상 포함). `"_" in n` 필터는 제거하되, 파싱 실패 문장은 기존 정규식으로 폴백한다. `mapper_index`의 컬럼 구성은 유지한다(`page_schema`, `mapper_verify` 호환). 필요하면 쓰기/읽기 구분 컬럼은 후속으로 추가.
-2. `src_indexer.parse_mappers`: `st.tables`, `st.ctes`, `st.functions` 계산을 어댑터로 교체한다. 호출 경로 색인 형식(`Statement` 필드, 출력 md)은 바꾸지 않는다.
-3. `analysis/sql.py`: 테이블·CTE 추출과 `_fold_cte_and_section`의 CTE 판별을 어댑터 결과로 교체한다. WHERE 분리는 AST의 `whereClause` 위치(`location`)를 쓰되 출력 문자열 형식은 그대로 둔다. 수정사항021 A-2의 기대 출력(`테이블`/`CTE` 줄)을 만족시킨다.
-4. `analysis/model.py`, `events.find_mapper_for_model`: 테이블 탐색을 어댑터 호출로 교체한다.
-5. `sql_checker.select_output_names`: `SelectStmt.targetList`의 `ResTarget`(별칭), `ColumnRef`(컬럼명), `FuncCall`(함수명), `A_Star`(`*`면 `None`)로 교체하고 `_mask_sql`, `_depth0_matches`(sql_checker 내부 사용분), 별칭 휴리스틱을 제거한다. `sql_porter`가 `_depth0_matches`를 import하므로 **그 함수는 삭제하지 않고** 남긴다.
-6. mapper 로더 통합은 이번 단계에서 하지 않는다(범위 초과). 대신 위 1~2번이 모두 같은 어댑터를 쓰게 해서 결과만 일치시킨다.
-
-**제외 (후속 과제)**: `sql_porter`는 SQL을 재작성하는 코드라 위험이 커서 이번에는 건드리지 않는다(AST의 `location` 기반 부분 교체는 나중에 검토). `sql_drift.normalize_sql_for_drift`는 MyBatis 태그가 섞인 텍스트를 비교하므로 유지한다(렌더링 후 AST 지문 비교는 선택 사항).
-
-### 구현검증
-**회귀 방지 절차 (교체 전에 먼저 만든다)**
-1. 교체 전 코드로 전체 mapper의 `(namespace.sqlId → 테이블 집합, CTE 집합)` 덤프를 JSON으로 저장한다(스냅샷 A).
-2. 교체 후 같은 덤프를 만든다(스냅샷 B).
-3. A와 B의 차이를 목록으로 만들어 항목마다 분류한다: ① 오탐 제거(좋음) ② 신규 누락(나쁨) ③ 파싱 실패 폴백. ②가 0이 될 때까지 어댑터를 보강한다. 분류 결과는 CHANGELOG에 요약한다.
-
-**테스트**
-- `tests/test_parse_mapper.py`(신규 또는 보강): `EXTRACT(year FROM col_name)`가 테이블로 잡히지 않음, CTE 제외, `UPDATE`/`INSERT INTO`/`DELETE FROM` 대상 포함, `ON CONFLICT DO UPDATE SET`이 테이블로 오인되지 않음.
-- `tests/test_analysis.py`: 수정사항021 A-2의 `emp02_others.upsert`(테이블 `emp02_others`, CTE `upsert`), `emp00_trans_info.selectByText`(`emp00`, `org00`이 CTE로 분리, 중복 제거) 기대 출력.
-- `tests/test_sql_checker.py`: `select_output_names`의 기존 케이스(`count(*) cnt`, `t.col c`, 캐스트, 함수 호출, `*` → `None`)를 그대로 통과 + 서브쿼리/CASE/`DISTINCT ON` 추가 케이스.
-- 기존 전체 테스트(`uv run pytest`) 통과. 실제 ASIS 소스에 의존하는 기존 테스트의 현재 실패 5건(`test_comparator`, `test_events`)은 이번 변경과 무관하게 유지되는지 확인한다.
-- 출력 형식 불변 확인: `yunhee analysis sql …`, `index-src` 결과의 기존 문자열을 grep하는 검증 스크립트(수정사항 문서의 `*-check.sh`)가 있다면 다시 돌린다.
-
-### 구현 결과 (2026-10-28, 0.6.0)
-Step 0-b/0-c를 구현하며 확정한 사항과 회귀 확인 결과.
-
-- **`<choose>` 분기 전수 조사**: `explain` 모드는 `<choose>`에서 한 분기만 고르므로 그대로 쓰면 다른 `<when>`의 테이블이 누락된다. `mybatis_render`의 `explain`에 `__pick__` 파라미터를 추가하고(기본값 0은 기존 동작), `parse_statement`가 분기를 바꿔 가며(최대 8회) 전개해 결과를 합친다. PostgreSQL 문법이 아닌 분기(Tibero `START WITH` 등)는 정규식으로 추정한 테이블만 합치고 `unresolved`에 알린다. 이 변형 전개는 Step 2(`trace-branch`)의 분기별 SQL로 재사용한다.
-- **Tibero 전용 분기 제외**: `explain` 모드가 `isTibero` 분기를 버리므로 그 분기에만 있는 테이블은 나오지 않는다(예: `msc01_schedule.selectCalendar2`의 `org00_org_info`). PostgreSQL 기준 동작이다.
-- **적용 범위**: `parse_mapper.py`, `src_indexer.parse_mappers`, `analysis sql`(md), `analysis model`, `events.find_mapper_for_model`, `sql_checker.select_output_names`. 해석할 수 없는 statement와 `<sql>` 조각은 기존 정규식 경로를 유지한다. 별칭 호환을 위해 따옴표가 필요한 출력 이름은 `"fooBar"`처럼 따옴표를 유지한다.
-- **회귀 확인** (`tools/dump_sql_tables.py`, ASIS 소스 3,480 statement): 교체 전후 덤프를 비교했다. 스키마에 실제로 있는 테이블이 새로 빠진 statement는 2건인데 둘 다 의도된 차이다(`emp00_trans_info.selectByStepTypeCode`는 `<include refid>` 조각 이름이 테이블로 오인되던 것, `msc01_schedule.selectCalendar2`는 Tibero 전용 분기). 그 밖의 "빠짐"은 주석 처리된 SQL, `AS 별칭`, `EXTRACT(… FROM 컬럼)`, CTE 이름 같은 오탐 제거였다. 실존하지 않는 이름의 비율은 parse_mapper 216/7,264 → 146/8,139, analysis 189/6,923 → 105/7,811로 줄었다.
-- **영향**: `mapper_index`가 바뀌므로 `uv run tools/parse_mapper.py`를 다시 실행해야 한다. 기존 출력 형식은 바꾸지 않았다.
-
-### 사용예
-사용자 명령은 그대로고, 결과가 정확해진다.
-```
-$ uv run tools/parse_mapper.py          # mapper_index 재빌드 (CTE/EXTRACT 오탐이 사라진 테이블 목록)
-$ yunhee analysis sql emp02_others.upsert
-### `emp02_others.upsert` (server/emp/mapper/emp02_others.xml:66)
-- **테이블**: emp02_others
-- **CTE**: upsert
-$ yunhee table --page ast01              # page_schema가 정리된 mapper_index를 사용
-```
-
----
-
-## Step 1. `trace-screen`, `trace-table`
-
-가장 빨리 나오고 활용도가 가장 높다. 기존 색인을 재조합한다.
-
-### 구현내용
-
-**trace-screen `<화면ID>`**
-- 입력: 색인 `screens/<클래스>.md`와 `_index.json`, `tools/analysis/{screen,ui,grid}.py`, `events.extract_events_and_methods`.
-- 출력 facts: 필드·라벨, 그리드 컬럼, 버튼, 이벤트(En), 호출 RPC/API(ServiceRequest 키), SQL(sqlId), 테이블, 사용 코드 그룹.
-- evidence: 항목마다 `파일:줄` 또는 `mapper id`.
-- `--side tobe`: `tools/analysis/tobe.py`로 TSX/Java 요약(컴포넌트, API 호출).
-- unresolved: 동적으로 만들어지는 서비스 키, 색인에 없는 하위 클래스.
-
-**trace-table `<테이블>`**
-- 입력: DBML 스냅샷(`schema_snapshot`), 색인 `tables/<도메인>.md`, Step 0-b의 SQL 파싱.
-- 출력 facts: 컬럼·코멘트, 이 테이블을 C/R/U/D 하는 SQL과 화면, 같은 이름의 컬럼을 가진 테이블.
-- 행 수·최근 갱신일은 DB 접속이 될 때만(`SELECT`만 허용). 접속 불가 시 `unresolved`.
-
-### 구현검증
-- `tests/test_trace_screen.py`, `tests/test_trace_table.py`: 가짜 색인 디렉터리(tmp_path)로 단위 테스트.
-- 실제 ASIS 소스가 있으면 `Emp00_Tab_TransInfo` 같은 기존 검증 화면으로 `analysis screen`/`events` 결과와 필드·버튼·이벤트 수가 일치하는지 대조(없으면 skip).
-- `trace-table`의 C/R/U/D 분류를 `mapper_index`와 Step 0-b 스모크의 결과로 샘플 대조한다.
-- md/json 구조, `--max` 절단, `--side` 분기 확인.
-
-### 사용예
-```
-$ yunhee trace-screen Fnd01_Tab_FundSearch
-## facts
-- 버튼: 조회(E1), 저장(E2), 삭제(E3)
-- 그리드: 펀드목록 (펀드코드, 펀드명, 상태)
-- SQL: fnd01_fund.selectList, fnd01_fund.update
-- 테이블: fnd01_fund(R,U), sys05_code(R)
+- 종류: 화면
+- 메뉴: 경영관리 > 01. 조직 및 사원관리 > 사원정보 관리 (#1029)
+- 메뉴: 기본정보 > 기본정보 > 사원정보 등록 (#1452)
+- 소스: client/vi/emp/Emp00_Tab_TransInfo.java
+… 나머지 12건
 ## evidence
-- Fnd01_Tab_FundSearch.java:142 (E1 handler)
-- mapper/fnd01_fund.xml:23 (selectList)
+- client/vi/emp/Emp00_Tab_TransInfo.java (UI 클래스 Emp00_Tab_TransInfo)
+- emp.Emp00_TransInfo.selectByText 호출: Emp00_Lookup_PersonnelRecordCard:165, Emp00_Tab_TransInfo:418 / 서버 Emp00_TransInfo.java:33
+… 나머지 135건
 ## unresolved
-- Fnd01_Tab_FundSearch.java:210 서비스 키가 변수로 구성됨
+- 해석 못 한 서비스 호출 `Emp00_Tab_TransInfo:387` `null`
+- 이벤트 주의(Emp00_Tab_TransInfo): 도달 불가: tempDownloadButton 컬럼·툴바 미연결
 
-$ yunhee trace-table fnd01_fund --side asis -o json   # 키: command, side, facts, evidence, unresolved
+$ yunhee trace-screen Emp00_Tab_TransInfo --class Emp02_TabPage_Others --side asis    # 하위 클래스 상세
+$ yunhee trace-screen Emp00_Tab_TransInfo --side tobe --tobe <frontend/src>            # TOBE 요약
+
+$ yunhee trace-table emp02_others --side asis
+## facts
+- 테이블: public.emp02_others — Others 개인정보
+- PK: …
+- 컬럼(21): …
+- 같은 이름의 컬럼을 가진 테이블: 없음 (컬럼명에 테이블 접두사가 붙어 있어 조인 후보를 이름으로 찾을 수 없다)
+- SQL 사용 62개 (C 등록 / R 조회 / U 수정 / D 삭제):
+  C(3): emp02_others.insert, emp02_others.insertCopy, emp02_others.upsert
+  R(58): …
+  U(2): emp02_others.updateHireDate, emp02_others.upsert
+  D(1): emp02_others.deleteByPersonId
+- 서비스를 호출하는 클래스와 소속 화면(71): …
+## unresolved
+- mapper 22개는 PostgreSQL 문법이 아니라 정규식으로 추정해 R로만 집계함 (* 표시)
+
+$ yunhee trace-table sys06_menu --stats --side asis    # 행 수: 665 (읽기 전용 SELECT count)
+$ yunhee trace-table sys06_menu -o json --max 2        # 키: command, description, side, options, params, facts, evidence, unresolved, omitted
 ```
 
 ---

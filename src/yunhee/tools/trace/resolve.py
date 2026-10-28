@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -90,13 +91,53 @@ def screen_names(ctx: TraceContext) -> list[str]:
     return sorted(names)
 
 
-def resolve_screen(target: str, ctx: TraceContext) -> str:
-    """화면ID 또는 클래스명을 색인의 클래스명 하나로 해석한다.
+@dataclass
+class MenuEntry:
+    path: str  # 메뉴 경로 (예: "경영관리 > 01. 조직 및 사원관리 > 사원정보 관리")
+    no: str  # 메뉴 번호 (sys06_menu.sys06_menu_no, 예: "1029")
+    use: str
+    screen: str | None  # 화면 클래스. MenuOpener에 없으면 None
 
-    우선순위: 정확히 일치(대소문자 무시) → 접두사 일치(`Fnd01` → `Fnd01_Tab_FundSearch`).
+
+_MENU_ROW = re.compile(r"^\|\s*(?P<path>[^|]+?)\s*\|\s*(?P<no>\d+)\s*\|\s*(?P<use>[^|]*?)\s*\|\s*(?P<screen>[^|]*?)\s*\|\s*$")
+_SCREEN_LINK = re.compile(r"\[`([^`]+)`\]")
+
+
+def load_menus(ctx: TraceContext) -> list[MenuEntry]:
+    """색인의 menus.md(`| 메뉴 | # | 사용 | 화면 |`)를 읽는다. 없으면 빈 목록."""
+    if not ctx.src_index:
+        return []
+    path = ctx.src_index / "menus.md"
+    if not path.is_file():
+        return []
+    entries = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = _MENU_ROW.match(line)
+        if not m:
+            continue
+        link = _SCREEN_LINK.search(m["screen"])
+        entries.append(MenuEntry(m["path"], m["no"], m["use"], link.group(1) if link else None))
+    return entries
+
+
+def resolve_screen(target: str, ctx: TraceContext) -> str:
+    """화면 번호·클래스명을 색인의 클래스명 하나로 해석한다.
+
+    - 메뉴 번호: `#1029` 또는 `1029` (sys06_menu.sys06_menu_no. menus.md로 화면 클래스를 찾는다)
+    - 클래스명: 정확히 일치(대소문자 무시) → 접두사 일치(`Fnd01` → `Fnd01_Tab_FundSearch`)
     후보가 여러 개면 AmbiguousTargetError, 없으면 TargetNotFoundError.
     """
     key = target.strip().removesuffix(".md")
+    num = key.removeprefix("#")
+    if num.isdigit():
+        hits = [m for m in load_menus(ctx) if m.no == num]
+        if not hits:
+            raise TargetNotFoundError(target)
+        screens = list(dict.fromkeys(m.screen for m in hits if m.screen))
+        if not screens:
+            raise TargetNotFoundError(target, [f"메뉴 #{num}({hits[0].path})은 화면 클래스가 없음(MenuOpener 없음)"])
+        return screens[0]
+
     names = screen_names(ctx)
     lowered = key.lower()
 
@@ -109,3 +150,14 @@ def resolve_screen(target: str, ctx: TraceContext) -> str:
     if candidates:
         raise AmbiguousTargetError(candidates[:MAX_CANDIDATES], target)
     raise TargetNotFoundError(target, difflib.get_close_matches(key, names, n=5, cutoff=0.5))
+
+
+def find_class_doc(ctx: TraceContext, name: str) -> Path | None:
+    """클래스의 색인 문서(`<도메인>/screens|components/<클래스>.md`). 화면이 우선이다."""
+    if not ctx.src_index:
+        return None
+    for kind in ("screens", "components"):
+        found = sorted(ctx.src_index.glob(f"*/{kind}/{name}.md"))
+        if found:
+            return found[0]
+    return None

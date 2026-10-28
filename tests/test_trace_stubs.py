@@ -30,6 +30,11 @@ ALL_TRACE_COMMANDS = [
 ]
 
 
+# 구현이 끝난 명령은 전용 테스트(test_trace_screen.py, test_trace_table.py)가 검증한다
+IMPLEMENTED = {"trace-screen", "trace-table"}
+STUB_COMMANDS = [(name, args) for name, args in ALL_TRACE_COMMANDS if name not in IMPLEMENTED]
+
+
 def test_all_trace_commands_help():
     """Verify that all 18 trace-* commands provide help."""
     for cmd_name, _ in ALL_TRACE_COMMANDS:
@@ -41,8 +46,8 @@ def test_all_trace_commands_help():
 
 
 def test_all_trace_commands_markdown():
-    """Verify standard 3 markdown blocks (## facts, ## evidence, ## unresolved) for all 18 commands."""
-    for cmd_name, sample_args in ALL_TRACE_COMMANDS:
+    """Verify standard 3 markdown blocks (## facts, ## evidence, ## unresolved) for all stub commands."""
+    for cmd_name, sample_args in STUB_COMMANDS:
         result = runner.invoke(app, [cmd_name] + sample_args + ["--side", "asis", "--format", "md"])
         assert result.exit_code == 0, f"{cmd_name} failed: {result.output}"
         assert "## facts" in result.output
@@ -53,8 +58,8 @@ def test_all_trace_commands_markdown():
 
 
 def test_all_trace_commands_json():
-    """Verify JSON output structure for all 18 commands."""
-    for cmd_name, sample_args in ALL_TRACE_COMMANDS:
+    """Verify JSON output structure for all stub commands."""
+    for cmd_name, sample_args in STUB_COMMANDS:
         result = runner.invoke(app, [cmd_name] + sample_args + ["-o", "json", "--side", "tobe"])
         assert result.exit_code == 0, f"{cmd_name} JSON failed: {result.output}"
         data = json.loads(result.output)
@@ -71,11 +76,11 @@ def test_all_trace_commands_json():
 
 def test_max_option():
     """Verify --max option is recorded in output."""
-    r_md = runner.invoke(app, ["trace-table", "sys01_company", "--max", "20"])
+    r_md = runner.invoke(app, ["trace-map", "--domain", "sys", "--max", "20"])
     assert r_md.exit_code == 0
     assert "max=20" in r_md.output
 
-    r_json = runner.invoke(app, ["trace-table", "sys01_company", "--max", "20", "-o", "json"])
+    r_json = runner.invoke(app, ["trace-map", "--domain", "sys", "--max", "20", "-o", "json"])
     assert r_json.exit_code == 0
     data = json.loads(r_json.output)
     assert data["options"]["max"] == 20
