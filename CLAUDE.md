@@ -39,6 +39,8 @@ uv run yunhee log tail                                # 최근 전체 로그 흐
 uv run yunhee analysis screen <화면> --list           # 화면 및 연결 컴포넌트 클래스 목록 통계 (--no-linked 지원)
 uv run yunhee analysis screen <화면> --section layout # GXT 폼 탭 레이아웃(라벨 폭, 행 구조, 위젯 크기, readOnly/disable) 추출
 uv run yunhee agent-guide                        # 상용 AI 에이전트용 토큰 절약 지침서(Markdown) 출력
+uv run yunhee trace-guide                        # 업무파악(trace-*) 명령 18개의 에이전트용 지침 (명령 목록은 코드에서 생성)
+uv run yunhee trace-screen "#1029" --tobe <TOBE 루트>   # 업무파악 계층 예: 화면 팩트 시트. 나머지는 trace-guide·docs/trace-업무분석용-*.md 참고
 uv run yunhee changelog                          # 현재 버전 변경 내용. 0.1.3(특정 버전) / --since 0.1.1 / --all
 
 uv run tools/parse_mapper.py     # ASIS mapper XML → sqlite mapper_index 빌드 (prepare grounding 검증용)
@@ -100,6 +102,16 @@ uv tool install --editable .     # yunhee를 전역 PATH에 editable로 설치 (
 - `src/yunhee/tools/page_schema.py` — `page_tables(page_code)`: 페이지 mapper XML(`legacy_page.find_page_mapper_paths()`)의 `mapper_index.tables`를 모아 참조 횟수 순으로 반환. 정규식 휴리스틱이라 CTE 별칭 같은 노이즈(`ast_tree` 등)가 섞이며, 스냅샷 대조 후 `missing`으로 표시된다.
 - `src/yunhee/context/schema_context.py` — `page_schema_section(page_code, env_name)`: 위 두 tool을 조합해 prepare에 붙일 마크다운 섹션 생성. mapper_index/스냅샷이 없으면 예외 대신 안내 문구.
 - `tools/parse_mapper.py` — (패키지 밖 유틸리티) ASIS MyBatis mapper XML 전체를 스캔해 `mapper_index`(mapperName/sqlId/참조 테이블 등)와 `mapper_index_meta`(빌드 시각)를 `data/db/yunhee.db`에 만든다. ASIS 소스가 바뀌면 재실행.
+
+### 업무파악 계층 `trace-*` (0.6.x, 18개 명령 모두 구현)
+
+ASIS·TOBE 소스·스키마 스냅샷·mapper SQL을 **LLM 없이 결정적으로** 읽어 `facts / evidence / unresolved` 3블록으로 낸다. 설계는 `docs/trace-업무분석용-설계.md`, 단계별 구현 결과와 실제 실행 예는 `docs/trace-업무분석용-구현.md`.
+
+- `src/yunhee/tools/sql_parse.py` — MyBatis를 `mybatis_render`의 `explain` 모드로 전개해 `pglast`(PostgreSQL 파서)로 해석하는 어댑터. 테이블(R/W)·CTE·함수·컬럼 귀속과 쓰인 절·출력 이름·대입(WHERE 포함)·CASE. 문법 오류는 정규식 추정(`fallback`)으로 되돌리고 그렇다고 표시한다. **SQL을 읽는 코드를 새로 쓰기 전에 이 모듈을 먼저 쓴다** (기존 `parse_mapper.py`·`src_indexer`·`analysis sql`도 이 모듈로 통합돼 있다).
+- `src/yunhee/tools/trace/` — `render.py`(3블록·`--max`, `options["document"]`면 문서형), `resolve.py`(`--side`·색인·화면 이름/메뉴 번호 해석), `tobe.py`(TSX→api→컨트롤러→서비스→mapper 체인과 TOBE 소스의 `AS-IS` 주석 색인 — **짝은 이 주석을 근거로만 짓는다**), `sqlscan.py`(mapper 전체 해석 캐시), `db.py`(읽기 전용 DB 조회, 실패는 unresolved), 그 밖에 명령별 모듈. 명령 등록은 `__init__.py`의 `register_trace_commands`.
+- `src/yunhee/store/trace_rules.py` — `trace-rule`의 sqlite 저장소(`trace_rule`·`trace_rule_evidence`, 프로젝트별). **trace-* 중 유일하게 쓰는 명령.** 근거는 저장 시 실제로 읽어 확인하고 내용 해시로 `verify`한다 (줄 번호가 아니라 내용으로 OK/MOVED/STALE/MISSING 판정).
+- 규약: `--tobe`는 TOBE 프로젝트 루트 또는 `frontend/src`, ASIS 색인은 `--src-index`/`YUNHEE_SRC_INDEX_DIR`. 종료 코드 0 정상 / 1 대상 없음·`verify` 실패 / 2 사용법·모호한 대상. 개인정보 보호로 `trace-column --stats`는 고유 값 30종 이하 컬럼만 값을 낸다.
+- 테스트: `tests/conftest.py`의 `world`(가짜 ASIS 색인·mapper와 TOBE 트리)·`fake_schema`·`rule_db`(임시 sqlite — **실제 `data/db/yunhee.db`를 건드리지 말 것**)를 쓴다.
 
 ### 설계 원칙 (미구현 레이어에도 적용)
 

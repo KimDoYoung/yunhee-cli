@@ -329,23 +329,72 @@ $ yunhee trace-doc emp --tobe <TOBE> > docs/emp-개요.md      # 골격 (표는 
 
 ## Step 5. 나머지 8개
 
-| 명령 | 구현내용 | 구현검증 | 사용예 |
-|---|---|---|---|
-| `trace-map [--domain]` | 색인 `_index.json`을 도메인별로 집계: 화면 수, 테이블 수, ASIS↔TOBE 매핑 상태(TOBE 소스 존재 여부, `drift` baseline) | 가짜 색인으로 도메인 집계, `--domain` 필터 | `yunhee trace-map --domain fnd` |
-| `trace-menu [<경로>]` | 색인 `menus.md`의 메뉴 트리 → ASIS 화면 클래스 → TOBE 화면/API | 경로 일부로 검색, 매핑 없는 메뉴는 `unresolved` | `yunhee trace-menu "시스템관리 > 권한관리"` |
-| `trace-column <테이블.컬럼>` | Step 0-b로 이 컬럼을 읽는/쓰는/WHERE에 쓰는 SQL, 표시 화면 라벨. 값 분포는 DB 접속 시만(`SELECT`, 상한 있음) | 존재하지 않는 컬럼 안내, DB 미접속 시 `unresolved` | `yunhee trace-column fnd01_fund.stat_cd` |
-| `trace-code <코드그룹>` | 공통 코드 테이블의 값·명칭, 사용처(콤보 정의, SQL 리터럴, Java/TS 상수 비교) | 가짜 코드/사용처 샘플, 코드 테이블 위치 설정(`config`) 확인 | `yunhee trace-code USE_YN` |
-| `trace-crud [--domain\|--screen\|--table]` | Step 0-b 결과로 화면×테이블 CRUD 매트릭스. 필터 조합 지원 | 단일/복합 필터, 행·열 상한 `--max` | `yunhee trace-crud --domain fnd` |
-| `trace-dblogic [<이름>]` | DBML 스냅샷의 function/procedure/trigger 본문, 이를 호출하는 SQL(Step 0-b의 함수 호출) | 이름 없음 → 목록, 이름 있음 → 본문+호출처 | `yunhee trace-dblogic f_create_seq` |
-| `trace-term [<단어>]` | 화면 라벨 ↔ 컬럼(코멘트) ↔ 코드명 교차 참조 | 한글/영문 검색, 다중 일치 | `yunhee trace-term 펀드` |
-| `trace-guide` | 에이전트용 업무파악 워크플로우 지침 마크다운 (`agent-guide`의 업무파악판). 정적 문서 | 출력에 18개 명령이 모두 언급되는지 테스트 | `yunhee trace-guide` |
+성격이 비슷한 것끼리 세 묶음으로 구현했다 (0.6.5).
+
+### 구현 결과 (2026-10-28, 0.6.5)
+
+**묶음 A — SQL 해석 기반: `trace-column`, `trace-code`, `trace-crud`**
+- **trace-column**: 컬럼을 읽는(SELECT 목록·SET 식·RETURNING) / 조건에 쓰는(WHERE·JOIN·HAVING) / 정렬·그룹 / 쓰는 SQL을 **SQL AST의 절**로 구분한다 (`sql_parse`가 컬럼이 쓰인 절을 기록). 화면 라벨은 컬럼명에서 만든 속성 이름(`emp01_kor_nm`→`korNm`)이 Grid Spec·TOBE 그리드 필드명과 같은 곳에서 찾는다. `--stats`의 값 분포는 **고유 값 30종 이하인 코드성 컬럼만** 값을 낸다 — 실제로 `emp01_kor_nm`은 값 대신 "고유 값 776종, 값은 내지 않음"으로 나왔다(이름이 컨텍스트에 새지 않게).
+- **trace-code**: DB(`sys08_code_kind`·`sys09_code`, 읽기 전용)의 코드값과, 소스에서 그룹 이름이 따옴표로 적힌 곳(SQL 리터럴 / 콤보 / 상수 비교 / 기타, 주석 제외). `AprStatusCode`는 코드 5개, ASIS 사용처 249곳(콤보 5)·TOBE 77곳.
+- **trace-crud**: 화면 → 서비스 → SQL → 테이블로 ASIS의 C/R/U/D를, TOBE는 TSX → api → 컨트롤러 → 서비스 → mapper로 만들어 나란히 비교하고 TOBE에 없는 테이블·작업에 ⚠를 붙인다. `UpdateDataModel` 동적 쓰기를 `_index.json`의 `udm_calls`로 더한다 — 처음에는 서비스에 SQL ID가 하나라도 있으면 동적 쓰기를 건너뛰어 `emp04_add_title: ASIS RD / TOBE CRUD`처럼 가짜 차이가 났고, 고치자 `#1029`의 탭 테이블이 모두 일치하고 진짜 차이(`apr99_appr_del`)만 남았다.
+
+**묶음 B — 색인 집계: `trace-map`, `trace-menu`, `trace-term`**
+- **trace-map**: 영역별 ASIS 규모와 TOBE 이식 현황. 전체 화면 507개 중 275개(54%) 이식, `emp` 40개 중 21개(52%), `tdm` 97%, `ast` 9%. 영역이 아닌 이름은 거른다.
+- **trace-menu**: `menus.md`의 트리를 화면 클래스 → TOBE TSX·API 호출로 잇는다. 경로 조각은 각 단계에 순서대로 부분 일치, `#번호`·클래스명도 받는다.
+- **trace-term**: 컬럼 이름·코멘트, 테이블 설명, ASIS·TOBE 화면 라벨, 공통 코드 이름을 교차한다. 라벨 ↔ 컬럼은 속성 이름 규칙이 맞고 후보가 3개 이하일 때만 이어 근거를 밝힌다 (처음에는 속성 3개를 합쳐 관련 없는 컬럼 19개를 나열해 속성별·후보 수 제한으로 바꿨다).
+
+**묶음 C: `trace-dblogic`, `trace-guide`**
+- **trace-dblogic**: 스냅샷의 함수·프로시저·트리거 본문(최대 276KB라 80줄 상한)과 시그니처, 본문이 참조하는 테이블·부르는 함수, 이를 실행하는 트리거, DB 안 호출자, **ASIS·TOBE SQL 호출처**. `f_cdnm`은 ASIS 문장 935개·TOBE 399개가 호출한다.
+- **trace-guide**: 명령 목록을 등록된 `trace-*` 명령에서 직접 읽어 코드와 어긋나지 않는다 (테스트가 분류와 등록 명령의 일치를 검증).
+
+### 사용예
+실제 실행 결과(줄임 표시는 `…`).
+```
+$ yunhee trace-column apr01_appr.apr01_status_cd --stats --side asis
+- 컬럼: apr01_appr.apr01_status_cd character varying(10) — 상태코드(AprStatusCode)
+- ASIS: 이 컬럼을 쓰는 SQL …개
+  조건(WHERE·JOIN·HAVING)(…): …   쓰기(INSERT/UPDATE)(6): apr01_appr.insert(INSERT), apr01_appr.cancelUpdate(UPDATE), …
+- 값 분포(행 951, NULL 0, 고유 값 5종):
+  30: 637, 10: 173, 40: 84, 20: 38, 99: 19
+
+$ yunhee trace-code AprStatusCode
+- 코드 그룹: AprStatusCode — 문서결재상태코드 (코드 5개)
+    10 상신 / 20 결재중 / 30 완료 / 40 반려 / 99 임시저장
+- ASIS 사용처 249곳: SQL 리터럴(mapper)(244) — f_cdnm('AprStatusCode', …) …, 콤보·선택 목록(5) — ComboBoxField("AprStatusCode", …)
+
+$ yunhee trace-crud --screen "#1029" --tobe <TOBE>
+- 화면 Emp00_Tab_TransInfo: 테이블 36개 (ASIS 36 / TOBE 27)
+  apr99_appr_del: ASIS R / TOBE -  ⚠ TOBE에 없음
+  emp02_others: ASIS CRU / TOBE CRUD  (TOBE에 D 추가)
+  emp03_trans: ASIS CRUD / TOBE CRUD
+
+$ yunhee trace-map --tobe <TOBE>
+- 전체: ASIS 화면 507, TOBE 이식 275 (54%)
+- emp (경영관리): ASIS 화면 40, 컴포넌트 16, 서비스 395, SQL 324, 테이블 55 | TOBE 이식 21/40 (52%), TSX 61, 엔드포인트 146, mapper 문장 288
+
+$ yunhee trace-menu "조직 및 사원관리 > 사원정보" --tobe <TOBE>
+- 경영관리 > 01. 조직 및 사원관리
+  - 사원정보 관리 (#1029) → Emp00_Tab_TransInfo — TOBE frontend/src/pages/emp/Emp00_Tab_TransInfo.tsx / API 1개: GET /api/v1/emp/trans-infos
+
+$ yunhee trace-term 성명
+- 용어 '성명': 컬럼 5, 테이블 0, ASIS 라벨 3종, TOBE 라벨 4종
+  - '가족성명' ← Emp00_Tab_TransInfo
+      familyNm ↔ 컬럼 emp06_family.emp06_family_nm  [근거: 속성 이름이 컬럼명에서 만든 이름과 같음]
+
+$ yunhee trace-dblogic f_cdnm
+- function f_cdnm(av_code_kind character varying, …) RETURNS character varying [plpgsql]
+- 본문이 참조하는 테이블(3): ast05_tr_code, sys08_code_kind, sys09_code
+- ASIS SQL 호출처 935개: …   TOBE SQL 호출처 399개: …
+
+$ yunhee trace-guide > docs/trace-지침.md     # 에이전트용 지침 (명령 목록은 코드에서 생성)
+```
 
 ---
 
 ## 2. 공통 검증 (전 단계)
 
 - `uv run pytest`, `uv run ruff check .` 통과.
-- 18개 명령의 `--help`, md/json 3블록 구조, `--max` 절단, `--side` 분기가 계속 통과(`tests/test_trace_stubs.py` 유지·확장).
+- 18개 명령의 `--help`, md/json 3블록 구조, `--max` 절단, `--side` 분기가 계속 통과(`tests/test_trace_commands.py` 유지·확장).
 - 의존 데이터 없음(색인/스냅샷/DB) → 예외 없이 `unresolved` 안내, 종료 코드 0.
 - 읽기 전용 확인: `trace-rule`의 `trace_rule` 테이블 외에는 아무것도 쓰지 않는다.
 - 실제 ASIS 소스가 있는 환경에서 한 번은 Step 마무리 수동 검증(기존 검증 화면과 결과 대조)을 하고, 결과를 해당 버전의 CHANGELOG에 기록한다.

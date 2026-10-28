@@ -139,6 +139,12 @@ class Endpoint:
     service_calls: list[tuple[str, str]] = field(default_factory=list)  # (서비스 필드명, 메서드)
 
 
+def _calls(body: str, typed_fields: set[str], name_hint: str) -> list[tuple[str, str]]:
+    """본문의 `필드.메서드(` 호출. 필드는 타입이 …Service/…Mapper인 것이거나 이름에 service/mapper가 들어간 것."""
+    found = re.findall(r"\b([A-Za-z_]\w*)\s*\.\s*(\w+)\s*\(", body)
+    return list(dict.fromkeys((f, m) for f, m in found if f in typed_fields or name_hint.lower() in f.lower()))
+
+
 def _body(text: str, brace_pos: int) -> str:
     depth = 0
     for i in range(brace_pos, len(text)):
@@ -153,6 +159,7 @@ def _body(text: str, brace_pos: int) -> str:
 
 def parse_controller(text: str, file: str) -> list[Endpoint]:
     cls = re.search(r"\bclass\s+(\w+)", text)
+    svc_fields = {n for n, t in field_types(text).items() if t.endswith("Service")}  # 타입이 …Service인 필드 (이름이 svc 같아도 잡는다)
     base = re.search(r"@RequestMapping\(\s*(?:value\s*=\s*)?\"([^\"]*)\"", text)
     prefix = base.group(1) if base else ""
     lines = text.splitlines()
@@ -183,7 +190,7 @@ def parse_controller(text: str, file: str) -> list[Endpoint]:
             Endpoint(
                 m.group(1).upper(), re.sub(r"\{[^}/]*\}", "{}", path or "/"), cls.group(1) if cls else Path(file).stem,
                 name, file, i + 1, _keys(_doc_above(lines, i)),
-                list(dict.fromkeys(re.findall(r"\b(\w*[sS]ervice)\s*\.\s*(\w+)\s*\(", body))),
+                _calls(body, svc_fields, "ervice"),
             )
         )
     return out
@@ -201,15 +208,16 @@ class ServiceMethod:
 
 def parse_service(text: str, file: str) -> list[ServiceMethod]:
     cls = re.search(r"\bclass\s+(\w+)", text)
+    mapper_fields = {n for n, t in field_types(text).items() if t.endswith("Mapper")}
     lines = text.splitlines()
     out: list[ServiceMethod] = []
-    for m in re.finditer(r"^\s{4}(?:public|protected)\s+(?!class)[\w<>\[\], ?.]+?\s+(\w+)\s*\([^)]*\)[^{;]*\{", text, re.MULTILINE):
+    for m in re.finditer(r"^[ \t]{2,8}(?:public|protected)\s+(?!class)[\w<>\[\], ?.]+?\s+(\w+)\s*\([^)]*\)[^{;]*\{", text, re.MULTILINE):
         line = _line_of(text, m.start())
         body = _body(text, m.end() - 1)
         out.append(
             ServiceMethod(
                 cls.group(1) if cls else Path(file).stem, m.group(1), file, line,
-                list(dict.fromkeys(re.findall(r"\b(\w*[mM]apper)\s*\.\s*(\w+)\s*\(", body))),
+                _calls(body, mapper_fields, "apper"),
                 _keys(_doc_above(lines, line - 1)),
             )
         )

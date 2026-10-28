@@ -3,7 +3,7 @@
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
 ## [0.6.5] - 2026-10-28
-`trace-column`, `trace-code`, `trace-crud` 구현 (trace-* Step 5, 묶음 A: SQL 해석 기반) + `trace-map`, `trace-menu`, `trace-term` (묶음 B: 색인 집계).
+`trace-column`, `trace-code`, `trace-crud` 구현 (trace-* Step 5, 묶음 A: SQL 해석 기반) + `trace-map`, `trace-menu`, `trace-term` (묶음 B: 색인 집계) + `trace-dblogic`, `trace-guide` (묶음 C). **`trace-*` 18개가 모두 구현됐다.**
 - `trace-column <테이블.컬럼>`: 그 컬럼을 **읽는**(SELECT 목록·SET 식·RETURNING) / **조건에 쓰는**(WHERE·JOIN·HAVING) / **정렬·그룹**(ORDER·GROUP) / **쓰는**(INSERT·UPDATE) SQL을 SQL AST의 절로 구분해 ASIS·TOBE 각각 낸다. 화면 표시 라벨은 컬럼명에서 만든 속성 이름(`emp01_kor_nm`→`korNm`)이 ASIS 색인의 Grid Spec·TOBE 그리드 필드명과 같은 곳에서 찾는다. `--stats`는 읽기 전용으로 값 분포를 조회하되 **고유 값이 30종 이하인 코드성 컬럼만 값을 낸다** (이름·주민번호 같은 개인정보가 컨텍스트에 새지 않게 개수만 알림)
 - `trace-code <코드그룹>`: DB(`sys08_code_kind`·`sys09_code`, 읽기 전용)에서 코드값·명칭·사용 중지·회사별 사본 수를 읽고, ASIS·TOBE 소스에서 그룹 이름이 따옴표 문자열로 적힌 곳을 SQL 리터럴 / 콤보·선택 목록 / 상수 비교 / 그 밖의 참조로 나눠 낸다 (주석 속 코드는 제외). 이름 일부만 주면 후보 목록(종료 코드 2). DB를 쓸 수 없으면 값은 건너뛰고 사용처만 낸다
 - `trace-crud [--screen|--domain|--table]`: 화면 → 서비스 → SQL → 테이블로 ASIS의 C/R/U/D를 만들고(`UpdateDataModel` 동적 쓰기 포함), TOBE는 TSX → api → 컨트롤러 → 서비스 → mapper 문장으로 만들어 **나란히 비교**한다. TOBE에 없는 테이블·작업에 ⚠를 붙인다. 범위를 안 주면 영역별 요약
@@ -13,7 +13,12 @@
 - `trace-term [<용어>]`: 용어가 들어간 DB 컬럼 이름·코멘트, 테이블 설명, ASIS·TOBE 화면 라벨(Grid Spec·버튼), 공통 코드 그룹·코드값 이름(DB, 읽기 전용)을 모은다. 라벨의 속성 이름이 컬럼명에서 만든 이름(`korNm`)과 같고 후보가 3개 이하일 때만 라벨 ↔ 컬럼을 이어 근거를 밝힌다 (이름이 흔하거나 규칙에 안 맞으면 이어 붙이지 않음). 백업·임시 테이블은 제외
 - `test_trace_map_menu_term.py`가 검증한다
 
-- 구현된 명령 16개가 stub 테스트에서 빠지고 `test_trace_column/code/crud.py`가 검증한다. `conftest.py`의 `fake_schema`·`world.ctx_for(side)`
+- `trace-dblogic [<이름>]`: 스냅샷의 함수·프로시저·트리거 본문(줄 번호, 80줄 상한)·시그니처·언어, 본문이 참조하는 테이블, 본문이 부르는 다른 DB 함수, 이 함수를 실행하는 트리거, DB 안에서 이를 부르는 다른 함수, mapper 전체를 해석한 **ASIS·TOBE SQL 호출처**를 낸다. 이름이 없으면 DB 로직 규모와 SQL에서 가장 많이 호출되는 함수(`f_cdnm` 935문장 등), 호출되지 않는 함수를 요약. 부분 이름이 하나뿐이면 그것, 여럿이면 후보(종료 코드 2). JDBC `{call}`과 동적 SQL은 못 찾는다고 밝힌다
+- `trace-guide`: 에이전트용 업무파악 지침(출력 읽는 법, 준비물, 워크플로우, 명령 목록, 지켜야 할 원칙, 알려진 한계). **명령 목록은 등록된 `trace-*` 명령에서 직접 읽어** 코드와 어긋나지 않는다 (테스트가 분류와 등록 명령의 일치를 검증)
+- `trace-table`이 TOBE 쪽도 낸다: TOBE mapper 문장의 C/R/U/D(`--side tobe|both`)와, 그 문장에 닿는 API를 부르는 TOBE 화면(TSX → api → 컨트롤러 → 서비스 → mapper). `trace-table`·`trace-flow`가 `--tobe`를 받는다(`trace-flow`의 TOBE 사슬은 아직 없어 옵션만 받고 `trace-pair`·`trace-crud`로 대조하게 안내). 실제 데이터 점검에서 이 둘만 `--tobe`를 거부(종료 코드 2)하던 것을 발견해 고쳤다
+- TOBE 체인 색인: 컨트롤러·서비스의 호출 필드를 이름뿐 아니라 **필드 타입**(`…Service`/`…Mapper`)으로도 찾고, 서비스 메서드 정규식의 들여쓰기 가정(정확히 4칸)을 2~8칸으로 넓혔다
+- 모든 명령이 구현되어 `trace/stub.py`와 stub 테스트를 없애고 `test_trace_commands.py`가 18개 명령의 등록·`--help`·공통 옵션·설명을 검증한다
+- `test_trace_column/code/crud.py`가 묶음 A를 검증한다. `conftest.py`의 `fake_schema`·`world.ctx_for(side)`
 
 ## [0.6.4] - 2026-10-28
 `trace-rule`, `trace-state`, `trace-doc` 구현 (trace-* Step 4).

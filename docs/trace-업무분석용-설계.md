@@ -140,10 +140,11 @@ trace-map → trace-menu → trace-screen FND0101
 
 ## 7. 구현 현황과 로드맵
 
-### 7.1 현황 (0.5.10)
+### 7.1 현황 (0.6.5)
 
-- 18개 명령 모두 `src/yunhee/tools/trace/__init__.py`(`register_trace_commands`)에 등록되어 있고, `stub.py`의 `format_trace_stub()`이 §4의 3블록 껍데기를 출력한다. 실제 추출 로직은 없다.
-- `tests/test_trace_stubs.py`가 18개 명령의 `--help`, md/json 구조, `--max`, `log request` 별칭을 검증한다.
+- **18개 명령 모두 구현됐다.** 등록은 `src/yunhee/tools/trace/__init__.py`(`register_trace_commands`), 명령 본체는 같은 폴더의 모듈이고, 공통 출력(§4)은 `render.py`, 대상 해석은 `resolve.py`가 맡는다. 구현 계획과 단계별 결과, 실제 실행 예는 [trace-업무분석용-구현.md](trace-업무분석용-구현.md)에 있다.
+- 기반 모듈: `tools/sql_parse.py`(MyBatis 전개 + PostgreSQL AST), `tools/trace/tobe.py`(TOBE 호출 체인과 AS-IS 주석 색인), `tools/trace/sqlscan.py`(mapper 전체 해석 캐시), `store/trace_rules.py`(규칙 저장소).
+- `tests/test_trace_*.py`가 명령별 동작을, `tests/test_trace_commands.py`가 18개 명령의 등록과 공통 계약을 검증한다.
 
 ### 7.2 구현 순서
 

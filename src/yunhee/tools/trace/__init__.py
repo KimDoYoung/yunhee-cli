@@ -1,4 +1,4 @@
-"""trace-* business exploration commands registry and stubs."""
+"""trace-* 업무파악 명령 18개의 등록 (명령 본체는 같은 폴더의 모듈)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from typing import Annotated
 import typer
 
 from yunhee.tools.trace.render import TraceResult, limit, render
-from yunhee.tools.trace.stub import format_trace_stub
 
 SideOption = Annotated[
     str,
@@ -66,7 +65,7 @@ def _emit(
 
 
 def register_trace_commands(app: typer.Typer) -> None:
-    """Register all 18 trace-* exploration commands on the main Typer app."""
+    """업무파악 trace-* 명령 18개를 메인 Typer 앱에 등록한다."""
 
     # -------------------------------------------------------------------------
     # 1. 탐색 계층 (Navigation / Exploration)
@@ -127,16 +126,17 @@ def register_trace_commands(app: typer.Typer) -> None:
         table_name: Annotated[str, typer.Argument(help="테이블명 (예: sys06_menu) 또는 스키마.테이블")],
         stats: Annotated[bool, typer.Option("--stats", help="DB에 접속해 행 수를 조회 (읽기 전용)")] = False,
         db: Annotated[str | None, typer.Option("--db", help="스키마 스냅샷 이름 (기본: YUNHEE_SCHEMA_ENV)")] = None,
+        tobe: TobeOption = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
         src: SrcOption = None,
         src_index: SrcIndexOption = None,
     ) -> None:
-        """컬럼·코멘트, C/R/U/D SQL과 화면, 같은 이름의 컬럼을 가진 테이블, 행 수"""
+        """컬럼·코멘트, C/R/U/D SQL과 화면(ASIS·TOBE), 같은 이름의 컬럼을 가진 테이블, 행 수"""
         from yunhee.tools.trace.table import trace_table
 
-        _emit(lambda ctx: trace_table(table_name, ctx, db, stats), side, format, max, src, src_index)
+        _emit(lambda ctx: trace_table(table_name, ctx, db, stats, tobe), side, format, max, src, src_index)
 
     @app.command(name="trace-column")
     def trace_column_cmd(
@@ -208,6 +208,7 @@ def register_trace_commands(app: typer.Typer) -> None:
         screen_id: Annotated[str, typer.Argument(help="화면 클래스명, 접두사, 또는 메뉴 번호 (예: Emp00_Tab_TransInfo, #1029)")],
         event: Annotated[str | None, typer.Option("--event", "-e", help="이벤트 번호 (예: E3). 생략하면 이벤트 목록")] = None,
         class_name: Annotated[str | None, typer.Option("--class", "-c", help="하위 클래스의 이벤트 (예: Emp02_TabPage_Others)")] = None,
+        tobe: TobeOption = None,  # 호환용: TOBE 사슬은 아직 없어 받기만 한다 (trace-pair·trace-crud로 대조)
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
@@ -236,21 +237,19 @@ def register_trace_commands(app: typer.Typer) -> None:
 
     @app.command(name="trace-dblogic")
     def trace_dblogic_cmd(
-        name: Annotated[str | None, typer.Argument(help="함수/프로시저/트리거 이름")] = None,
+        name: Annotated[str | None, typer.Argument(help="함수·프로시저·트리거 이름 (예: f_cdnm). 생략하면 요약")] = None,
+        tobe: TobeOption = None,
+        db: Annotated[str | None, typer.Option("--db", help="스키마 스냅샷 이름 (기본: YUNHEE_SCHEMA_ENV)")] = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
-        """DB 함수·프로시저·트리거 본문과 이를 호출하는 SQL"""
-        out = format_trace_stub(
-            cmd_name="trace-dblogic",
-            desc="함수·프로시저·트리거 본문과 이를 호출하는 SQL",
-            params={"name": name},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """DB 함수·프로시저·트리거 본문(스냅샷)과 이를 호출하는 SQL"""
+        from yunhee.tools.trace.dblogic import trace_dblogic
+
+        _emit(lambda ctx: trace_dblogic(name, ctx, tobe, db), side, format, max, src, src_index)
 
     # -------------------------------------------------------------------------
     # 4. ASIS↔TOBE 대조 계층 (Comparison)
@@ -362,17 +361,10 @@ def register_trace_commands(app: typer.Typer) -> None:
 
     @app.command(name="trace-guide")
     def trace_guide_cmd(
-        side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
     ) -> None:
-        """에이전트용 업무파악 워크플로우 지침"""
-        out = format_trace_stub(
-            cmd_name="trace-guide",
-            desc="에이전트용 업무파악 워크플로우 지침 (agent-guide의 업무파악판)",
-            params={},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """에이전트용 업무파악 워크플로우 지침 (agent-guide의 업무파악판)"""
+        from yunhee.tools.trace.guide import trace_guide
+
+        typer.echo(render(limit(trace_guide(), max), format))

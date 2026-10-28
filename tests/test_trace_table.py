@@ -155,3 +155,45 @@ def test_cli_trace_table(env):
     assert data["params"]["resolved"] == "emp02_others" and data["facts"]
     nf = runner.invoke(app, ["trace-table", "nope_table", "--side", "asis", "--src", str(src), "--src-index", str(idx)])
     assert nf.exit_code == 1
+
+
+def test_tobe_usage_lists_statements_and_screens(env, fake_schema):
+    src, idx = env
+    from yunhee.tools.trace.resolve import load_context as lc
+
+    tobe_root = src.parent / "tobe"
+    (tobe_root / "frontend/src/pages/emp").mkdir(parents=True)
+    (tobe_root / "frontend/src/api").mkdir(parents=True)
+    (tobe_root / "backend/src/main/java/x").mkdir(parents=True)
+    (tobe_root / "backend/src/main/resources/mapper").mkdir(parents=True)
+    (tobe_root / "frontend/src/pages/emp/Emp00_Tab_TransInfo.tsx").write_text("/** AS-IS: myApp/client/vi/emp/Emp00_Tab_TransInfo.java */\nempApi.searchTransInfos();\n", encoding="utf-8")
+    (tobe_root / "frontend/src/api/emp.ts").write_text(
+        "export const empApi = {\n  searchTransInfos: async () => {\n    await apiClient.get<X>('v1/emp/trans-infos', {});\n  },\n};\n", encoding="utf-8")
+    (tobe_root / "backend/src/main/java/x/EmpController.java").write_text(
+        'package x;\n@RequestMapping("/api/v1/emp")\npublic class EmpController {\n  private final EmpService svc;\n  @GetMapping("/trans-infos")\n  public R get() { return svc.find(); }\n}\n', encoding="utf-8")
+    (tobe_root / "backend/src/main/java/x/EmpService.java").write_text("package x;\npublic class EmpService {\n  private final EmpMapper mapper;\n  public R find() {\n    return mapper.findAll();\n  }\n}\n", encoding="utf-8")
+    (tobe_root / "backend/src/main/resources/mapper/EmpMapper.xml").write_text(
+        '<mapper namespace="x.EmpMapper"><select id="findAll">SELECT * FROM emp02_others</select>'
+        '<update id="touch">UPDATE emp02_others SET emp02_note = #{n}</update></mapper>', encoding="utf-8")
+    from yunhee.tools.trace.tobe import build_index
+
+    build_index.cache_clear()
+    ctx = lc("both", src=src, src_index=idx)
+    text = _facts(trace_table("emp02_others", ctx, tobe=tobe_root))
+    assert "TOBE SQL 사용 2개" in text and "R(1): EmpMapper.findAll" in text and "U(1): EmpMapper.touch" in text
+    assert "TOBE 화면(이 테이블에 닿는 API를 부름)(1): Emp00_Tab_TransInfo[R]" in text  # touch에 닿는 API는 없으므로 R만
+
+
+def test_tobe_usage_without_tobe_is_unresolved(env, fake_schema, tmp_path):
+    src, idx = env
+    from yunhee.tools.trace.resolve import load_context as lc
+
+    res = trace_table("emp02_others", lc("both", src=src, src_index=idx), tobe=tmp_path / "nowhere")
+    assert any("TOBE mapper를 찾지 못해" in u for u in res.unresolved)
+
+
+def test_cli_trace_table_and_flow_accept_tobe(env, fake_schema):
+    src, idx = env
+    base = ["--tobe", str(src.parent / "tobe"), "--src", str(src), "--src-index", str(idx), "--side", "asis"]
+    assert runner.invoke(app, ["trace-table", "emp02_others", *base]).exit_code == 0
+    assert runner.invoke(app, ["trace-flow", "Nope_X", *base]).exit_code == 1  # 옵션은 받고 대상이 없어서 1 (사용법 오류 2가 아니다)

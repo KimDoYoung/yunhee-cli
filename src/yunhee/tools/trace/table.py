@@ -200,7 +200,7 @@ def _listing(label: str, items: list[str]) -> str:
     return f"{label}({len(items)}): {shown}{more}"
 
 
-def trace_table(name: str, ctx: TraceContext, schema_env: str | None = None, stats: bool = False) -> TraceResult:
+def trace_table(name: str, ctx: TraceContext, schema_env: str | None = None, stats: bool = False, tobe: Path | None = None) -> TraceResult:
     """테이블 하나의 팩트 시트. name은 `테이블` 또는 `스키마.테이블`."""
     res = TraceResult(
         command="trace-table",
@@ -222,7 +222,7 @@ def trace_table(name: str, ctx: TraceContext, schema_env: str | None = None, sta
     tname = table["name"].lower()
     res.params["resolved"] = tname
 
-    facts, evidence, unresolved = res.facts, res.evidence, res.unresolved
+    facts, evidence = res.facts, res.evidence
     note = f" — {table['note']}" if table.get("note") else ""
     facts.append(f"테이블: {table['schema']}.{table['name']}{note}")
     if table.get("pk"):
@@ -253,10 +253,57 @@ def trace_table(name: str, ctx: TraceContext, schema_env: str | None = None, sta
     if wants_asis(ctx.side):
         _asis_usage(tname, ctx, res)
     if wants_tobe(ctx.side):
-        unresolved.append("TOBE 쪽 SQL·화면 사용처는 아직 지원하지 않음 (trace-pair/trace-diff 단계에서 추가)")
+        _tobe_usage(tname, tobe, res)
     if stats:
         _row_count(tname, res)
     return res
+
+
+def _tobe_usage(tname: str, tobe: Path | None, res: TraceResult) -> None:
+    """TOBE mapper 문장이 이 테이블을 어떻게 쓰는지(C/R/U/D)와, 그 문장에 닿는 TOBE 화면(TSX → api → 컨트롤러 → 서비스 → mapper)."""
+    from yunhee.tools.trace.sqlscan import scan_tobe
+    from yunhee.tools.trace.tobe import build_index, find_layout
+
+    layout = find_layout(tobe)
+    if not layout.mapper_dir.is_dir():
+        res.unresolved.append(f"TOBE mapper를 찾지 못해 TOBE 사용처를 구하지 못함 ({layout.root}) — --tobe로 지정")
+        return
+    scan = scan_tobe(str(layout.mapper_dir))
+    by_op: dict[str, list[str]] = {"C": [], "R": [], "U": [], "D": [], "W": []}
+    used: dict[str, str] = {}
+    for key, parsed in scan.items():
+        if tname not in parsed.tables:
+            continue
+        ops = _ops(parsed, tname) or "R"
+        used[key] = ops
+        for op in ops:
+            by_op[op].append(_short_key(key) + ("*" if parsed.fallback else ""))
+    lines = [_listing(f"  {op}", ids) for op, ids in by_op.items() if ids]
+    res.facts.append(f"TOBE SQL 사용 {len(used)}개 (C 등록 / R 조회 / U 수정 / D 삭제):\n" + "\n".join(lines) if lines else "TOBE SQL 사용: 없음 (TOBE mapper에서 이 테이블을 참조하는 문장을 찾지 못함)")
+    if any(p.fallback for p in scan.values()):
+        res.unresolved.append("TOBE mapper 일부는 PostgreSQL 문법이 아니라 정규식으로 추정해 R로만 집계함 (* 표시)")
+    if not used or not layout.usable:
+        return
+    idx = build_index(str(layout.root))
+    screens: dict[str, set[str]] = defaultdict(set)  # TSX → 작업
+    for fn in idx.api_fns.values():
+        for ep in idx.endpoint_of(fn):
+            hit = {k: used[k] for st in idx.statements_of(ep) if (k := st.key) in used}
+            if not hit:
+                continue
+            for t in idx.tsx.values():
+                if (fn.obj, fn.name) in t.api_calls:
+                    screens[t.name] |= {op for ops in hit.values() for op in ops}
+    if screens:
+        rows = [f"{n}[{''.join(sorted(o))}]" for n, o in sorted(screens.items())]
+        res.facts.append(_listing("TOBE 화면(이 테이블에 닿는 API를 부름)", rows))
+    else:
+        res.unresolved.append("이 테이블을 쓰는 TOBE 문장에 닿는 TSX를 찾지 못함 (api 함수 → 컨트롤러 연결이 끊겼거나 화면이 없음)")
+
+
+def _short_key(key: str) -> str:
+    parts = key.split(".")
+    return ".".join(parts[-2:]) if len(parts) > 2 else key
 
 
 def _asis_usage(tname: str, ctx: TraceContext, res: TraceResult) -> None:
