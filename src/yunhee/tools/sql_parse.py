@@ -45,6 +45,7 @@ class ParsedSql:
     cases: list[str] = field(default_factory=list)  # CASE WHEN … END 식 (분기 지점)
     writes: list[tuple[str, str]] = field(default_factory=list)  # (INSERT|UPDATE|DELETE, 테이블) 나온 순서
     columns: dict[str, list[str]] = field(default_factory=dict)  # 테이블명 → 사용된 컬럼
+    column_usage: dict[str, dict[str, list[str]]] = field(default_factory=dict)  # 테이블 → 컬럼 → 쓰인 절(SELECT/WHERE/JOIN/ORDER/GROUP/…)
     output_names: list[str | None] | None = None  # 최상위 SELECT 출력 이름. `*`를 알 수 없으면 None
     assignments: list[Assignment] = field(default_factory=list)
     where: list[str] = field(default_factory=list)  # 최상위 문장의 WHERE 식
@@ -69,6 +70,21 @@ def _strings(fields: tuple[Any, ...]) -> list[str]:
     return [f.sval.lower() for f in fields if isinstance(f, ast.String)]
 
 
+# 필드 이름 → 그 안에서 읽는 컬럼이 속하는 절. SELECT 목록(targetList)은 문장 종류에 따라 달라 _target_clause가 정한다
+_CLAUSES = {
+    "whereClause": "WHERE", "havingClause": "HAVING", "sortClause": "ORDER", "groupClause": "GROUP",
+    "quals": "JOIN", "valuesLists": "VALUES", "returningList": "RETURNING", "returningClause": "RETURNING",  # pglast 8: ReturningClause
+}
+
+
+def _target_clause(node: Any, inherited: str) -> str:
+    if isinstance(node, ast.UpdateStmt):
+        return "SET"  # SET col = <식>: 식 안의 컬럼은 읽기다
+    if isinstance(node, ast.SelectStmt):
+        return "SELECT"
+    return inherited
+
+
 class _Collector:
     """AST를 한 번 훑어 테이블·CTE·함수·컬럼 참조를 모은다."""
 
@@ -82,18 +98,19 @@ class _Collector:
         self.ctes: list[str] = []
         self.functions: list[str] = []
         self.alias: dict[str, str] = {}  # 별칭 → 테이블명
-        self.column_refs: list[list[str]] = []  # ColumnRef의 이름 조각 (소문자)
+        self.column_refs: list[tuple[list[str], str]] = []  # (ColumnRef의 이름 조각(소문자), 쓰인 절)
 
-    def walk(self, node: Any) -> None:
+    def walk(self, node: Any, clause: str = "") -> None:
+        """AST를 훑는다. clause는 지금 읽고 있는 절 (컬럼이 SELECT 목록·WHERE·JOIN 중 어디서 쓰였는지 구분하는 데 쓴다)."""
         if isinstance(node, ast.Node):
-            self._visit(node)
+            self._visit(node, clause)
             for name in node:
-                self.walk(getattr(node, name))
+                self.walk(getattr(node, name), _CLAUSES.get(name, clause) if name != "targetList" else _target_clause(node, clause))
         elif isinstance(node, (list, tuple)):
             for item in node:
-                self.walk(item)
+                self.walk(item, clause)
 
-    def _visit(self, node: ast.Node) -> None:
+    def _visit(self, node: ast.Node, clause: str = "") -> None:
         if isinstance(node, ast.CommonTableExpr):
             self.ctes.append(node.ctename.lower())
         elif isinstance(node, ast.RangeVar):
@@ -124,7 +141,7 @@ class _Collector:
             if parts:
                 self.functions.append(parts[-1])
         elif isinstance(node, ast.ColumnRef) and not any(isinstance(f, ast.A_Star) for f in node.fields):
-            self.column_refs.append(_strings(node.fields))  # `*`는 output_names에서 다룬다
+            self.column_refs.append((_strings(node.fields), clause))  # `*`는 output_names에서 다룬다
 
 
 def _top_select(stmt: Any) -> Any:
@@ -254,7 +271,14 @@ def _expand_star(qualifier: str | None, col: _Collector, schema: Schema | None, 
 def _resolve_columns(result: ParsedSql, col: _Collector, cte_set: set[str], schema: Schema | None) -> None:
     tables = [t for t in result.tables if t not in cte_set]
     used: dict[str, set[str]] = {}
-    for parts in col.column_refs:
+    usage: dict[str, dict[str, set[str]]] = {}
+
+    def note(table: str, name: str, clause: str) -> None:
+        used.setdefault(table, set()).add(name)
+        if clause:
+            usage.setdefault(table, {}).setdefault(name, set()).add(clause)
+
+    for parts, clause in col.column_refs:
         if not parts:
             continue
         name = parts[-1]
@@ -263,16 +287,17 @@ def _resolve_columns(result: ParsedSql, col: _Collector, cte_set: set[str], sche
             table = col.alias.get(qualifier, qualifier)
             if table in cte_set or table not in result.tables:
                 continue  # CTE·서브쿼리 별칭의 컬럼은 원본 테이블 컬럼이 아니다
-            used.setdefault(table, set()).add(name)
+            note(table, name, clause)
         elif schema:
             owners = [t for t in tables if name in schema.get(t, ())]
             if len(owners) == 1:
-                used.setdefault(owners[0], set()).add(name)
+                note(owners[0], name, clause)
             elif len(owners) > 1:
                 result.unresolved.append(f"컬럼 '{name}'이(가) 여러 테이블에 있어 귀속 불명: {', '.join(owners)}")
         elif len(tables) == 1:
-            used.setdefault(tables[0], set()).add(name)
+            note(tables[0], name, clause)
     result.columns = {t: sorted(cols) for t, cols in sorted(used.items())}
+    result.column_usage = {t: {c: sorted(cl) for c, cl in sorted(cols.items())} for t, cols in sorted(usage.items())}
 
 
 def _collect_insert_assignments(root: ast.InsertStmt, result: ParsedSql) -> None:
@@ -313,6 +338,10 @@ def _merge(base: ParsedSql, other: ParsedSql) -> None:
         have += [x for x in getattr(other, attr) if x not in have]
     for table, cols in other.columns.items():
         base.columns[table] = sorted(set(base.columns.get(table, [])) | set(cols))
+    for table, cols in other.column_usage.items():
+        for name, clauses in cols.items():
+            have = base.column_usage.setdefault(table, {}).setdefault(name, [])
+            have[:] = sorted(set(have) | set(clauses))
     for name in base.ctes:  # 어느 변형에서든 CTE로 정의된 이름은 테이블이 아니다
         base.tables.pop(name, None)
 

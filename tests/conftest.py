@@ -185,6 +185,10 @@ class World:
     src: Path
     index: Path
 
+    def ctx_for(self, side: str = "both") -> TraceContext:
+        """`--side`가 달라지는 명령(column·code·state)을 시험할 때 쓰는 컨텍스트."""
+        return load_context(side, src=self.src, src_index=self.index)
+
 
 @pytest.fixture
 def world(tmp_path) -> World:
@@ -225,3 +229,32 @@ def rule_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "rules.sqlite")
     monkeypatch.setattr(trace_rules, "project_name", lambda: "p1")
     return tmp_path / "rules.sqlite"
+
+
+FAKE_COLUMNS = {
+    "emp01_person": ["emp01_nm", "emp01_company_id", "emp01_hire_date", "kind"],
+    "emp02_others": ["id", "emp02_note"],
+    "emp09_etc": ["id", "x"],
+}
+
+
+@pytest.fixture
+def fake_schema(monkeypatch):
+    """로컬 스냅샷에 기대지 않도록 sqlscan·trace-column·trace-state가 쓰는 스키마를 가짜로 바꾼다."""
+    from yunhee.tools.base import ToolResult
+    from yunhee.tools.trace import column as column_mod
+    from yunhee.tools.trace import sqlscan
+
+    snap = {
+        "generated_at": "t",
+        "tables": [
+            {"schema": "public", "name": t, "note": "", "pk": ["id"] if "id" in cols else [], "uniques": [], "indexes": [],
+             "columns": [{"name": c, "type": "varchar(10)", "not_null": c == "id", "note": f"{c} 설명"} for c in cols]}
+            for t, cols in FAKE_COLUMNS.items()
+        ],
+    }
+    monkeypatch.setattr(sqlscan, "snapshot_schema", lambda env: FAKE_COLUMNS)
+    monkeypatch.setattr(column_mod, "load_snapshot", lambda env: ToolResult(ok=True, data=snap))
+    sqlscan.scan_asis.cache_clear()
+    sqlscan.scan_tobe.cache_clear()
+    return snap

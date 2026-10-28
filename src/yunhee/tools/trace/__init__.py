@@ -146,39 +146,35 @@ def register_trace_commands(app: typer.Typer) -> None:
 
     @app.command(name="trace-column")
     def trace_column_cmd(
-        col_ref: Annotated[str, typer.Argument(help="테이블.컬럼 (예: sys01_company.company_id)")],
+        col_ref: Annotated[str, typer.Argument(help="테이블.컬럼 (예: apr01_appr.apr01_status_cd)")],
+        stats: Annotated[bool, typer.Option("--stats", help="DB에 접속해 값 분포를 조회 (읽기 전용, 고유 값 30종 이하인 코드성 컬럼만 값을 냄)")] = False,
+        tobe: TobeOption = None,
+        db: Annotated[str | None, typer.Option("--db", help="스키마 스냅샷 이름 (기본: YUNHEE_SCHEMA_ENV)")] = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
-        """컬럼 읽기/쓰기/WHERE 사용 SQL, 표시 화면 라벨, 값 분포"""
-        out = format_trace_stub(
-            cmd_name="trace-column",
-            desc="이 컬럼을 읽는/쓰는/WHERE에 쓰는 SQL, 표시되는 화면 라벨, 값 분포",
-            params={"col_ref": col_ref},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """컬럼을 읽는/쓰는/WHERE에 쓰는 SQL, 표시되는 화면 라벨, 값 분포"""
+        from yunhee.tools.trace.column import trace_column
+
+        _emit(lambda ctx: trace_column(col_ref, ctx, tobe, db, stats), side, format, max, src, src_index)
 
     @app.command(name="trace-code")
     def trace_code_cmd(
-        code_group: Annotated[str, typer.Argument(help="코드 그룹명 또는 코드 ID (예: LinkCode, USE_YN)")],
+        code_group: Annotated[str, typer.Argument(help="코드 그룹 이름 또는 일부 (예: AprStatusCode, Status)")],
+        tobe: TobeOption = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
-        """공통 코드값·명칭, 사용처 (콤보, SQL 리터럴, Java/TS 상수 비교)"""
-        out = format_trace_stub(
-            cmd_name="trace-code",
-            desc="코드값과 명칭, 사용처(콤보, SQL 리터럴, Java/TS 상수 비교)",
-            params={"code_group": code_group},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """공통 코드값·명칭(DB, 읽기 전용)과 사용처 (콤보, SQL 리터럴, 소스 참조)"""
+        from yunhee.tools.trace.code import trace_code
+
+        _emit(lambda ctx: trace_code(code_group, ctx, tobe), side, format, max, src, src_index)
 
     @app.command(name="trace-state")
     def trace_state_cmd(
@@ -198,27 +194,20 @@ def register_trace_commands(app: typer.Typer) -> None:
 
     @app.command(name="trace-crud")
     def trace_crud_cmd(
-        domain: Annotated[str | None, typer.Option("--domain", "-d", help="업무 영역 필터")] = None,
-        screen: Annotated[str | None, typer.Option("--screen", "-s", help="화면 필터")] = None,
-        table: Annotated[str | None, typer.Option("--table", "-t", help="테이블 필터")] = None,
+        domain: Annotated[str | None, typer.Option("--domain", "-d", help="업무 영역 (예: emp)")] = None,
+        screen: Annotated[str | None, typer.Option("--screen", "-s", help="화면 클래스명·메뉴 번호")] = None,
+        table: Annotated[str | None, typer.Option("--table", "-t", help="테이블 (이 테이블을 쓰는 모든 화면)")] = None,
+        tobe: TobeOption = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
-        """CRUD 매트릭스 도출"""
-        out = format_trace_stub(
-            cmd_name="trace-crud",
-            desc="CRUD 매트릭스 도출",
-            params={"domain": domain, "screen": screen, "table": table},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """CRUD 매트릭스 (화면 × 테이블 × C/R/U/D, ASIS와 TOBE 나란히). 범위를 안 주면 영역별 요약"""
+        from yunhee.tools.trace.crud import trace_crud
 
-    # -------------------------------------------------------------------------
-    # 3. 규칙 위치 계층 (Rule Location)
-    # -------------------------------------------------------------------------
+        _emit(lambda ctx: trace_crud(ctx, tobe, domain, screen, table), side, format, max, src, src_index)
 
     @app.command(name="trace-flow")
     def trace_flow_cmd(
