@@ -29,8 +29,11 @@ def resolve_as_is_paths(
 
     1. 인자 (-s / --src, --src-index)
     2. .yunhee.toml [as_is] src, src_index
-    3. config.ASIS_SRC_DIR 및 find_as_is_dir("src")
+    3. config.SRC_INDEX_DIR / 환경변수 YUNHEE_SRC_INDEX_DIR
+    4. config.ASIS_SRC_DIR 및 find_as_is_dir("src")
     """
+    import os
+
     toml_as_is = config.TOML_CONFIG.get("as_is", {})
 
     # 1. src_root
@@ -47,10 +50,21 @@ def resolve_as_is_paths(
     # 2. src_index
     final_index: Path | None = None
     if src_index:
-        final_index = Path(src_index)
+        p = Path(src_index)
+        final_index = p if p.is_absolute() else (config.WORK_DIR / p).resolve()
     elif toml_as_is.get("src_index"):
-        final_index = Path(toml_as_is["src_index"])
-    else:
+        p = Path(toml_as_is["src_index"])
+        base_dir = config.TOML_FILE.parent if config.TOML_FILE else config.WORK_DIR
+        final_index = p if p.is_absolute() else (base_dir / p).resolve()
+    elif getattr(config, "SRC_INDEX_DIR", None) and Path(config.SRC_INDEX_DIR).is_dir():
+        final_index = Path(config.SRC_INDEX_DIR)
+    elif os.getenv("YUNHEE_SRC_INDEX_DIR"):
+        p = Path(os.getenv("YUNHEE_SRC_INDEX_DIR"))
+        cand_p = p if p.is_absolute() else (config.WORK_DIR / p).resolve()
+        if cand_p.is_dir():
+            final_index = cand_p
+
+    if not final_index:
         # 워크스페이스 내 docs/as-is/src 확인
         cand_work = config.WORK_DIR / "docs" / "as-is" / "src"
         if cand_work.is_dir():

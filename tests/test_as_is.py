@@ -333,6 +333,21 @@ def test_find_as_is_dir(tmp_path: Path, monkeypatch):
     assert resolved_src == docs_as_is / "src"
 
 
+def test_find_as_is_dir_in_child(tmp_path: Path, monkeypatch):
+    """저장소 루트(framework-sprt)에서 하위 AssetERP/docs/as-is/src 감지 검증."""
+    from yunhee.tools.as_is import find_as_is_dir
+
+    repo_dir = tmp_path / "framework-sprt"
+    repo_dir.mkdir()
+    asset_erp_docs = repo_dir / "AssetERP" / "docs" / "as-is" / "src"
+    asset_erp_docs.mkdir(parents=True)
+
+    monkeypatch.setattr("yunhee.tools.as_is.WORK_DIR", repo_dir)
+
+    resolved_src = find_as_is_dir("src")
+    assert resolved_src == asset_erp_docs
+
+
 
 def test_select_output_names():
     from yunhee.tools.as_is.sql_checker import (

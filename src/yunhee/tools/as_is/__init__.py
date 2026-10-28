@@ -40,6 +40,30 @@ def find_as_is_dir(sub: str = "") -> Path:
         if cand.is_dir():
             return cand / sub if sub else cand
 
-    # 4. 기본 fallback
+    # 4. 하위 디렉터리(예: AssetERP/docs/as-is) 확인
+    # 저장소 루트(framework-sprt) 등에서 하위 프로젝트 폴더 내 색인 감지
+    targets_to_check = [cur]
+    if repo_root and repo_root not in targets_to_check:
+        targets_to_check.append(repo_root)
+
+    for root_dir in targets_to_check:
+        asset_cand = root_dir / "AssetERP" / "docs" / "as-is"
+        if asset_cand.is_dir():
+            target = asset_cand / sub if sub else asset_cand
+            if not sub or target.is_dir() or asset_cand.is_dir():
+                return target
+
+        try:
+            for child in root_dir.iterdir():
+                if child.is_dir() and not child.name.startswith(".") and child.name != "AssetERP":
+                    cand = child / "docs" / "as-is"
+                    if cand.is_dir():
+                        target = cand / sub if sub else cand
+                        if not sub or target.is_dir():
+                            return target
+        except OSError:
+            pass
+
+    # 5. 기본 fallback
     base = cur / "docs" / "as-is"
     return base / sub if sub else base

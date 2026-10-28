@@ -2,6 +2,13 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.5.8] - 2026-10-28
+수정사항 044-1: compare --src-index 지원 및 하위 디렉터리 색인 자동 감지/일관성 개선.
+- `compare`: `--src-index` 옵션 추가 및 `compare_api_sql`, `find_screen_grid_info`에 `src_index` 경로 전달 지원 (044-1)
+- `resolve_as_is_paths`: `compare`와 `analysis`가 공통 경로 해석기를 공유하여 `YUNHEE_SRC_INDEX_DIR` 환경변수 및 `.yunhee.toml`의 `[as_is] src_index` 우선순위 지원 (044-1)
+- `find_as_is_dir`: 저장소 루트(`framework-sprt`)에서 실행 시 하위 프로젝트 디렉터리(`AssetERP/docs/as-is/src` 등) 자동 탐색 폴백 추가 (044-1)
+- `config`: `YUNHEE_SRC_INDEX_DIR` 환경변수 및 `src-index` 설정값 조회(`yunhee value src-index`, `yunhee config`) 추가 (044-1)
+
 ## [0.5.7] - 2026-10-27
 화면 파일 페이지 스타일 판별기(`page-style`)에 신규 SID `SGTP` 추가 반영.
 - `page-style`: 신규 페이지 스타일 ID `SGTP`(SearchGrid+TabPage: 위아래 분할 + 그리드 + 아래 탭 영역 `*_TabPage_*`) 추가

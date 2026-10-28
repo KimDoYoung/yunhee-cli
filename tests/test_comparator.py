@@ -1,6 +1,7 @@
 """comparator 도구 및 compare 커맨드 테스트."""
 
 import json
+from pathlib import Path
 
 from yunhee.tools import comparator
 
@@ -452,5 +453,122 @@ def test_042_compare_naming_rule_diff_and_paging(monkeypatch):
         )
         assert res_total.ok
         assert "API rows=5 (total 390), SQL rows=5 ✅, total SQL 390 ✅" in res_total.data["summary"]
+
+
+def test_044_compare_src_index_support(tmp_path: Path, monkeypatch):
+    """044-1: compare --src-index 옵션 지원 및 하위 디렉터리 색인 인식 검증."""
+    from unittest.mock import MagicMock, patch
+
+    from typer.testing import CliRunner
+
+    from yunhee.cli import app
+    from yunhee.tools.base import ToolResult
+
+    custom_idx = tmp_path / "custom_index"
+    screen_dir = custom_idx / "tdm" / "screens"
+    screen_dir.mkdir(parents=True)
+    md_content = """# Tdm51_TabPage_CheckOrg
+
+### Tdm51_TabPage_CheckOrg (`client/vi/tdm/Tdm51_TabPage_CheckOrg.java`, 100줄)
+
+- 그리드 `checkManlGrid` (buildGrid()):
+  - selectYn 40 "선택" Boolean
+  - checkItem 120 "점검항목" Text
+  - checkerName 100 "점검자" Text
+
+## Grid Spec
+```tsx
+const buildGrid = () => [
+  gb.boolean("selectYn", 40, "선택"), // L10 selectYn
+  gb.text("checkItem", 120, "점검항목"), // L11 checkItem
+  gb.text("checkerName", 100, "점검자"), // L12 checkerName
+];
+```
+"""
+    (screen_dir / "Tdm51_TabPage_CheckOrg.md").write_text(md_content, encoding="utf-8")
+
+    # 1. find_screen_grid_info에 src_index 전달 시 색인 인식 검증
+    # (a) src_index 미지정 시 (빈 폴더를 WORK_DIR로 모의하여 비존재)
+    empty_dir = tmp_path / "empty_dir"
+    empty_dir.mkdir()
+    monkeypatch.setattr("yunhee.config.WORK_DIR", empty_dir)
+    monkeypatch.setattr("yunhee.tools.as_is.WORK_DIR", empty_dir)
+
+    info_fail = comparator.find_screen_grid_info(
+        "tdm52_chck_manl.selectByChckOrgId",
+        grid_class="Tdm51_TabPage_CheckOrg",
+        src_index=empty_dir,
+    )
+    assert info_fail["not_found"]
+
+    # (b) src_index 지정 시 정상 인식
+    info_ok = comparator.find_screen_grid_info(
+        "tdm52_chck_manl.selectByChckOrgId",
+        grid_class="Tdm51_TabPage_CheckOrg",
+        src_index=custom_idx,
+    )
+    assert not info_ok["not_found"]
+    assert "Tdm51_TabPage_CheckOrg" in info_ok["label"]
+    assert info_ok["cols"] == {"selectYn", "checkItem", "checkerName"}
+
+    # 2. compare_api_sql에 src_index 전달 시 그리드 정상 매핑 검증
+    dummy_api_res = {
+        "text": json.dumps({
+            "success": True,
+            "data": [
+                {"selectYn": "Y", "checkItem": "Item 1", "checkerName": "User 1"},
+            ],
+        }),
+        "status_code": 200,
+        "elapsed_ms": 10.0,
+    }
+    monkeypatch.setattr(
+        "yunhee.tools.comparator.request_api",
+        lambda **kwargs: ToolResult(ok=True, data=dummy_api_res),
+    )
+
+    with patch("psycopg.connect") as mock_conn:
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = [("Y", "Item 1", "User 1")]
+        mock_cursor.rowcount = 1
+        mock_cursor.description = [("select_yn",), ("check_item",), ("checker_name",)]
+        mock_conn.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = mock_cursor
+
+        res = comparator.compare_api_sql(
+            method="GET",
+            path="/api/v1/tdm/check-manls",
+            sql_ref="tdm52_chck_manl.selectByChckOrgId",
+            sql_params={"chckOrgId": "202607289814553"},
+            grid="Tdm51_TabPage_CheckOrg",
+            src_index=custom_idx,
+        )
+        assert res.ok
+        assert "(Tdm51_TabPage_CheckOrg#buildGrid, 3컬럼)" in res.data["summary"]
+        assert "⚠ 그리드 못 찾음" not in res.data["summary"]
+
+    # 3. CLI compare 명령어의 --src-index 옵션 호출 검증
+    runner = CliRunner()
+    with patch("yunhee.tools.comparator.compare_api_sql") as mock_compare_api_sql:
+        mock_compare_api_sql.return_value = ToolResult(
+            ok=True,
+            data={"summary": "API rows=1, SQL rows=1 ✅  fields ⊇ grid cols ✅ (Tdm51_TabPage_CheckOrg#buildGrid, 3컬럼)"},
+        )
+        result = runner.invoke(
+            app,
+            [
+                "compare",
+                "GET",
+                "/api/v1/tdm/check-manls",
+                "--sql",
+                "tdm52_chck_manl.selectByChckOrgId",
+                "--grid",
+                "Tdm51_TabPage_CheckOrg",
+                "--src-index",
+                str(custom_idx),
+            ],
+        )
+        assert result.exit_code == 0
+        assert mock_compare_api_sql.call_args.kwargs["src_index"] == custom_idx
+
 
 

@@ -915,3 +915,54 @@ public class Tdm01_Lookup_SelectSingle {
     assert "getPerson (열은 yunhee table getPerson)" in sql_md
 
 
+def test_resolve_as_is_paths_priority(tmp_path: Path, monkeypatch):
+    """044-1: resolve_as_is_paths의 src_index 탐색 순서 및 일관성 검증."""
+    from yunhee import config
+    from yunhee.tools.analysis.common import resolve_as_is_paths
+
+    repo_root = tmp_path / "framework-sprt"
+    repo_root.mkdir()
+    child_index = repo_root / "AssetERP" / "docs" / "as-is" / "src"
+    child_index.mkdir(parents=True)
+
+    monkeypatch.setattr(config, "WORK_DIR", repo_root)
+    monkeypatch.setattr("yunhee.tools.as_is.WORK_DIR", repo_root)
+    monkeypatch.setattr(config, "SRC_INDEX_DIR", None)
+    monkeypatch.delenv("YUNHEE_SRC_INDEX_DIR", raising=False)
+    monkeypatch.setattr(config, "TOML_CONFIG", {})
+
+    # 1. 자동 감지: repo root에서 하위 AssetERP/docs/as-is/src 감지
+    _, auto_idx = resolve_as_is_paths()
+    assert auto_idx == child_index
+
+    # 2. config.SRC_INDEX_DIR 우선
+    custom_idx = tmp_path / "custom_src_index"
+    custom_idx.mkdir()
+    monkeypatch.setattr(config, "SRC_INDEX_DIR", custom_idx)
+    _, conf_idx = resolve_as_is_paths()
+    assert conf_idx == custom_idx
+
+    # 3. YUNHEE_SRC_INDEX_DIR 환경변수
+    monkeypatch.setattr(config, "SRC_INDEX_DIR", None)
+    env_idx = tmp_path / "env_src_index"
+    env_idx.mkdir()
+    monkeypatch.setenv("YUNHEE_SRC_INDEX_DIR", str(env_idx))
+    _, env_res = resolve_as_is_paths()
+    assert env_res == env_idx
+
+    # 4. .yunhee.toml [as_is] src_index
+    toml_idx = tmp_path / "toml_src_index"
+    toml_idx.mkdir()
+    monkeypatch.delenv("YUNHEE_SRC_INDEX_DIR", raising=False)
+    monkeypatch.setattr(config, "TOML_CONFIG", {"as_is": {"src_index": str(toml_idx)}})
+    _, toml_res = resolve_as_is_paths()
+    assert toml_res == toml_idx
+
+    # 5. CLI 인자 --src-index가 최우선
+    cli_idx = tmp_path / "cli_src_index"
+    cli_idx.mkdir()
+    _, cli_res = resolve_as_is_paths(src_index=cli_idx)
+    assert cli_res == cli_idx
+
+
+

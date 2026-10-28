@@ -35,6 +35,8 @@ def test_get_config_item_lookup():
     assert config.get_config_item("TEST_DB") is not None
     assert config.get_config_item("ollama-url") is not None
     assert config.get_config_item("YUNHEE_OLLAMA_URL") is not None
+    assert config.get_config_item("src-index") is not None
+    assert config.get_config_item("YUNHEE_SRC_INDEX_DIR") is not None
 
 
 def test_get_config_value_raw_and_masked():

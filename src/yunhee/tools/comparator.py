@@ -12,7 +12,6 @@ from yunhee.tools.analysis.common import GRID_METHOD_NAME_PATTERN
 from yunhee.tools.api_client import request_api
 from yunhee.tools.as_is.events import (
     col_to_tobe_prop,
-    find_as_is_dir,
     find_mapper_for_model,
 )
 from yunhee.tools.as_is.sql_checker import parse_xml
@@ -197,23 +196,21 @@ def find_screen_grid_info(
     src_root: Path | None = None,
     grid_class: str | None = None,
     api_fields: set[str] | None = None,
+    src_index: Path | None = None,
 ) -> dict[str, Any]:
-    src_index_dir = (
-        Path(config.SRC_INDEX_DIR)
-        if hasattr(config, "SRC_INDEX_DIR") and config.SRC_INDEX_DIR and Path(config.SRC_INDEX_DIR).is_dir()
-        else None
-    ) or (
-        Path(config.TOML_CONFIG.get("as_is", {}).get("src_index"))
-        if config.TOML_CONFIG.get("as_is", {}).get("src_index")
-        else None
-    ) or find_as_is_dir("src")
+    from yunhee.tools.analysis.common import resolve_as_is_paths
+
+    eff_src, src_index_dir = resolve_as_is_paths(src=src_root, src_index=src_index)
 
     roots: list[Path] = []
-    if src_root and src_root.is_dir():
+    if eff_src and eff_src.is_dir():
+        roots.append(eff_src)
+    if src_root and src_root.is_dir() and src_root not in roots:
         roots.append(src_root)
-    if config.ASIS_SRC_DIR and config.ASIS_SRC_DIR.is_dir():
+    if config.ASIS_SRC_DIR and config.ASIS_SRC_DIR.is_dir() and config.ASIS_SRC_DIR not in roots:
         roots.append(config.ASIS_SRC_DIR)
-    roots.append(config.WORK_DIR)
+    if config.WORK_DIR not in roots:
+        roots.append(config.WORK_DIR)
 
     all_screens: list[Path] = []
     if src_index_dir and src_index_dir.is_dir():
@@ -341,8 +338,9 @@ def find_screen_grid_cols(
     sql_ref: str,
     src_root: Path | None = None,
     grid_class: str | None = None,
+    src_index: Path | None = None,
 ) -> set[str]:
-    info = find_screen_grid_info(sql_ref, src_root=src_root, grid_class=grid_class)
+    info = find_screen_grid_info(sql_ref, src_root=src_root, grid_class=grid_class, src_index=src_index)
     return info.get("cols", set())
 
 
@@ -473,6 +471,7 @@ def compare_api_sql(
     as_user: str = "admin",
     sql_total_ref: str | None = None,
     from_log: bool = False,
+    src_index: Path | None = None,
 ) -> ToolResult:
     """조회 API와 AS-IS SQL의 결과 행 수 및 필드 커버리지를 비교 검증한다."""
     import sys
@@ -733,7 +732,7 @@ def compare_api_sql(
     tbl_prefix = (tbl_pfx_m.group(1) + "_") if tbl_pfx_m else ""
 
     # Grid Spec 컬럼 우선 매핑, 없으면 SQL 컬럼 사용
-    grid_info = find_screen_grid_info(sql_ref, src_root, grid_class=grid, api_fields=api_fields)
+    grid_info = find_screen_grid_info(sql_ref, src_root, grid_class=grid, api_fields=api_fields, src_index=src_index)
     if grid_info.get("not_found"):
         search_dir = grid_info.get("search_dir", "")
         search_suffix = f" (탐색 폴더: {search_dir})" if search_dir else ""

@@ -107,6 +107,19 @@ def _find_yunhee_toml(start_dir: Path | None = None) -> tuple[Path | None, dict]
 
 TOML_FILE, TOML_CONFIG = _find_yunhee_toml()
 _api_conf = TOML_CONFIG.get("api", {})
+_as_is_conf = TOML_CONFIG.get("as_is", {})
+
+# ASIS 색인 디렉터리 (.yunhee.toml [as_is] src_index 우선, 없으면 YUNHEE_SRC_INDEX_DIR 환경변수)
+_raw_src_index = _as_is_conf.get("src_index") or os.getenv("YUNHEE_SRC_INDEX_DIR")
+if _raw_src_index:
+    _p_idx = Path(_raw_src_index)
+    if not _p_idx.is_absolute():
+        _base_idx = TOML_FILE.parent if (TOML_FILE and _as_is_conf.get("src_index")) else WORK_DIR
+        SRC_INDEX_DIR: Path | None = (_base_idx / _p_idx).resolve()
+    else:
+        SRC_INDEX_DIR = _p_idx
+else:
+    SRC_INDEX_DIR = None
 
 # API 스모크 테스트 기본 설정 (.yunhee.toml 우선, 없으면 .env.local)
 API_BASE_URL = _api_conf.get("base") or os.getenv("YUNHEE_API_BASE_URL", "http://localhost:8082/AssetERP_1")
@@ -183,6 +196,7 @@ def summary() -> dict[str, str]:
         "schema-env": SCHEMA_ENV,
         "asis-src": str(ASIS_SRC_DIR),
         "asis-branch": get_git_branch_sync_status(ASIS_SRC_DIR),
+        "src-index": str(SRC_INDEX_DIR) if SRC_INDEX_DIR else "(auto)",
         "api-base": (
             f"{API_BASE_URL} (from {TOML_FILE.name})"
             if TOML_FILE and _api_conf.get("base")
@@ -251,6 +265,12 @@ CONFIG_ITEMS: list[ConfigItem] = [
         aliases=["ASIS_SRC_DIR", "asis-src", "asis_src", "asis"],
         getter=lambda: str(ASIS_SRC_DIR),
         description="AS-IS 레거시 소스 루트 디렉터리",
+    ),
+    ConfigItem(
+        key="YUNHEE_SRC_INDEX_DIR",
+        aliases=["SRC_INDEX_DIR", "src-index", "src_index", "index-dir"],
+        getter=lambda: str(SRC_INDEX_DIR) if SRC_INDEX_DIR else "",
+        description="AS-IS 색인 디렉터리 경로",
     ),
     ConfigItem(
         key="WORK_DIR",
