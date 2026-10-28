@@ -37,14 +37,19 @@ SrcIndexOption = Annotated[
 ]
 
 
-def _emit(build: Callable[..., TraceResult], side: str, fmt: str, max_n: int | None, src: Path | None, src_index: Path | None) -> None:
-    """색인을 읽어 결과를 만들고 출력한다. 모호한 대상은 종료 코드 2, 찾지 못하면 1."""
+def _emit(
+    build: Callable[..., TraceResult | tuple[TraceResult, int]], side: str, fmt: str, max_n: int | None, src: Path | None, src_index: Path | None
+) -> None:
+    """색인을 읽어 결과를 만들고 출력한다. 모호한 대상은 종료 코드 2, 찾지 못하면 1.
+
+    build가 `(결과, 종료 코드)`를 돌려주면 출력한 뒤 그 코드로 끝낸다 (trace-rule verify가 깨진 근거를 알릴 때).
+    """
     from yunhee.tools.analysis.common import AmbiguousTargetError
     from yunhee.tools.trace.resolve import TargetNotFoundError, load_context
 
     try:
         ctx = load_context(side, src=src, src_index=src_index)
-        result = build(ctx)
+        built = build(ctx)
     except AmbiguousTargetError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(2) from exc
@@ -54,7 +59,10 @@ def _emit(build: Callable[..., TraceResult], side: str, fmt: str, max_n: int | N
     except ValueError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(2) from exc
+    result, code = built if isinstance(built, tuple) else (built, 0)
     typer.echo(render(limit(result, max_n), fmt))
+    if code:
+        raise typer.Exit(code)
 
 
 def register_trace_commands(app: typer.Typer) -> None:
@@ -174,21 +182,19 @@ def register_trace_commands(app: typer.Typer) -> None:
 
     @app.command(name="trace-state")
     def trace_state_cmd(
-        col_ref: Annotated[str, typer.Argument(help="테이블.컬럼 (예: fnd01_fund.stat_cd)")],
+        col_ref: Annotated[str, typer.Argument(help="테이블.컬럼 (예: apr01_appr.apr01_status_cd)")],
+        tobe: TobeOption = None,
+        db: Annotated[str | None, typer.Option("--db", help="스키마 스냅샷 이름 (기본: YUNHEE_SCHEMA_ENV)")] = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
-        """컬럼에 값을 쓰는 모든 INSERT/UPDATE 대입 값과 WHERE 조건 (상태 전이 재료)"""
-        out = format_trace_stub(
-            cmd_name="trace-state",
-            desc="이 컬럼에 값을 쓰는 모든 INSERT/UPDATE, 대입 값, 그 SQL의 WHERE 조건 → 상태 전이를 그릴 재료",
-            params={"col_ref": col_ref},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """컬럼에 값을 쓰는 모든 INSERT/UPDATE의 대입 값과 WHERE 조건 (상태 전이 재료)"""
+        from yunhee.tools.trace.state import trace_state
+
+        _emit(lambda ctx: trace_state(col_ref, ctx, tobe, db), side, format, max, src, src_index)
 
     @app.command(name="trace-crud")
     def trace_crud_cmd(
@@ -322,22 +328,22 @@ def register_trace_commands(app: typer.Typer) -> None:
     @app.command(name="trace-rule")
     def trace_rule_cmd(
         action: Annotated[str, typer.Argument(help="동작 (add, list, show, update, verify)")],
-        target: Annotated[str | None, typer.Argument(help="대상 화면ID 또는 규칙 ID")] = None,
+        target: Annotated[str | None, typer.Argument(help="add·list: 대상 화면·클래스·mapper id / show·update·verify: 규칙 ID (예: R-001)")] = None,
         note: Annotated[str | None, typer.Option("--note", help="규칙 내용 또는 변경 사유")] = None,
+        verdict: Annotated[str | None, typer.Option("--verdict", "-v", help="판정 (일치, 누락, 변경, 의도적 변경)")] = None,
+        evidence: Annotated[list[str] | None, typer.Option("--evidence", "-E", help="근거 위치 (반복 가능): 파일:줄, 파일, mapper id")] = None,
+        accept: Annotated[bool, typer.Option("--accept", help="verify R-NNN: MOVED·STALE 근거를 현재 내용으로 갱신")] = False,
+        tobe: TobeOption = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
-        """에이전트 규칙 저장·조회 (add/list/show/update) 및 근거 검증 (verify)"""
-        out = format_trace_stub(
-            cmd_name="trace-rule",
-            desc="규칙 저장·조회. 판정(일치/누락/변경/의도적 변경)과 사유, 근거 검증(verify)",
-            params={"action": action, "target": target, "note": note},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """에이전트 규칙 저장·조회 (add/list/show/update) 및 근거 검증 (verify — 깨진 근거가 있으면 종료 코드 1)"""
+        from yunhee.tools.trace.rule import run_rule
+
+        _emit(lambda ctx: run_rule(action, target, ctx, tobe, note, verdict, evidence, accept), side, format, max, src, src_index)
 
     @app.command(name="trace-term")
     def trace_term_cmd(
@@ -360,20 +366,18 @@ def register_trace_commands(app: typer.Typer) -> None:
     @app.command(name="trace-doc")
     def trace_doc_cmd(
         domain: Annotated[str, typer.Argument(help="업무 영역 (예: sys, fnd, emp)")],
+        tobe: TobeOption = None,
+        db: Annotated[str | None, typer.Option("--db", help="스키마 스냅샷 이름 (기본: YUNHEE_SCHEMA_ENV)")] = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
-        """카탈로그와 팩트를 신규 인원용 문서 골격으로 조립"""
-        out = format_trace_stub(
-            cmd_name="trace-doc",
-            desc="카탈로그와 팩트를 신규 인원용 문서 골격으로 조립 (서술은 에이전트)",
-            params={"domain": domain},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        """카탈로그와 팩트를 신규 인원용 문서 골격으로 조립 (서술 자리는 `서술(에이전트)` 표지로 남김)"""
+        from yunhee.tools.trace.doc import trace_doc
+
+        _emit(lambda ctx: trace_doc(domain, ctx, tobe, db), side, format, max, src, src_index)
 
     @app.command(name="trace-guide")
     def trace_guide_cmd(

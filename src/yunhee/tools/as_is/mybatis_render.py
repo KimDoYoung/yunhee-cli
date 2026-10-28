@@ -829,6 +829,8 @@ def render_with_meta(
 
     if mode == "explain":
         sql = rendered
+        if local_params.get("__keep_params__"):  # 파라미터 이름을 남긴다 (상태값 추적용): #{statCd} → "__p_statCd" (따옴표로 대소문자 유지)
+            sql = re.sub(r"#\{\s*([^},\s]+)[^}]*\}", lambda m: '"__p_' + re.sub(r"\W", "_", m.group(1)) + '"', sql)
         sql = re.sub(r"#\{[^}]*\}", "NULL", sql)
         sql = re.sub(r"(?i)\bin\s*\$\{[^}]*\}", "IN (1)", sql)
         sql = re.sub(r"(?i)\bin\s+NULL\b", "IN (NULL)", sql)

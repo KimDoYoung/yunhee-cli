@@ -271,18 +271,58 @@ $ yunhee trace-gap --domain emp --tobe <TOBE> --max 6
 - `trace-doc` 출력이 빈 카탈로그에서도 오류 없이 골격만 내는지 확인.
 - DB 쓰기는 `trace_rule` 테이블에만 한다(다른 테이블/AssetERP DB는 읽기 전용).
 
-### 사용예
-```
-$ yunhee trace-rule add Fnd01_Tab_FundSearch --note "삭제는 상태가 N일 때만 가능" 
-$ yunhee trace-rule list Fnd01_Tab_FundSearch
-$ yunhee trace-rule verify
-## facts
-- R-001 OK
-- R-002 STALE (mapper/fnd01_fund.xml:140 내용이 바뀜)
-- R-003 MISSING (Fnd09_Tab_Report.java:77 줄이 없음)
+### 구현 결과 (2026-10-28, 0.6.4)
+- **trace-rule 저장소**: `data/db/yunhee.db`의 `trace_rule`(프로젝트·규칙 ID·대상·판정·사유·시각)과 `trace_rule_evidence`(근거 목록)를 프로젝트별(`.yunhee/project.json`의 name)로 둔다. 규칙 ID는 프로젝트마다 `R-001`부터. 판정은 `일치`·`누락`·`변경`·`의도적 변경`이고 영어·줄임말(`changed`, `의도적`)도 받는다. 테이블은 첫 사용 때 만든다.
+- **근거는 내용으로 검증한다**: 근거는 `파일:줄`, `파일:시작-끝`, 파일, mapper id(ASIS `ns.id`, TOBE `Mapper클래스.id`). 저장하는 순간 **파일·줄·문장을 실제로 읽어 확인**하고(없으면 저장 거부, 종료 코드 2) 본문의 정규화 해시와 내용을 함께 저장한다. 줄 번호는 코드가 바뀌면 밀리므로 판정은 내용으로 한다: `OK`(같음), `MOVED`(내용은 같고 위치만 이동 — 빈 줄이 끼어 길이가 달라져도 줄 경계에 맞게 찾는다), `STALE`(내용이 바뀜), `MISSING`(파일·줄·문장이 없어짐, 또는 근거가 없음). mapper는 `normalize_sql_for_drift`로 공백·대소문자·주석 차이를 무시하고 SQL이 바뀐 것만 STALE로 본다.
+- **verify 종료 코드**: MISSING 또는 STALE이 있으면 1, MOVED만 있으면 0. `--accept R-NNN`은 MOVED를 새 위치로 옮기고(`Sample.java:2-4` → `:3-5`) STALE을 현재 내용으로 갱신한다.
+- **trace-state**: 모든 mapper를 `keep_params`로 해석해 컬럼의 대입을 모은다(CTE 안의 UPDATE·`ON CONFLICT` 포함, 첫 호출 4초). 파라미터는 `#{statusCode}`로 남겨 상수(`'99'`)와 호출자가 정하는 값을 구분한다. `UpdateDataModel` 동적 쓰기는 값을 추측하지 않고 서비스 목록만 낸다. 한계: 상태 전이의 선행 조건이 SQL이 아니라 Java에 있으면 `WHERE`에 보이지 않는다.
+- **trace-doc**: facts의 각 항목이 문서의 한 절이라 `options["document"]`로 불릿 없이 마크다운 그대로 낸다(근거·미해결은 뒤에 붙음). 서술 자리는 `<!-- 서술(에이전트): … -->`와 체크리스트로 남긴다.
+- **주의**: `trace-rule`은 yunhee에서 유일하게 로컬 sqlite에 **쓰는** 명령이다. 다른 trace-*는 모두 읽기 전용이다.
 
-$ yunhee trace-state fnd01_fund.stat_cd
-$ yunhee trace-doc fnd
+### 사용예
+실제 실행 결과(AssetERP 색인 + TOBE, 줄임 표시는 `…`).
+```
+$ yunhee trace-rule add "#1029" -v "의도적 변경" --note "조회 조건 isSeparateAddTitle를 separateAddTitle로 옮김" \
+    -E Emp00_Tab_TransInfo.java:394-432 -E emp00_trans_info.selectByText -E EmpTransInfoMapper.searchTransInfos -E Emp00_Tab_TransInfo.tsx
+## facts
+- 규칙 저장: R-001 [의도적 변경] #1029 — 조회 조건 … (근거 4건)
+## evidence
+- asis client/vi/emp/Emp00_Tab_TransInfo.java:394-432
+- asis server/emp/mapper/emp00_trans_info.xml:339 (emp00_trans_info.selectByText)
+- tobe backend/src/main/resources/mapper/EmpTransInfoMapper.xml:110 (kr.co.kfs.asseterp.biz.emp.mapper.EmpTransInfoMapper.searchTransInfos)
+- tobe frontend/src/pages/emp/Emp00_Tab_TransInfo.tsx
+
+$ yunhee trace-rule add "#1029" -v 누락 -E Emp00_Tab_TransInfo.java:9999
+Emp00_Tab_TransInfo.java은 446줄인데 L9999-9999를 가리킴: Emp00_Tab_TransInfo.java:9999     # 종료 코드 2, 저장 안 됨
+
+$ yunhee trace-rule verify                       # 모든 규칙의 근거 확인. 깨진 근거가 있으면 종료 코드 1
+- 검증 결과: OK 1, MOVED 0, STALE 0, MISSING 0 (규칙 1건)
+- R-001 OK [의도적 변경] #1029
+    OK      Emp00_Tab_TransInfo.java:394-432
+    OK      emp00_trans_info.selectByText
+$ yunhee trace-rule verify R-001 --accept        # MOVED·STALE 근거를 확인한 뒤 현재 내용으로 갱신
+$ yunhee trace-rule list emp00                   # 대상 접두사로 목록
+$ yunhee trace-rule show R-001
+$ yunhee trace-rule update R-001 --note "…" -v 변경
+
+$ yunhee trace-state apr01_appr.apr01_status_cd --side asis
+- ASIS: 쓰는 SQL 6개, 대입 값 4종
+  #{statusCode} ← apr01_appr.insert(INSERT), apr01_appr.insertApprTemp(INSERT), apr01_appr.insertApproval(INSERT)
+  #{apprStatusCode} ← apr01_appr.confirmUpdate(UPDATE)
+  #{statusCd} ← apr01_appr.updateStepCd(UPDATE)
+  '99' ← apr01_appr.cancelUpdate(UPDATE)
+- ASIS SQL별 값과 조건:
+  - apr01_appr.cancelUpdate [UPDATE] server/apr/mapper/apr01_appr.xml:1613
+      값: '99'
+      조건: apr01_appr_id = #{apprId}
+- 동적 쓰기(UpdateDataModel, 2) — … 값은 클라이언트가 보내는 모델이 정하므로 SQL로는 알 수 없음:
+  - apr.Apr01_Appr.modelUpdate (등록/수정)
+
+$ yunhee trace-doc emp --tobe <TOBE> > docs/emp-개요.md      # 골격 (표는 사실, 서술은 표지)
+# emp 업무 영역 — 신규 인원용 개요
+## 1. 화면      화면 40개, TOBE로 이식된 화면 21개 + 표(메뉴 번호·화면·TOBE 상태·서비스 수·주요 테이블)
+## 2. 테이블    이 영역의 화면이 쓰는 테이블 … (사용 화면 수 순, 설명은 스냅샷)
+## 3. 서비스(RPC) · ## 4. 규칙 카탈로그 · ## 5. ASIS↔TOBE 대응 현황 · ## 6. 채워야 할 서술(체크리스트)
 ```
 
 ---

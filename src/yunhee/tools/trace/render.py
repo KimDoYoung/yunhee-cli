@@ -69,8 +69,17 @@ def _render_section(title: str, items: list[str], omitted: int) -> list[str]:
 
 
 def render_md(result: TraceResult) -> str:
+    """기본은 facts/evidence/unresolved 3블록. `options["document"]`면 facts의 각 항목이 문서의 한 절이라 그대로 이어 붙이고
+    근거·미해결은 문서 뒤에 같은 3블록 형식으로 붙인다 (trace-doc)."""
     lines: list[str] = []
-    for name in SECTIONS:
+    if result.options.get("document"):
+        lines += ["\n\n".join(result.facts), ""]
+        if result.omitted.get("facts"):
+            lines += [f"… 나머지 {result.omitted['facts']}절", ""]
+        names = SECTIONS[1:]
+    else:
+        names = SECTIONS
+    for name in names:
         lines += _render_section(name, getattr(result, name), result.omitted.get(name, 0))
     return "\n".join(lines)
 

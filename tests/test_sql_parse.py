@@ -67,7 +67,13 @@ def test_cte_is_excluded_and_dml_target_is_write():
     assert r.kind == "insert"
     assert r.ctes == ["upsert"]
     assert r.tables == {"emp02_others": "W"}
-    assert [(a.column, a.value) for a in r.assignments] == [("emp_no", "$2"), ("note", "$1")]
+    # CTE 안의 UPDATE(조건과 함께)와 본 INSERT가 모두 대입으로 잡힌다
+    got = {(a.action, a.column, a.value, a.where) for a in r.assignments}
+    assert got == {
+        ("UPDATE", "note", "$1", "emp_no = $2"),
+        ("INSERT", "emp_no", "$2", ""),
+        ("INSERT", "note", "$1", ""),
+    }
 
 
 def test_update_assignments_and_where():
@@ -75,7 +81,7 @@ def test_update_assignments_and_where():
     assert r.kind == "update"
     assert r.tables == {"fnd01_fund": "W"}
     assert [(a.table, a.column) for a in r.assignments] == [("fnd01_fund", "stat_cd")]
-    assert "CASE WHEN" in r.assignments[0].value
+    assert "CASE WHEN" in r.assignments[0].value and r.assignments[0].where == "stat_cd = 'N' AND id = 3"
     assert r.where == ["stat_cd = 'N' AND id = 3"]
 
 
@@ -90,7 +96,7 @@ def test_delete_and_postgres_syntax():
         "insert into a_b (id, v) values ($1::bigint, f_create_seq('x')) on conflict (id) do update set v = excluded.v returning id"
     )
     assert r.tables == {"a_b": "W"}
-    assert ("a_b", "v", "excluded.v") in [(a.table, a.column, a.value) for a in r.assignments]
+    assert ("a_b", "v", "excluded.v", "CONFLICT") in [(a.table, a.column, a.value, a.action) for a in r.assignments]
     assert "f_create_seq" in r.functions
 
 

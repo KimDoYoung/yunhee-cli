@@ -215,3 +215,13 @@ def world(tmp_path) -> World:
 
     build_index.cache_clear()
     return World(load_context("asis", src=src, src_index=idx), tobe, src, idx)
+
+
+@pytest.fixture
+def rule_db(tmp_path, monkeypatch):
+    """규칙 저장소를 임시 sqlite로 돌린다 (data/db/yunhee.db를 건드리지 않는다). 프로젝트 이름은 'p1'."""
+    from yunhee.store import db, trace_rules
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "rules.sqlite")
+    monkeypatch.setattr(trace_rules, "project_name", lambda: "p1")
+    return tmp_path / "rules.sqlite"

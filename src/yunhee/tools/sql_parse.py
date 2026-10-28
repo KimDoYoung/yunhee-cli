@@ -31,6 +31,8 @@ class Assignment:
     table: str
     column: str
     value: str
+    action: str = "UPDATE"  # UPDATE / INSERT / CONFLICT(ON CONFLICT DO UPDATE)
+    where: str = ""  # 그 UPDATE의 WHERE 식 (INSERT에는 없음)
 
 
 @dataclass
@@ -76,6 +78,7 @@ class _Collector:
         self.writes: list[tuple[str, str]] = []
         self.table_functions: list[str] = []
         self.cases: list[str] = []
+        self.write_nodes: list[Any] = []  # CTE 안의 쓰기를 포함한 모든 INSERT/UPDATE 노드
         self.ctes: list[str] = []
         self.functions: list[str] = []
         self.alias: dict[str, str] = {}  # 별칭 → 테이블명
@@ -102,6 +105,8 @@ class _Collector:
             rel = node.relation
             name = rel.relname.lower()
             self.written.add(name)
+            if isinstance(node, (ast.InsertStmt, ast.UpdateStmt)):
+                self.write_nodes.append(node)
             self.writes.append((type(node).__name__.removesuffix("Stmt").upper(), name))
             if rel.alias:
                 self.alias[rel.alias.aliasname.lower()] = name
@@ -202,11 +207,13 @@ def parse_sql_text(sql: str, schema: Schema | None = None) -> ParsedSql:
         result.where.append(_text(root.whereClause))
     if isinstance(root, ast.SelectStmt) and root.whereClause is not None:
         result.where.append(_text(root.whereClause))
-    if isinstance(root, ast.UpdateStmt):
-        table = root.relation.relname.lower()
-        result.assignments += [Assignment(table, t.name.lower(), _text(t.val)) for t in root.targetList or ()]
-    if isinstance(root, ast.InsertStmt):
-        _collect_insert_assignments(root, result)
+    for node in col.write_nodes:  # CTE 안의 UPDATE도 대입으로 본다 (upsert 패턴)
+        if isinstance(node, ast.UpdateStmt):
+            table = node.relation.relname.lower()
+            where = re.sub(r"\s+", " ", _text(node.whereClause)) if node.whereClause is not None else ""
+            result.assignments += [Assignment(table, t.name.lower(), _text(t.val), "UPDATE", where) for t in node.targetList or ()]
+        else:
+            _collect_insert_assignments(node, result)
     return result
 
 
@@ -275,14 +282,12 @@ def _collect_insert_assignments(root: ast.InsertStmt, result: ParsedSql) -> None
     if isinstance(select, ast.SelectStmt) and select.valuesLists and cols:
         row = select.valuesLists[0]
         values = [_text(v) for v in (row.items if hasattr(row, "items") else row)]
-        result.assignments += [Assignment(table, c, v) for c, v in zip(cols, values, strict=False)]
+        result.assignments += [Assignment(table, c, v, "INSERT") for c, v in zip(cols, values, strict=False)]
     elif isinstance(select, ast.SelectStmt) and select.targetList and cols:
         values = [_text(t.val) for t in select.targetList]
-        result.assignments += [Assignment(table, c, v) for c, v in zip(cols, values, strict=False)]
+        result.assignments += [Assignment(table, c, v, "INSERT") for c, v in zip(cols, values, strict=False)]
     if root.onConflictClause is not None and root.onConflictClause.targetList:
-        result.assignments += [
-            Assignment(table, t.name.lower(), _text(t.val)) for t in root.onConflictClause.targetList
-        ]
+        result.assignments += [Assignment(table, t.name.lower(), _text(t.val), "CONFLICT") for t in root.onConflictClause.targetList]
 
 
 def _fallback(sql: str, error: str) -> ParsedSql:
@@ -317,17 +322,20 @@ def parse_statement(
     statements: dict[str, Any],
     schema: Schema | None = None,
     all_branches: bool = True,
+    keep_params: bool = False,
 ) -> ToolResult:
     """MyBatis statement(`ns.sqlId`)를 `explain` 모드로 순수 SQL로 전개해 해석한다.
 
     `<if>`는 모두 켠 최대형 SQL이다. `<choose>`는 explain 렌더링이 한 분기만 고르므로, `all_branches`면
     다른 분기를 차례로 고른 변형도 해석해 테이블·CTE·함수·컬럼을 합친다 (kind·출력 이름·대입·WHERE는 기본 변형 기준).
     `${}`는 explain 렌더링이 `1`로 바꿔 버리므로 structure 렌더링에서 따로 찾아 unresolved에 남긴다.
+    `keep_params`면 `#{status}`를 `NULL`이 아니라 `__p_status`로 남겨, 대입 값·WHERE에서 어떤 파라미터가 쓰였는지 알 수 있다.
     """
     from yunhee.tools.as_is.mybatis_render import render
 
     try:
-        sql, _ = render(key, mode="explain", statements=statements)
+        base = {"__keep_params__": True} if keep_params else None
+        sql, _ = render(key, params=dict(base) if base else None, mode="explain", statements=statements)
         structure, _ = render(key, mode="structure", statements=statements)
     except Exception as exc:  # noqa: BLE001 - 호출한 쪽은 ok=False면 정규식 추정으로 되돌리므로 렌더 실패는 예외로 올리지 않는다
         return ToolResult(ok=False, error=str(exc))
@@ -336,7 +344,7 @@ def parse_statement(
     if all_branches and "<choose" in structure:
         seen = {sql}
         for variant in range(1, MAX_BRANCH_VARIANTS):
-            alt, _ = render(key, params={"__pick__": variant}, mode="explain", statements=statements)
+            alt, _ = render(key, params={"__pick__": variant, **(base or {})}, mode="explain", statements=statements)
             if alt in seen:
                 break
             seen.add(alt)

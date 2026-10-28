@@ -2,6 +2,15 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.6.4] - 2026-10-28
+`trace-rule`, `trace-state`, `trace-doc` 구현 (trace-* Step 4).
+- `trace-rule add|list|show|update|verify`: 에이전트의 판정(일치·누락·변경·의도적 변경)과 사유, **근거 위치**를 sqlite(`data/db/yunhee.db`의 `trace_rule`·`trace_rule_evidence`, 프로젝트별)에 저장한다. 근거는 `파일:줄`·`파일:시작-끝`·파일·mapper id(ASIS `ns.id`, TOBE `Mapper클래스.id`). `add`는 근거를 **그 자리에서 읽어 존재를 확인하고**(없는 파일·줄·문장은 저장 전에 거부) 본문의 정규화 해시를 함께 저장한다
+- `trace-rule verify [R-NNN|대상]`: 근거를 다시 읽어 `OK`(같음) / `MOVED`(내용은 같고 줄만 이동 — 빈 줄·서식 변경 포함) / `STALE`(내용이 바뀜) / `MISSING`(파일·줄·문장이 없어짐 또는 근거 없음)로 판정한다. 줄 번호가 아니라 **내용**으로 판정하고 mapper는 `normalize_sql_for_drift`로 공백·대소문자·주석을 무시한다. MISSING·STALE이 있으면 종료 코드 1(MOVED는 0). `--accept R-NNN`은 MOVED를 새 위치로 옮기고 STALE을 현재 내용으로 갱신한다
+- `trace-state <테이블.컬럼>`: 그 컬럼에 값을 쓰는 모든 INSERT/UPDATE(CTE 안의 UPDATE·`ON CONFLICT` 포함)의 대입 값과 WHERE 조건을 대입 값별·SQL별로 낸다. 파라미터는 `#{statusCode}`로 남겨 상수와 호출자가 정하는 값을 구분하고, `UpdateDataModel`의 동적 쓰기는 값을 추측하지 않고 서비스 목록만 낸다. ASIS와 TOBE의 대입 값을 비교한다(`statCd`≡`stat_cd`)
+- `trace-doc <영역>`: 화면(메뉴 번호·TOBE 이식 여부)·테이블(스냅샷 설명)·서비스·규칙 카탈로그·대응 현황을 마크다운 문서 골격으로 조립하고, 서술 자리는 `<!-- 서술(에이전트): … -->` 표지와 체크리스트로 남긴다. 근거·미해결은 문서 뒤에 붙는다
+- `sql_parse`: 대입(`Assignment`)에 작업 종류(`UPDATE`/`INSERT`/`CONFLICT`)와 WHERE를 붙이고 CTE 안의 UPDATE도 대입으로 본다. `parse_statement(keep_params=True)`는 `#{name}`을 `NULL` 대신 이름이 남는 식별자로 렌더링한다. `render.py`는 `options["document"]`로 문서형 출력을 지원한다
+- 구현된 명령 10개가 stub 테스트에서 빠지고 `test_trace_rule/state/doc.py`가 검증한다. 규칙 테스트는 임시 sqlite를 쓴다(`conftest.py`의 `rule_db`)
+
 ## [0.6.3] - 2026-10-28
 `trace-pair`, `trace-diff`, `trace-gap` 구현 (trace-* Step 3) + TOBE 호출 체인 색인.
 - `tools/trace/tobe.py`: TOBE의 `TSX → api/*.ts 함수 → 컨트롤러 엔드포인트 → 서비스 → mapper 인터페이스 → XML 문장` 체인과 `AS-IS` 주석(서비스 키 `emp.Emp00_TransInfo.selectByText`, SQL id, TSX 헤더의 메뉴 번호·AS-IS 클래스)을 색인한다. 이름이 비슷하다는 이유만으로 짝짓지 않고 TOBE 소스에 적힌 AS-IS 주석을 근거로 쓴다
