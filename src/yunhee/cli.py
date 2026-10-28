@@ -27,6 +27,7 @@ from yunhee.tools.as_is.events import (
 )
 from yunhee.tools.as_is.sql_checker import check_sql
 from yunhee.tools.as_is.src_indexer import index_src
+from yunhee.tools.trace import register_trace_commands
 
 app = typer.Typer(rich_markup_mode="rich", add_completion=False)
 
@@ -2149,6 +2150,7 @@ if "--wait-deploy" in sys.argv:
             sys.argv.insert(idx + 1, "60")
 
 
+@log_app.command(name="request")
 @log_app.command(name="trace")
 def log_trace_cmd(
     trace_id: Annotated[str, typer.Argument(help="조회할 trace ID (16진수)")],
@@ -2355,6 +2357,9 @@ def log_tail_cmd(
         raise typer.Exit(code=1)
 
     typer.echo(res)
+
+
+register_trace_commands(app)
 
 
 if __name__ == "__main__":

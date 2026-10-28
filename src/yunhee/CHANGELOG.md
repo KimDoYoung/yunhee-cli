@@ -2,6 +2,13 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.5.10] - 2026-10-28
+`trace-*` 업무파악 인자형 명령어 계층 껍질(stub) 18개 구현 및 log request 별칭 추가.
+- `trace-*`: 업무 개념(탐색·데이터·규칙·대조·카탈로그) 중심의 18개 명령어 껍질(stub) 등록 (`trace-map`, `trace-menu`, `trace-screen`, `trace-table`, `trace-column`, `trace-code`, `trace-state`, `trace-crud`, `trace-flow`, `trace-branch`, `trace-dblogic`, `trace-pair`, `trace-diff`, `trace-gap`, `trace-rule`, `trace-term`, `trace-doc`, `trace-guide`)
+- 공통 옵션 지원: 모든 `trace-*` 명령어에 `--side (asis|tobe|both)`, `--format/-o (md|json)`, `--max <N>`, `--refs-only` 지원
+- 표준 3단계 블록 출력: Markdown(`## facts`, `## evidence`, `## unresolved`) 및 JSON 일관된 규격 반환
+- `log request`: 실시간 요청 로그 명령어 `yunhee log trace`와 신규 `trace-*` 간 혼동 방지를 위해 `yunhee log request` (단축 `req`) 별칭 추가 및 상호 호환 보존
+
 ## [0.5.9] - 2026-10-28
 수정사항 044 (도달 불가 오판 개선, ui --tobe 경로 오류, sql-check 단일 파일 및 후보 제시, port-sql --raw, sql --scalar, 불리언 파라미터, 그리드 속성 보존, 단일 스칼라 비교, 오버로드 일괄 출력, MyTextArea, 훅 안내 개선) 반영.
 - `events`: `ToggleGroup` 등 컨테이너에 `add`된 위젯이 툴바에 부착되면 그룹 이벤트도 도달 가능으로 판정, `Lookup`/`Dialog`/`Window` 클래스의 `open()`/`show()` 등 공개 진입점 메서드의 도달 불가 오판 수정 (044-22)
