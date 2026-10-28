@@ -3,12 +3,17 @@
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
 ## [0.6.5] - 2026-10-28
-`trace-column`, `trace-code`, `trace-crud` 구현 (trace-* Step 5, 묶음 A: SQL 해석 기반).
+`trace-column`, `trace-code`, `trace-crud` 구현 (trace-* Step 5, 묶음 A: SQL 해석 기반) + `trace-map`, `trace-menu`, `trace-term` (묶음 B: 색인 집계).
 - `trace-column <테이블.컬럼>`: 그 컬럼을 **읽는**(SELECT 목록·SET 식·RETURNING) / **조건에 쓰는**(WHERE·JOIN·HAVING) / **정렬·그룹**(ORDER·GROUP) / **쓰는**(INSERT·UPDATE) SQL을 SQL AST의 절로 구분해 ASIS·TOBE 각각 낸다. 화면 표시 라벨은 컬럼명에서 만든 속성 이름(`emp01_kor_nm`→`korNm`)이 ASIS 색인의 Grid Spec·TOBE 그리드 필드명과 같은 곳에서 찾는다. `--stats`는 읽기 전용으로 값 분포를 조회하되 **고유 값이 30종 이하인 코드성 컬럼만 값을 낸다** (이름·주민번호 같은 개인정보가 컨텍스트에 새지 않게 개수만 알림)
 - `trace-code <코드그룹>`: DB(`sys08_code_kind`·`sys09_code`, 읽기 전용)에서 코드값·명칭·사용 중지·회사별 사본 수를 읽고, ASIS·TOBE 소스에서 그룹 이름이 따옴표 문자열로 적힌 곳을 SQL 리터럴 / 콤보·선택 목록 / 상수 비교 / 그 밖의 참조로 나눠 낸다 (주석 속 코드는 제외). 이름 일부만 주면 후보 목록(종료 코드 2). DB를 쓸 수 없으면 값은 건너뛰고 사용처만 낸다
 - `trace-crud [--screen|--domain|--table]`: 화면 → 서비스 → SQL → 테이블로 ASIS의 C/R/U/D를 만들고(`UpdateDataModel` 동적 쓰기 포함), TOBE는 TSX → api → 컨트롤러 → 서비스 → mapper 문장으로 만들어 **나란히 비교**한다. TOBE에 없는 테이블·작업에 ⚠를 붙인다. 범위를 안 주면 영역별 요약
 - `sql_parse`: `ParsedSql.column_usage`(테이블 → 컬럼 → 쓰인 절) 추가. `tools/trace/sqlscan.py`: mapper 전체 해석 캐시. `tools/trace/db.py`: 읽기 전용 DB 조회(실패는 unresolved)
-- 구현된 명령 13개가 stub 테스트에서 빠지고 `test_trace_column/code/crud.py`가 검증한다. `conftest.py`의 `fake_schema`·`world.ctx_for(side)`
+- `trace-map [--domain]`: 업무 영역별 ASIS 화면·컴포넌트·서비스·SQL·테이블 수와 TOBE 이식 현황(이식 화면 수·비율, TSX, 엔드포인트, mapper 문장)을 낸다. 이식 여부는 같은 클래스명의 TSX 또는 TSX 헤더의 AS-IS로 판정(trace-pair와 같은 기준). 영역의 대표 메뉴 이름은 그 영역 화면이 가장 많이 속한 최상위 메뉴. 영역이 아닌 이름(`pages/` 바로 아래 파일 등)은 거른다
+- `trace-menu [<경로|번호|화면>]`: 색인 `menus.md`의 메뉴 트리를 ASIS 화면 클래스 → TOBE 화면·API 호출로 이어서 낸다. 경로 조각(`'조직 및 사원관리 > 사원정보'`)은 각 단계에 순서대로 부분 일치, `#1029`·화면 클래스명도 받는다. 사용 안 함·화면 클래스 없는 메뉴를 표시. 인자가 없으면 최상위 메뉴 요약
+- `trace-term [<용어>]`: 용어가 들어간 DB 컬럼 이름·코멘트, 테이블 설명, ASIS·TOBE 화면 라벨(Grid Spec·버튼), 공통 코드 그룹·코드값 이름(DB, 읽기 전용)을 모은다. 라벨의 속성 이름이 컬럼명에서 만든 이름(`korNm`)과 같고 후보가 3개 이하일 때만 라벨 ↔ 컬럼을 이어 근거를 밝힌다 (이름이 흔하거나 규칙에 안 맞으면 이어 붙이지 않음). 백업·임시 테이블은 제외
+- `test_trace_map_menu_term.py`가 검증한다
+
+- 구현된 명령 16개가 stub 테스트에서 빠지고 `test_trace_column/code/crud.py`가 검증한다. `conftest.py`의 `fake_schema`·`world.ctx_for(side)`
 
 ## [0.6.4] - 2026-10-28
 `trace-rule`, `trace-state`, `trace-doc` 구현 (trace-* Step 4).

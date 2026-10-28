@@ -30,8 +30,8 @@ ALL_TRACE_COMMANDS = [
 ]
 
 
-# 구현이 끝난 명령은 전용 테스트(test_trace_screen/table/flow/branch/pair/diff/gap/rule/state/doc/column/code/crud.py)가 검증한다
-IMPLEMENTED = {"trace-screen", "trace-table", "trace-flow", "trace-branch", "trace-pair", "trace-diff", "trace-gap", "trace-rule", "trace-state", "trace-doc", "trace-column", "trace-code", "trace-crud"}
+# 구현이 끝난 명령은 전용 테스트(test_trace_screen/table/flow/branch/pair/diff/gap/rule/state/doc/column/code/crud/map_menu_term.py)가 검증한다
+IMPLEMENTED = {"trace-screen", "trace-table", "trace-flow", "trace-branch", "trace-pair", "trace-diff", "trace-gap", "trace-rule", "trace-state", "trace-doc", "trace-column", "trace-code", "trace-crud", "trace-map", "trace-menu", "trace-term"}
 STUB_COMMANDS = [(name, args) for name, args in ALL_TRACE_COMMANDS if name not in IMPLEMENTED]
 
 
@@ -76,11 +76,11 @@ def test_all_trace_commands_json():
 
 def test_max_option():
     """Verify --max option is recorded in output."""
-    r_md = runner.invoke(app, ["trace-map", "--domain", "sys", "--max", "20"])
+    r_md = runner.invoke(app, ["trace-dblogic", "fn_calc_amount", "--max", "20"])
     assert r_md.exit_code == 0
     assert "max=20" in r_md.output
 
-    r_json = runner.invoke(app, ["trace-map", "--domain", "sys", "--max", "20", "-o", "json"])
+    r_json = runner.invoke(app, ["trace-dblogic", "fn_calc_amount", "--max", "20", "-o", "json"])
     assert r_json.exit_code == 0
     data = json.loads(r_json.output)
     assert data["options"]["max"] == 20

@@ -74,39 +74,33 @@ def register_trace_commands(app: typer.Typer) -> None:
 
     @app.command(name="trace-map")
     def trace_map_cmd(
-        domain: Annotated[str | None, typer.Option("--domain", "-d", help="특정 업무 영역 (예: sys, fnd, emp)")] = None,
+        domain: Annotated[str | None, typer.Option("--domain", "-d", help="특정 업무 영역 (예: sys, fnd, emp). 생략하면 전체")] = None,
+        tobe: TobeOption = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
         """업무 영역별 화면 수, 테이블 수, ASIS↔TOBE 매핑 상태 요약"""
-        out = format_trace_stub(
-            cmd_name="trace-map",
-            desc="업무 영역별 화면 수, 테이블 수, ASIS↔TOBE 매핑 상태 요약",
-            params={"domain": domain},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        from yunhee.tools.trace.domainmap import trace_map
+
+        _emit(lambda ctx: trace_map(ctx, tobe, domain), "asis", format, max, src, src_index)
 
     @app.command(name="trace-menu")
     def trace_menu_cmd(
-        menu_path: Annotated[str | None, typer.Argument(help="메뉴 경로 또는 검색어 (예: '시스템관리 > 권한관리')")] = None,
+        menu_path: Annotated[str | None, typer.Argument(help="메뉴 경로 조각·메뉴 번호·화면 클래스명 (예: '조직 및 사원관리 > 사원정보', '#1029'). 생략하면 최상위 요약")] = None,
+        tobe: TobeOption = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
         """메뉴 트리 → ASIS 화면 클래스 → TOBE 화면/API 추적"""
-        out = format_trace_stub(
-            cmd_name="trace-menu",
-            desc="메뉴 트리 → ASIS 화면 클래스 → TOBE 화면/API 추적",
-            params={"menu_path": menu_path},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        from yunhee.tools.trace.menu import trace_menu
+
+        _emit(lambda ctx: trace_menu(ctx, tobe, menu_path), "asis", format, max, src, src_index)
 
     @app.command(name="trace-screen")
     def trace_screen_cmd(
@@ -336,21 +330,19 @@ def register_trace_commands(app: typer.Typer) -> None:
 
     @app.command(name="trace-term")
     def trace_term_cmd(
-        term: Annotated[str | None, typer.Argument(help="검색할 용어/라벨/컬럼명")] = None,
+        term: Annotated[str | None, typer.Argument(help="검색할 용어 (화면 라벨·컬럼 코멘트·코드 이름에서 찾음). 예: 성명, 결재")] = None,
+        tobe: TobeOption = None,
+        db: Annotated[str | None, typer.Option("--db", help="스키마 스냅샷 이름 (기본: YUNHEE_SCHEMA_ENV)")] = None,
         side: SideOption = "both",
         format: FormatOption = "md",
         max: MaxOption = None,
+        src: SrcOption = None,
+        src_index: SrcIndexOption = None,
     ) -> None:
         """용어 교차 참조 (화면 라벨 ↔ DB 컬럼 ↔ 공통 코드명)"""
-        out = format_trace_stub(
-            cmd_name="trace-term",
-            desc="용어 교차 참조: 화면 라벨 ↔ 컬럼 ↔ 코드명",
-            params={"term": term},
-            side=side,
-            fmt=format,
-            max_n=max,
-        )
-        typer.echo(out)
+        from yunhee.tools.trace.term import trace_term
+
+        _emit(lambda ctx: trace_term(term, ctx, tobe, db), side, format, max, src, src_index)
 
     @app.command(name="trace-doc")
     def trace_doc_cmd(
