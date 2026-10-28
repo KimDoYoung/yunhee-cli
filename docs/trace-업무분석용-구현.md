@@ -76,11 +76,11 @@ $ yunhee trace-screen FND9999
 `trace-table`, `trace-column`, `trace-state`, `trace-crud`, `trace-branch`, `trace-diff`가 모두 SQL을 해석하므로 먼저 만든다. 현재 `src_indexer`의 `TABLE_KEYWORD_RE`는 정규식이라 `UPDATE`/`INSERT INTO` 대상과 CTE 구분이 부정확하다(수정사항 021 A-2 참고).
 
 ### 구현내용
-`src/yunhee/tools/sql/parse.py` (신규 의존성 `pglast>=7` — PostgreSQL 서버 파서 `libpg_query`의 Python 바인딩, PostgreSQL 전용).
+`src/yunhee/tools/sql_parse.py` (`tools/sql/`은 `menus.sql` 같은 데이터 폴더라 평평한 모듈로 둔다. 의존성 `pglast>=8.7` — PostgreSQL 서버 파서 `libpg_query`의 Python 바인딩, PostgreSQL 전용).
 
 1. **MyBatis 전개**: `mybatis_render.py` / `comparator.render_mybatis_sql`을 재사용한다.
    - `#{x}` → `$n` 또는 `NULL`, `<include>` 전개, CDATA 보존.
-   - `<if>`/`<choose>`는 **모든 분기를 켠 최대형 SQL**과 **분기별 변형**을 모두 만든다. 테이블·컬럼 추출은 최대형으로, `trace-branch`는 분기별 변형으로 쓴다.
+   - `<if>`/`<choose>`는 **모든 분기를 켠 최대형 SQL**(`explain` 모드)로 만든다. 테이블·컬럼 추출은 이것으로 한다. **분기별 변형은 Step 2(`trace-branch`)에서 만든다.**
    - `${}` 치환은 풀 수 없으므로 `unresolved`에 남긴다.
 2. **AST 파싱**: `pglast.parse_sql()`.
    - 테이블: `RangeVar`. 읽기/쓰기는 최상위 노드 종류(Select/Insert/Update/Delete)로 구분하고 CTE 이름은 제외한다.
@@ -98,11 +98,12 @@ $ yunhee trace-screen FND9999
 ### 사용예
 내부 모듈이라 CLI는 없다. 코드 사용:
 ```python
-from yunhee.tools.sql.parse import parse_statement
-res = parse_statement(xml_path, "emp02_others.upsert")
-res.data.tables   # {"emp02_others": "W"}          (upsert는 CTE라 제외)
-res.data.ctes     # ["upsert"]
-res.unresolved    # []
+from yunhee.tools.sql_parse import parse_statement, parse_sql_text
+res = parse_statement("emp02_others.upsert", statements, schema)   # MyBatis statement
+res.data.tables       # {"emp02_others": "W"}   (upsert는 CTE라 제외, R/W/RW)
+res.data.ctes         # ["upsert"]
+res.data.unresolved   # []
+parse_sql_text("select * from sys06_menu", schema).output_names   # 스냅샷으로 15개 컬럼 확장
 ```
 
 ---
@@ -213,7 +214,7 @@ $ yunhee trace-table fnd01_fund --side asis -o json   # 키: command, side, fact
 
 **trace-branch `<화면ID|클래스|mapper id>`**
 - 화면/클래스: 이벤트 핸들러의 if/switch/throw(`events.extract_if_condition`, `events.detect_condition`), validator, 버튼 활성 조건.
-- mapper id: Step 0-b의 분기별 변형에서 `<if test>`, `<choose>`, CASE WHEN을 목록화.
+- mapper id: 이 단계에서 만드는 분기별 변형(Step 0-b는 최대형 SQL까지만 제공)에서 `<if test>`, `<choose>`, CASE WHEN을 목록화.
 - TOBE: TSX의 `disabled` 속성과 조건부 렌더링(`tools/analysis/tobe.py`의 JSX 파싱 재사용).
 - unresolved: 조건식이 메서드 호출/동적 값인 지점.
 
