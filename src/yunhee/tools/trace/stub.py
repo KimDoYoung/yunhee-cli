@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
+
+from yunhee.tools.trace.render import TraceResult, limit, render
 
 
 def format_trace_stub(
@@ -14,58 +15,32 @@ def format_trace_stub(
     fmt: str = "md",
     max_n: int | None = None,
 ) -> str:
-    """Format standard trace command stub output.
-
-    Output Structure:
-    - facts: facts extracted (placeholder with params)
-    - evidence: file:line, mapper id, snapshot timestamps
-    - unresolved: unresolvable dynamic calls or missing references
-    """
+    """Format standard trace command stub output (facts / evidence / unresolved)."""
     fmt_lower = fmt.lower() if fmt else "md"
     side_lower = side.lower() if side else "both"
 
-    if fmt_lower == "json":
-        data = {
-            "command": cmd_name,
-            "description": desc,
-            "side": side_lower,
-            "options": {
-                "side": side_lower,
-                "format": fmt_lower,
-                "max": max_n,
-            },
-            "params": params,
-            "facts": [f"[STUB] {desc}"],
-            "evidence": [
-                "[STUB] 근거 위치 (소스 코드 줄번호, mapper ID, DBML 스냅샷 시각 등이 여기에 표시됩니다)"
-            ],
-            "unresolved": [
-                "[STUB] 추적되지 않은 동적 호출이나 미해결 참조가 여기에 표시됩니다"
-            ],
-        }
-        return json.dumps(data, indent=2, ensure_ascii=False)
-
-    # Markdown format
-    lines: list[str] = []
-    lines.append("## facts")
-    lines.append(f"[STUB] {desc}")
-    lines.append(f"- command: yunhee {cmd_name}")
-    lines.append(f"- side: {side_lower}")
     opt_parts = [f"format={fmt_lower}"]
     if max_n is not None:
         opt_parts.append(f"max={max_n}")
-    lines.append(f"- options: {', '.join(opt_parts)}")
     non_empty_params = {k: v for k, v in params.items() if v is not None}
-    if non_empty_params:
-        lines.append("- arguments:")
-        for k, v in non_empty_params.items():
-            lines.append(f"  - {k}: {v}")
-    lines.append("")
-    lines.append("## evidence")
-    lines.append("[STUB] (근거 위치: 소스 코드 줄번호, mapper ID, DBML 스냅샷 시각 등이 여기에 표시됩니다)")
-    lines.append("")
-    lines.append("## unresolved")
-    lines.append("[STUB] (추적되지 않은 동적 호출이나 미해결 참조가 여기에 표시됩니다)")
-    lines.append("")
 
-    return "\n".join(lines)
+    facts = [
+        f"[STUB] {desc}",
+        f"command: yunhee {cmd_name}",
+        f"side: {side_lower}",
+        f"options: {', '.join(opt_parts)}",
+    ]
+    if non_empty_params:
+        facts.append("arguments:\n" + "\n".join(f"  - {k}: {v}" for k, v in non_empty_params.items()))
+
+    result = TraceResult(
+        command=cmd_name,
+        description=desc,
+        side=side_lower,
+        options={"side": side_lower, "format": fmt_lower, "max": max_n},
+        params=params,
+        facts=facts,
+        evidence=["[STUB] 근거 위치 (소스 코드 줄번호, mapper ID, DBML 스냅샷 시각 등이 여기에 표시됩니다)"],
+        unresolved=["[STUB] 추적되지 않은 동적 호출이나 미해결 참조가 여기에 표시됩니다"],
+    )
+    return render(limit(result, max_n), fmt_lower)
