@@ -2,6 +2,30 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.6.9] - 2026-10-29
+`page-style` SID 체계 개편 (DB→DSBRD, MG 폐지, GDP 신설):
+- **SID `DB` → `DSBRD` 변경**: 대시보드 SID명을 `DSBRD`로 변경 및 옛 이름 `DB` 선언 시 경고 및 자동 매핑, 탭 없는 다운로드/요약 화면(`Tdm35_Tab_TaskList`) 판별 지원.
+- **SID `MG` 폐지 및 `SGEF` 통합**: `MG` 분기를 제거하고 고정 높이 폼 구조를 SGEF로 통합 판별 (`Sys90_Tab_AfterService`, `Ics20_Tab_RevisionHistory` 등 4개 화면 SGEF 판정).
+- **새 SID `GDP` (Grid+DetailPage) 신설**: 좌우 분할 + 버튼 줄 + 그리드 + 우측 상세 페이지(`*_Page_*`/`*_TabPage_*`) 구조 판정 (`Sms02_Tab_TotalCount`, `Sys10_Tab_TotalSize`, `Sms03_Tab_SendAdmin`, `Ics02_Tab_Manager` 4개 화면 GDP 판정).
+
+## [0.6.8] - 2026-10-29
+`page-style` GG와 SGTP 판별 정밀화:
+- 자식 `*_TabPage_*` 이름만으로 무조건 SGTP로 분류하지 않고, 자식이 `<Tabs>`/`<PageTabs>`를 갖거나 다중 탭(2개 이상)일 때만 SGTP로 판별하며, 단일 자식에 그리드가 포함된 경우 GG(마스터·상세)로 정상 판정 (`Dcr30_Tab_LinkAdmin` 등 10개 화면 GG 전환, SGTP 3개로 정립).
+
+## [0.6.7] - 2026-10-29
+`page-style` 버그 수정:
+- `_TabPage_` 자식 컴포넌트의 내부 그리드가 메인 화면 그리드 수로 잘못 합산되던 문제 수정 (`Sms02_Tab_TotalCount`, `Sys10_Tab_TotalSize`가 `grids: 1` 및 GO로 정상 판정).
+- `custom_search` 판별 강화 (`SearchBar` 외에 `Button type="search"`, `QuickMoveField`, `Typography.Text`/`DatePicker` 등 직접 구성한 조건 줄을 인식하여 `Tdm50_Tab_CheckJob` 등이 STP로 정상 판정).
+
+## [0.6.6] - 2026-10-29
+`page-style` 기능 대폭 보완 및 확장 (19개 SID 체계 지원):
+- `docs/page-style.md` 문서에 정의된 확장 19종 SID(`SG`, `SGP`, `SGVF`, `SGEF`, `SGTP`, `SGT`, `TG`, `GG`, `CG`, `STP`, `TP`, `SR`, `GCG`, `SGHF`, `MG`, `TO`, `GO`, `DB`, `IN`) 완벽 지원.
+- `load_valid_sids()`를 통한 유효 SID 동적 로드 및 헤더 주석(`//` 및 `/* */` 블록 주석) 선언 판별/검증, 미정의 SID 경고 표기.
+- 모달 다이얼로그 팝업(`BaseDialog`, `Dialog`, `Modal`, `Window` 등) 내부 그리드를 화면 그리드 수 집계에서 제외하여 팝업을 가진 단일 그리드 화면의 TG 오판정 방지.
+- `<Button type="save">` 버튼의 단순 저장 액션으로 인한 CG(직접 편집 그리드) 오판정 방지 (CellEditing/RowEditing/EditorGrid/editableCol 실질 검사).
+- 단일 자식 위임형 래퍼 컴포넌트(`delegate_to`) 추적 및 분석.
+- `--compare` 대조 시 AS-IS ↔ TOBE 간 호환 가능한 스타일군(SG/SGP, SGT/SGTP, SGEF/SGVF/CG 등) 유연 매칭.
+
 ## [0.6.5] - 2026-10-28
 `trace-column`, `trace-code`, `trace-crud` 구현 (trace-* Step 5, 묶음 A: SQL 해석 기반) + `trace-map`, `trace-menu`, `trace-term` (묶음 B: 색인 집계) + `trace-dblogic`, `trace-guide` (묶음 C). **`trace-*` 18개가 모두 구현됐다.**
 - `trace-column <테이블.컬럼>`: 그 컬럼을 **읽는**(SELECT 목록·SET 식·RETURNING) / **조건에 쓰는**(WHERE·JOIN·HAVING) / **정렬·그룹**(ORDER·GROUP) / **쓰는**(INSERT·UPDATE) SQL을 SQL AST의 절로 구분해 ASIS·TOBE 각각 낸다. 화면 표시 라벨은 컬럼명에서 만든 속성 이름(`emp01_kor_nm`→`korNm`)이 ASIS 색인의 Grid Spec·TOBE 그리드 필드명과 같은 곳에서 찾는다. `--stats`는 읽기 전용으로 값 분포를 조회하되 **고유 값이 30종 이하인 코드성 컬럼만 값을 낸다** (이름·주민번호 같은 개인정보가 컨텍스트에 새지 않게 개수만 알림)
