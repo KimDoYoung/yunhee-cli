@@ -138,6 +138,12 @@ ASIS·TOBE 소스·스키마 스냅샷·mapper SQL을 **LLM 없이 결정적으�
 - `data` — yunhee가 사용하는 로컬 데이터 (`data/db/yunhee.db` 등). `.gitignore`에서 `data/` 전체 제외.
 - `docs` — 설계 문서, `docker-compose.yml`(postgres/redis/chromadb 등 인프라 정의)
 
+
+## docs/help
+
+- 인자형 명령어가 추가/수정되었을 경우 docs/help 아래의 문서들을 수정한다.
+- docs/help 아래의 문서를 읽고 다른 agent들이 yunhee를 충분히 활용할 수 있도록 문서를 잘 정리하여 작성한다.
+
 ## 주의사항
 
 - `pyproject.toml`의 version을 올리면 `src/yunhee/CHANGELOG.md` 맨 위에 같은 버전 항목을 추가한다 (`tests/test_changelog.py`가 검사). 커밋 메시지가 아니라 이 파일이 버전별 변경 내용의 기준이다.

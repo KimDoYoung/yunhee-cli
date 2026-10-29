@@ -211,6 +211,11 @@ uv tool install --force --reinstall . # yunhee 안정 버전을 전역 PATH에 �
 
 ---
 
+## docs/help
+
+- 인자형 명령어가 추가/수정되었을 경우 docs/help 아래의 문서들을 수정한다.
+- docs/help 아래의 문서를 읽고 다른 agent들이 yunhee를 충분히 활용할 수 있도록 문서를 잘 정리하여 작성한다.
+
 ## 작업 완료 알림 (ntfy)
 
 - 사용자의 요청에 따른 작업(수정사항 구현, 빌드/테스트, 대량 분석 등)이 끝나면 **항상** 아래 `curl` 명령을 실행하여 ntfy 알림을 전송한다:
