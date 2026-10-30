@@ -2,7 +2,35 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
-## [0.6.9] - 2026-10-29
+## [0.7.1] - 2026-10-30
+신규 프로젝트 환경 초기화, 자료 셋업 스크립트(`data-setup.sh`) 및 MyBatis `<bind>` 리터럴 지원:
+- **신규 프로젝트 격리 및 2단계 계층형 환경설정 캐스케이딩**:
+  - `yunhee init` 및 REPL `/init`을 통해 작업 디렉터리 내 `.yunhee/` 필수 파일(`project.json`, `mcp.json`, `memory.md`, `sessions/`, `runs/`, `.gitignore`) 자동 생성.
+  - 전역 설정(`~/.yunhee/.env.yunhee`) 로드 후 프로젝트 로컬(`.env.yunhee`) 오버라이드 계층형 로딩 구현.
+  - `YUNHEE_TOBE_SRC_DIR` 환경변수 추가로 새 프로젝트 폴더에서도 TOBE 소스 경로 자동 참조.
+- **데이터 및 색인 관리 스크립트 (`data-setup.sh`) 제공**:
+  - 현재 working 폴더(pwd) 기준 격리 실행 지원 (상태 조회, DB/SRC 자료 삭제, 준비, 재설치 대화형 메뉴).
+  - DB 카탈로그 스냅샷(`make-dbml`, `index-db`) 및 로컬 `.yunhee/` 스냅샷 JSON 격리 저장 지원.
+  - AS-IS 소스/UI 호출경로 색인(`index-src --menus-from-db`) 및 `parse_mapper.py` 자동 연동.
+- **MyBatis `<bind>` 태그 단순 리터럴 지원**:
+  - `eval_bind()` 파서에 따옴표 리터럴 문자열(`'regDate'`, `"xyz"`) 및 숫자/불리언 매칭을 추가하여 `⚠ bind 식 건너뜀` 경고 제거 및 파라미터 바인딩 처리.
+- **`index-src`의 `--menus-from-db` 자동 생성 오류 수정**:
+  - 메뉴 파일이 없는 신규 작업 폴더에서도 `--menus-from-db` 지정 시 DB(`sys06_menu`)에서 `menus.tsv`를 먼저 생성한 후 색인을 정상 진행하도록 수정.
+
+## [0.7.0] - 2026-10-30
+수정사항 045 완료: `compare` API 오류 처리 강화 및 MyBatis 조건식 평가기 확장/가드
+- **`compare` API 서버 오류(HTTP 500/4xx/업무예외) 즉시 실패 처리**:
+  - API 호출 결과가 HTTP 4xx/5xx이거나 `ApiResponse.success=false`인 경우 기존처럼 0행(`rows=0 ✅`)으로 대조하지 않고 즉시 실패 판정(`❌ API 실패...` / `❌ API 업무 오류...`) 및 종료 코드 1 반환.
+  - 추적 ID 및 원인 로그 요약(`yunhee log trace <id> --raw`) 가이드를 에러 메시지에 함께 출력.
+- **MyBatis 분기 조건식 평가기 확장 (AS-IS 100% 커버리지 달성)**:
+  - 문자열 메서드 비교(`x.equals('lit')`, `'lit'.equals(x)`, `!x.equals('lit')`, `x.equalsIgnoreCase('lit')`) 정규식 지원 (`car03_booking.selectByDate` 등).
+  - 프로퍼티 형태의 `.size` 접근(`fundIdList.size != 0`) 및 `0l`/`0L` Long 리터럴 접미사 지원.
+  - `&&` 및 `||` 복합 논리 연산자 분리 및 `isEmpty()` 지원.
+  - AS-IS 레거시 전체 526개 XML 매퍼의 307개 조건식 중 미평가 16건을 전수 해소 (미평가율 0%).
+- **미평가 분기 안전 가드 및 `--branch` 강제 옵션 신설**:
+  - 평가할 수 없는 미지의 식은 임의로 켜서 쿼리를 실행하지 않고 안전하게 주석(`/* ⚠ 분기 평가 불가(기본 OFF): ... */`) 처리하여 실행 차단.
+  - stderr 경고 출력 및 대조 결과 요약 줄에 `(분기 N개 평가 불가)` 표기.
+  - `compare` 및 `analysis sql`에 `--branch '<식|변수>'=on|off` 옵션을 추가하여 분기 강제 제어 지원.
 `page-style` SID 체계 개편 (DB→DSBRD, MG 폐지, GDP 신설):
 - **SID `DB` → `DSBRD` 변경**: 대시보드 SID명을 `DSBRD`로 변경 및 옛 이름 `DB` 선언 시 경고 및 자동 매핑, 탭 없는 다운로드/요약 화면(`Tdm35_Tab_TaskList`) 판별 지원.
 - **SID `MG` 폐지 및 `SGEF` 통합**: `MG` 분기를 제거하고 고정 높이 폼 구조를 SGEF로 통합 판별 (`Sys90_Tab_AfterService`, `Ics20_Tab_RevisionHistory` 등 4개 화면 SGEF 판정).

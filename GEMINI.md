@@ -82,6 +82,7 @@ uv tool install --force --reinstall . # yunhee 안정 버전을 전역 PATH에 �
   - **`NUM_CTX` (`YUNHEE_NUM_CTX`, 기본 16384)**: Ollama 요청 시 `options.num_ctx`로 전달. 넘기지 않으면 Ollama 기본값(4096)이 적용되어 긴 프롬프트 앞부분이 잘리므로 필수.
   - **`SCHEMA_ENV` (`YUNHEE_SCHEMA_ENV`, 기본 `LOCAL_DB`)**: 스키마 기본 스냅샷 이름.
   - **`ASIS_SRC_DIR` (`YUNHEE_ASIS_SRC_DIR`)**: ASIS 레거시 소스 루트.
+  - **`TOBE_SRC_DIR` (`YUNHEE_TOBE_SRC_DIR`)**: TOBE 대상 소스 루트 (미지정 시 `WORK_DIR`).
   - `summary()`: `/config` 커맨드에서 비밀번호 마스킹 처리된 설정 반환.
 - `src/yunhee/project.py`: 작업 대상 프로젝트(`WORK_DIR`) 등록/검사.
   - `WORK_DIR/.yunhee/project.json`에 `name`, `created_at`, `updated_at`, `yunhee_version` 저장.

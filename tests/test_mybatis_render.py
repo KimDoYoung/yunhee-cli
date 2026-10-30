@@ -56,6 +56,21 @@ def test_eval_bind():
     eval_bind("pattern", "'%' + kw + '%'", params)
     assert params["pattern"] == "%search%"
 
+    # 3. literal string ('regDate', "xyz")
+    params = {}
+    eval_bind("stdDateType", "'regDate'", params)
+    assert params["stdDateType"] == "regDate"
+
+    eval_bind("title", '"My Title"', params)
+    assert params["title"] == "My Title"
+
+    # 4. numbers and booleans
+    eval_bind("count", "42", params)
+    assert params["count"] == 42
+
+    eval_bind("isActive", "true", params)
+    assert params["isActive"] is True
+
 
 def test_render_cross_namespace_and_include(tmp_path: Path):
     mapper_dir = tmp_path / "mapper"

@@ -70,14 +70,19 @@ AS-IS 및 TOBE 메서드의 본문 요약, 호출 흐름, 클라이언트/서버
 ### `yunhee analysis sql <namespace.id>`
 MyBatis 매퍼 statement를 분석하고 파라미터가 바인딩된 실제 실행 가능 SQL을 펼쳐냅니다.
 - **주요 옵션**:
-  - `--param <key=val>`: 파라미터 값 바인딩 (반복 가능)
+  - `--param <key=val>`: 파라미터 값 바인딩 (반복 가능, `s:`, `n:`, `b:`, `null:` 타입 접두사 지원)
+  - `--branch <expr=on|off>`: MyBatis 조건 분기(`<if>`, `<when>`) 강제 ON/OFF 지정 (반복 가능)
   - `--count`: SQL 행 수만 카운트하는 SELECT COUNT(*) 형태로 변환
   - `--no-cte`: CTE(WITH ...) 블록을 생략하고 본문 SELECT/WHERE만 출력
   - `-o, --output <FORMAT>`: `md`, `sql`, `code`, `json`
+- **동작 특징**:
+  - `x.equals('lit')`, `'lit'.equals(x)`, `!x.equals('lit')`, `.size`, `0L` 등 MyBatis OGNL 조건식을 자동 평가합니다.
+  - 평가할 수 없는 분기식은 임의로 켜지지 않고 주석(`/* ⚠ 분기 평가 불가(기본 OFF): ... */`) 처리되어 실행을 차단하며, `--branch`로 명시적 제어가 가능합니다.
 - **예시**:
   ```bash
   yunhee analysis sql emp00_trans_info.selectByText --param text=홍길동
-  yunhee analysis sql sys04_role.selectByName -o sql
+  yunhee analysis sql car03_booking.selectByDate --param type=all --param personId=1 -o sql
+  yunhee analysis sql car03_booking.selectByDate --branch "type.equals('my')=on" -o sql
   ```
 
 ### `yunhee analysis model <모델클래스>`

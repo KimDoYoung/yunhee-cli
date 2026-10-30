@@ -98,6 +98,9 @@ def test_command_lists():
     assert "/tools" in BUILTIN_COMMANDS
     assert "/memory" in BUILTIN_COMMANDS
     assert "/knowledge" in BUILTIN_COMMANDS
+    assert "/자기소개" in BUILTIN_COMMANDS
+    assert "/intro" in BUILTIN_COMMANDS
+    assert "/changelog" in BUILTIN_COMMANDS
     assert "/out" in BUILTIN_COMMANDS
     assert "/out:pdf" in BUILTIN_COMMANDS
     assert "/out:markdown" in BUILTIN_COMMANDS
@@ -118,3 +121,35 @@ def test_handle_hybrid_command():
     assert new_history[1]["role"] == "user"
     assert "output of test command" in new_history[1]["content"]
     assert "/table sys01_company" in new_history[1]["content"]
+
+
+def test_check_project_does_not_print_changes_when_outdated():
+    from yunhee.ui import repl
+
+    with patch("yunhee.project.status", return_value="outdated"), \
+         patch("yunhee.project.load", return_value={"yunhee_version": "0.1.0"}), \
+         patch("yunhee.ui.repl._print_changes_since") as mock_print:
+        repl._check_project()
+        mock_print.assert_not_called()
+
+
+def test_intro_command_and_content():
+    from typer.testing import CliRunner
+
+    from yunhee.cli import app
+    from yunhee.intro import get_intro_text
+
+    text = get_intro_text()
+    assert "절약정신이 투철한 한국여자이고 이름은 'yunhee'입니다." in text
+    assert "AssetERP" in text
+    assert "GWT/GXT" in text
+    assert "Spring Boot" in text
+
+    runner = CliRunner()
+    res1 = runner.invoke(app, ["intro"])
+    assert res1.exit_code == 0
+    assert "절약정신이 투철한 한국여자이고 이름은 'yunhee'입니다." in res1.stdout
+
+    res2 = runner.invoke(app, ["자기소개?"])
+    assert res2.exit_code == 0
+    assert "절약정신이 투철한 한국여자이고 이름은 'yunhee'입니다." in res2.stdout

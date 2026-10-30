@@ -294,6 +294,7 @@ def test_request_api_timeout_message(monkeypatch, tmp_path: Path):
     import httpx
 
     monkeypatch.setattr(api_client, "get_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(api_client, "_load_session", lambda *args, **kwargs: {"cookies": {}, "token": "mock-token"})
     seen: dict = {}
 
     def mock_request(*args, **kwargs):

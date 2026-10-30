@@ -11,6 +11,8 @@ def test_project_init_creates_project_and_mcp_json(tmp_path):
     data = project.init(root=tmp_path)
     assert data["name"] == tmp_path.name
     assert data["mcp_created"] is True
+    assert data["memory_created"] is True
+    assert data["gitignore_created"] is True
 
     # project.json 검증
     pfile = tmp_path / ".yunhee" / "project.json"
@@ -27,6 +29,20 @@ def test_project_init_creates_project_and_mcp_json(tmp_path):
     assert "fetch" in mdata["mcpServers"]
     assert mdata["mcpServers"]["time"]["command"] == "uvx"
     assert mdata["mcpServers"]["fetch"]["command"] == "uvx"
+
+    # memory.md 검증
+    mem_file = tmp_path / ".yunhee" / "memory.md"
+    assert mem_file.is_file()
+    assert "프로젝트 규칙" in mem_file.read_text(encoding="utf-8")
+
+    # sessions / runs 디렉터리 검증
+    assert (tmp_path / ".yunhee" / "sessions").is_dir()
+    assert (tmp_path / ".yunhee" / "runs").is_dir()
+
+    # .gitignore 검증
+    git_ignore = tmp_path / ".yunhee" / ".gitignore"
+    assert git_ignore.is_file()
+    assert "sessions/" in git_ignore.read_text(encoding="utf-8")
 
 
 def test_project_init_preserves_existing_mcp_json(tmp_path):

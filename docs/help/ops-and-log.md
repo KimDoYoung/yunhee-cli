@@ -97,9 +97,24 @@ PostgreSQL 읽기 전용 쿼리를 실행하거나 `--rollback` 트랜잭션 격
 
 ### `yunhee compare <method> <path> --sql <sql_id>`
 TOBE 조회 API 응답과 AS-IS SQL 결과를 대조하여 행 수 및 그리드 컬럼 커버리지를 검증합니다.
+- **주요 옵션**:
+  - `-p, --param-api <key=val>`: API 요청 파라미터 (반복 가능)
+  - `--param <key=val>`: AS-IS SQL 파라미터 (반복 가능)
+  - `--branch <expr=on|off>`: MyBatis 조건 분기 강제 제어 (반복 가능)
+  - `--grid <Screen#method>`: 대조할 화면 클래스 및 그리드 빌더 메서드 지정
+  - `-c, --company <CODE>`: 회사 코드 지정 (예: `kfstest`, `admin`)
+  - `-t, --tenant <TENANT>`: 테넌트 식별자 지정
+  - `-u, --as <ROLE>`: 로그인 계정/역할 지정 (기본: `admin`)
+  - `--from-log`: 최근 로그 trace에서 바인딩 파라미터를 읽어 기본값으로 사용
+- **검증 및 안전 동작**:
+  - **API 오류 즉시 실패**: HTTP 4xx/5xx 또는 `ApiResponse.success=false`인 경우 행 수 비교(`rows=0 ✅`)로 빠지지 않고 즉시 실패(`❌ API 실패...` 또는 `❌ API 업무 오류...`)를 출력하며 종료 코드 1로 종료합니다. trace ID 및 서버 에러 요약이 함께 표시됩니다.
+  - **분기 조건식 평가**: `x.equals('lit')`, `.size`, `0L` 등 MyBatis OGNL 조건식을 정밀 평가하며, 평가할 수 없는 분기는 안전하게 기본 OFF(주석 처리)되고 결과 요약에 `(분기 N개 평가 불가)`가 표시됩니다.
 - **예시**:
   ```bash
   yunhee compare GET /api/v1/sys/roles --sql sys04_role.selectByName -c kfstest
+  yunhee compare GET v1/car/bookings -p date=2026-05-29 -p type=all \
+    --sql car03_booking.selectByDate --param companyId=28000 --param startDate=2026-05-29 \
+    --param type=all --param personId=-28656 --grid Car03_Tab_DayofMonth
   ```
 
 ### `yunhee log <subcommand>`
@@ -110,8 +125,10 @@ TOBE 조회 API 응답과 AS-IS SQL 결과를 대조하여 행 수 및 그리드
 
 ---
 
-## 5. 환경 설정 및 유틸리티 (`config`, `value`, `changelog`)
+## 5. 환경 설정 및 유틸리티 (`config`, `value`, `changelog`, `init`, `intro`)
 
-- `yunhee config`: 작업 디렉터리, 소스 브랜치, DB 접속 정보 등 환경 설정 확인
-- `yunhee value [KEY]`: 단일 설정값 텍스트 출력 (`--list` 시 전체 목록)
+- `yunhee init`: 현재 작업 디렉터리를 yunhee 프로젝트로 등록 및 필수 폴더/파일(`.yunhee/project.json`, `mcp.json`, `memory.md`, `sessions/`, `runs/`, `.gitignore`) 초기화
+- `yunhee config`: 작업 디렉터리(Work Dir), TOBE/ASIS 소스 경로 및 브랜치 상태, DB 접속 정보 등 환경 설정 확인
+- `yunhee value [KEY]`: 단일 설정값 텍스트 출력 (`--list` 시 전체 목록, `tobe-src`, `asis-src`, `work-dir` 등 지원)
+- `yunhee intro`: yunhee 에이전트 자기소개 및 전문 영역 안내 (`자기소개?` 도 지원)
 - `yunhee changelog`: 버전별 변경 이력 및 릴리즈 노트 확인

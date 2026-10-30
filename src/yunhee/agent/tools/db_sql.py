@@ -46,9 +46,13 @@ def get_db_definition(name: str) -> str:
                 return f"### 👁 뷰 정의: `{v.get('name')}` ({v.get('schema', 'public')}){comment}\n```sql\n{v.get('definition', '').strip()}\n```"
 
             # 1-3. 테이블 (tables) 검색
-            sliced = slice_tables(data, [clean_name])
-            if sliced.ok and sliced.data and sliced.data.get("tables") and sliced.data.get("dbml"):
-                return f"```dbml\n{sliced.data['dbml'].strip()}\n```"
+            # 1차: 완전 일치 -> 2차: 접두사 일치(sys01 -> sys01*) -> 3차: 부분 일치(*sys01*)
+            for pat in [clean_name, f"{clean_name}*", f"*{clean_name}*"]:
+                sliced = slice_tables(data, [pat])
+                if sliced.ok and sliced.data and sliced.data.get("tables") and sliced.data.get("dbml"):
+                    matched_tbls = ", ".join(f"`{t}`" for t in sliced.data["tables"])
+                    prefix_note = f"> 💡 '{clean_name}' 검색 결과 일치 테이블: {matched_tbls}\n\n" if pat != clean_name else ""
+                    return f"{prefix_note}```dbml\n{sliced.data['dbml'].strip()}\n```"
     except Exception:  # noqa: BLE001, S110
         pass
 

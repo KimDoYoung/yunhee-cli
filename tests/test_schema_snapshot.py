@@ -72,6 +72,7 @@ def test_slice_budget_keeps_priority_order():
 
 def test_snapshot_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(schema_snapshot, "SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(schema_snapshot, "WORK_DIR", tmp_path)
     assert not schema_snapshot.load_snapshot("X_DB").ok
 
     schema_snapshot.save_snapshot("X_DB", _snapshot())
@@ -110,6 +111,7 @@ def test_page_tables_ranked_by_reference_count(tmp_path, monkeypatch):
 
 def test_table_cli_prints_only_dbml_on_stdout(tmp_path, monkeypatch):
     monkeypatch.setattr(schema_snapshot, "SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setattr(schema_snapshot, "WORK_DIR", tmp_path)
     schema_snapshot.save_snapshot("X_DB", _snapshot())
     runner = CliRunner()
 

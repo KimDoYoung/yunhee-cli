@@ -45,6 +45,9 @@ BUILTIN_COMMANDS = [
     "/session",
     "/memory",
     "/knowledge",
+    "/자기소개",
+    "/intro",
+    "/changelog",
     "/out",
     "/out:pdf",
     "/out:markdown",
@@ -71,9 +74,11 @@ def _help_text() -> str:
 
 [bold]사용 가능한 슬래시 명령어[/bold]
   [green]/help[/green]            이 도움말
+  [green]/자기소개[/green]        yunhee 에이전트 자기소개 ('자기소개?' 도 가능)
   [green]/exit, /quit[/green]     종료
   [green]/clear[/green]           대화 맥락 초기화
   [green]/config[/green]          현재 설정값 보기 (work-dir, yunhee-dir, .env.local 등)
+  [green]/changelog[/green]       버전별 변경 이력 조회
   [green]/init[/green]            현재 폴더를 yunhee 프로젝트로 등록/갱신 (.yunhee/project.json)
   [green]/tools[/green]           현재 에이전트가 호출 가능한 도구 목록 확인
   [green]/session[/green]         현재 세션 기록(마크다운/JSONL) 파일 경로 확인
@@ -101,7 +106,7 @@ def _check_project() -> None:
     if state == "missing":
         console.print(
             "[yellow]이 폴더는 아직 yunhee 프로젝트로 등록되지 않았습니다.[/yellow] "
-            "[dim]/init[/dim] 을 실행하세요.\n"
+            "[dim]/init[/dim] 을 실행하여 프로젝트 설정 및 필요한 폴더를 생성하세요.\n"
         )
     elif state == "outdated":
         data = project.load() or {}
@@ -109,7 +114,6 @@ def _check_project() -> None:
             f"[yellow].yunhee 설정이 이전 yunhee 버전({data.get('yunhee_version')})으로 만들어졌습니다.[/yellow] "
             f"현재 버전({project.current_version()})으로 갱신하려면 [dim]/init[/dim] 을 실행하세요.\n"
         )
-        _print_changes_since(data.get("yunhee_version"))
 
 
 def _print_changes_since(old_version: str | None) -> None:
@@ -191,7 +195,16 @@ def run_repl(model: str = OLLAMA_MODEL) -> None:
         if not user_input:
             continue
 
-        # 2. 슬래시 커맨드 분기 처리
+        # 2. 자기소개 직통 처리 (물음표 및 슬래시 유무 무관)
+        norm_input = user_input.rstrip("? ").strip().lower()
+        if norm_input in ("자기소개", "/자기소개", "intro", "/intro", "about", "/about", "whoami", "/whoami"):
+            from yunhee.intro import get_intro_text
+
+            console.print(Markdown(get_intro_text()))
+            console.print()
+            continue
+
+        # 3. 슬래시 커맨드 분기 처리
         if user_input.startswith("/"):
             parts = user_input[1:].split(maxsplit=1)
             cmd = parts[0].lower()
@@ -247,10 +260,27 @@ def run_repl(model: str = OLLAMA_MODEL) -> None:
                     f"  name           {data['name']}\n"
                     f"  yunhee_version {data['yunhee_version']}"
                 )
+                pdir = Path(config.WORK_DIR) / ".yunhee"
                 if data.get("mcp_created"):
-                    mcp_path = Path(config.WORK_DIR) / ".yunhee" / "mcp.json"
-                    console.print(f"  [cyan]mcp.json 생성[/cyan]  {mcp_path} (기본: time, fetch)")
+                    console.print(f"  [cyan]mcp.json 생성[/cyan]     {pdir / 'mcp.json'} (기본: time, fetch)")
+                if data.get("memory_created"):
+                    console.print(f"  [cyan]memory.md 생성[/cyan]    {pdir / 'memory.md'} (프로젝트 영구 기억)")
+                console.print(f"  [cyan]sessions/ 생성[/cyan]    {pdir / 'sessions'} (대화록 보관)")
+                console.print(f"  [cyan]runs/ 생성[/cyan]        {pdir / 'runs'} (실행 로그 보관)")
+                if data.get("gitignore_created"):
+                    console.print(f"  [cyan].gitignore 생성[/cyan]   {pdir / '.gitignore'}")
                 console.print()
+                continue
+
+            if cmd == "changelog":
+                data = project.load() or {}
+                old_ver = data.get("yunhee_version")
+                if old_ver and old_ver != project.current_version():
+                    _print_changes_since(old_ver)
+                else:
+                    entries = changelog.changes_since(None, project.current_version())
+                    for e in entries:
+                        console.print(e.render(), markup=False)
                 continue
 
             if cmd == "memory":

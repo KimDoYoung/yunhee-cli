@@ -246,7 +246,21 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
 
     # 2. sql 모드 또는 --count
     if fmt == "sql" or count_opt:
-        sql, missing = mr_render(key, params=params, mode="params", statements=stmts)
+        raw_branches = opts.get("branch") or []
+        branch_overrides: dict[str, bool] = {}
+        if isinstance(raw_branches, list):
+            for b in raw_branches:
+                if "=" in b:
+                    bk, bv = b.split("=", 1)
+                    branch_overrides[bk.strip()] = bv.strip().lower() in ("on", "true", "1", "yes")
+
+        sql, missing = mr_render(
+            key,
+            params=params,
+            mode="params",
+            statements=stmts,
+            branch_overrides=branch_overrides or None,
+        )
         for m_p in missing:
             sys.stderr.write(f"⚠ 값 없음: {m_p}\n")
 

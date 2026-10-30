@@ -19,7 +19,14 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     """대상 파일 또는 디렉터리를 분석한다."""
     path = Path(target)
     if not path.exists():
-        raise ValueError(f"파일 또는 디렉터리를 찾을 수 없습니다: {target}")
+        from yunhee import config
+
+        if getattr(config, "TOBE_SRC_DIR", None) and (config.TOBE_SRC_DIR / target).exists():
+            path = config.TOBE_SRC_DIR / target
+        elif (config.WORK_DIR / target).exists():
+            path = config.WORK_DIR / target
+        else:
+            raise ValueError(f"파일 또는 디렉터리를 찾을 수 없습니다: {target}")
 
     files: list[Path] = []
     if path.is_file():

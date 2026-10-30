@@ -10,7 +10,7 @@ from datetime import datetime
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from yunhee.config import YUNHEE_DIR
+from yunhee.config import WORK_DIR, YUNHEE_DIR
 from yunhee.dbml import render_dbml
 from yunhee.tools.base import ToolResult
 
@@ -25,27 +25,47 @@ def snapshot_path(env_name: str) -> Path:
 
 
 def save_snapshot(env_name: str, schema: dict) -> Path:
+    data = {**schema, "env_name": env_name, "generated_at": datetime.now().astimezone().isoformat(timespec="seconds")}
+    json_text = json.dumps(data, ensure_ascii=False, default=str)
+
+    # 1. 전역 SNAPSHOT_DIR 저장 (기본/fallback)
     path = snapshot_path(env_name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = {**schema, "env_name": env_name, "generated_at": datetime.now().astimezone().isoformat(timespec="seconds")}
-    path.write_text(json.dumps(data, ensure_ascii=False, default=str))
+    path.write_text(json_text)
+
+    # 2. 현재 작업 폴더(WORK_DIR/.yunhee)가 있으면 로컬 .yunhee/ 에도 저장
+    local_dot_yunhee = WORK_DIR / ".yunhee"
+    if local_dot_yunhee.is_dir():
+        local_path = local_dot_yunhee / f"{env_name}.json"
+        local_path.write_text(json_text)
+        return local_path
+
     return path
 
 
 def load_snapshot(env_name: str) -> ToolResult:
-    path = snapshot_path(env_name)
-    if not path.exists():
-        # YUNHEE_DB <-> LOCAL_DB 상호 fallback
-        if env_name == "YUNHEE_DB" and (SNAPSHOT_DIR / "LOCAL_DB.json").exists():
-            path = SNAPSHOT_DIR / "LOCAL_DB.json"
-        elif env_name == "LOCAL_DB" and (SNAPSHOT_DIR / "YUNHEE_DB.json").exists():
-            path = SNAPSHOT_DIR / "YUNHEE_DB.json"
+    # 1. 로컬 프로젝트(.yunhee) 우선 탐색 -> 2. 전역 SNAPSHOT_DIR 탐색
+    candidates = [
+        WORK_DIR / ".yunhee" / f"{env_name}.json",
+        WORK_DIR / ".yunhee" / "schema" / f"{env_name}.json",
+        snapshot_path(env_name),
+    ]
 
-    if not path.exists():
-        return ToolResult(
-            ok=False, error=f"스키마 스냅샷이 없습니다: {path} (먼저 'yunhee make-dbml {env_name}' 실행)"
-        )
-    return ToolResult(ok=True, data=json.loads(path.read_text()))
+    fallback_env = "LOCAL_DB" if env_name == "YUNHEE_DB" else ("YUNHEE_DB" if env_name == "LOCAL_DB" else None)
+    if fallback_env:
+        candidates.extend([
+            WORK_DIR / ".yunhee" / f"{fallback_env}.json",
+            WORK_DIR / ".yunhee" / "schema" / f"{fallback_env}.json",
+            snapshot_path(fallback_env),
+        ])
+
+    for cand in candidates:
+        if cand.is_file():
+            return ToolResult(ok=True, data=json.loads(cand.read_text()))
+
+    return ToolResult(
+        ok=False, error=f"스키마 스냅샷이 없습니다: {snapshot_path(env_name)} (먼저 'yunhee make-dbml {env_name}' 실행)"
+    )
 
 
 def _matches(table: dict, pattern: str) -> bool:

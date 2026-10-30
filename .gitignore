@@ -20,3 +20,6 @@ examples/
 docs/as-is/
 docs/pdf/
 docs/migration/
+
+# 프로젝트 테스트용
+project1/

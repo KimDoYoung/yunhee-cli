@@ -33,8 +33,15 @@ class TobeLayout:
 
 
 def find_layout(path: Path | None = None) -> TobeLayout:
-    """`--tobe`(프로젝트 루트 또는 frontend/src)나 작업 폴더에서 TOBE 레이아웃을 찾는다."""
-    base = Path(path) if path else config.WORK_DIR
+    """`--tobe`(프로젝트 루트 또는 frontend/src)나 설정(TOBE_SRC_DIR)/작업 폴더에서 TOBE 레이아웃을 찾는다."""
+    if path:
+        base = Path(path)
+        if not base.exists() and not base.is_absolute() and getattr(config, "TOBE_SRC_DIR", None) != config.WORK_DIR:
+            cand = config.TOBE_SRC_DIR / base
+            if cand.exists():
+                base = cand
+    else:
+        base = getattr(config, "TOBE_SRC_DIR", config.WORK_DIR)
     if base.name == "src" and base.parent.name == "frontend":
         base = base.parent.parent
     elif (base / "frontend" / "src").is_dir() is False and (base / "src" / "pages").is_dir():

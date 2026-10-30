@@ -75,6 +75,42 @@ def hello():
     print("yunhee-cli ready")
 
 
+@app.command(name="intro", help="yunhee 에이전트 자기소개")
+@app.command(name="about", hidden=True)
+@app.command(name="자기소개", hidden=True)
+@app.command(name="자기소개?", hidden=True)
+def intro_cmd():
+    """yunhee 에이전트 자기소개 및 전문 영역 안내"""
+    from rich.console import Console
+    from rich.markdown import Markdown
+
+    from yunhee.intro import get_intro_text
+
+    Console().print(Markdown(get_intro_text()))
+
+
+@app.command(name="init")
+def init_cmd():
+    """현재 작업 디렉터리를 yunhee 프로젝트로 등록 및 필수 폴더/파일 초기화"""
+    from yunhee import project
+
+    data = project.init()
+    pdir = Path(data.get("project_dir", project.PROJECT_DIR))
+    typer.secho(f"✔ yunhee 프로젝트 등록 완료: {pdir}", fg=typer.colors.GREEN)
+    typer.echo(f"  • 이름: {data['name']}")
+    typer.echo(f"  • 버전: {data['yunhee_version']}")
+    typer.echo("  • 생성된 파일 및 디렉터리:")
+    typer.echo(f"    - project.json: {pdir / 'project.json'}")
+    if data.get("mcp_created"):
+        typer.echo(f"    - mcp.json: {pdir / 'mcp.json'}")
+    if data.get("memory_created"):
+        typer.echo(f"    - memory.md: {pdir / 'memory.md'}")
+    typer.echo(f"    - sessions/: {pdir / 'sessions'}")
+    typer.echo(f"    - runs/: {pdir / 'runs'}")
+    if data.get("gitignore_created"):
+        typer.echo(f"    - .gitignore: {pdir / '.gitignore'}")
+
+
 @app.command()
 def ask(prompt: str, model: str = OLLAMA_MODEL):
     """로컬 LLM(qwen2.5-coder) 단발 질의"""
@@ -128,6 +164,8 @@ def config_cmd():
 
     cfg = config.summary()
     table.add_row("Target (Work Dir)", cfg["work-dir"], "현재 터미널 작업 디렉터리 (cd로 이동하여 변경)")
+    table.add_row("Target (TOBE)", cfg["tobe-src"], "설정 파일의 YUNHEE_TOBE_SRC_DIR (미지정 시 Work Dir)")
+    table.add_row("타겟 브랜치", cfg["tobe-branch"], "TOBE 원격 추적 브랜치 대비 상태 (읽기 전용)")
     table.add_row("Source (ASIS)", cfg["asis-src"], "설정 파일의 YUNHEE_ASIS_SRC_DIR")
     table.add_row("소스 브랜치", cfg["asis-branch"], "원격 추적 브랜치(origin/<branch>) 대비 상태 (읽기 전용)")
     table.add_row("Yunhee DB", cfg.get("yunhee-db", cfg["local-db"]), "설정 파일(.env.yunhee)의 YUNHEE_DB")
@@ -147,7 +185,7 @@ def config_cmd():
 
     console = Console(width=200)
     console.print(table)
-    typer.echo(f"소스 브랜치: {cfg['asis-branch']}")
+    typer.echo(f"ASIS 브랜치: {cfg['asis-branch']} | TOBE 브랜치: {cfg['tobe-branch']}")
 
 
 @app.command(name="value")
@@ -260,7 +298,13 @@ def _make_dbml(
         print(f"오류: {result.error}")
         raise typer.Exit(code=1)
 
-    out_file = output or WORK_DIR / f"{env_name}-dbml.md"
+    if output:
+        out_file = output
+    elif (WORK_DIR / ".yunhee").is_dir():
+        out_file = WORK_DIR / ".yunhee" / f"{env_name}-dbml.md"
+    else:
+        out_file = WORK_DIR / f"{env_name}-dbml.md"
+
     out_file.write_text(render_markdown(result.data, source=env_name, source_url=redact(dsn)))
     summary = ", ".join(f"{k} {v}" for k, v in counts(result.data).items() if v)
     print(f"저장됨: {out_file} ({summary or '객체 없음'})")
@@ -547,21 +591,26 @@ def outline(
         if remaining_limit <= 0:
             combined_outputs.append("// ... [글자 수 예산 초과로 이하 생략]")
             break
-        if range_spec:
-            p_obj = Path(p)
-            if not p_obj.is_file():
+        p_obj = Path(p)
+        if not p_obj.exists():
+            if (config.WORK_DIR / p).exists():
                 p_obj = config.WORK_DIR / p
-            if p_obj.is_file():
-                try:
-                    r_lines = read_file_range(p_obj, range_str=range_spec)
-                    out_text = f"// {p_obj} ({range_spec})\n" + "\n".join(f"{num:4d} | {l}" for num, l in r_lines)
-                    combined_outputs.append(out_text)
-                    remaining_limit -= len(out_text)
-                    continue
-                except Exception as e:  # noqa: BLE001
-                    typer.echo(f"오류: {e}", err=True)
-                    raise typer.Exit(code=1)
-        res = outline_path(p, char_limit=remaining_limit, members=members, symbol=symbol, tail=tail)
+            elif getattr(config, "TOBE_SRC_DIR", None) and (config.TOBE_SRC_DIR / p).exists():
+                p_obj = config.TOBE_SRC_DIR / p
+            elif getattr(config, "ASIS_SRC_DIR", None) and (config.ASIS_SRC_DIR / p).exists():
+                p_obj = config.ASIS_SRC_DIR / p
+
+        if range_spec and p_obj.is_file():
+            try:
+                r_lines = read_file_range(p_obj, range_str=range_spec)
+                out_text = f"// {p_obj} ({range_spec})\n" + "\n".join(f"{num:4d} | {l}" for num, l in r_lines)
+                combined_outputs.append(out_text)
+                remaining_limit -= len(out_text)
+                continue
+            except Exception as e:  # noqa: BLE001
+                typer.echo(f"오류: {e}", err=True)
+                raise typer.Exit(code=1)
+        res = outline_path(p_obj if p_obj.exists() else p, char_limit=remaining_limit, members=members, symbol=symbol, tail=tail)
         if not res.ok:
             typer.echo(f"오류: {res.error}", err=True)
             raise typer.Exit(code=1)
@@ -595,6 +644,10 @@ def cat_cmd(
             cand = config.WORK_DIR / file_part
             if cand.is_file():
                 p = cand
+            elif getattr(config, "TOBE_SRC_DIR", None) and (config.TOBE_SRC_DIR / file_part).is_file():
+                p = config.TOBE_SRC_DIR / file_part
+            elif getattr(config, "ASIS_SRC_DIR", None) and (config.ASIS_SRC_DIR / file_part).is_file():
+                p = config.ASIS_SRC_DIR / file_part
             else:
                 typer.echo(f"오류: 파일을 찾을 수 없습니다: {file_part}", err=True)
                 raise typer.Exit(code=1)
@@ -891,6 +944,7 @@ def compare_cmd(
     as_user: Annotated[str, typer.Option("--as", "-u", help="로그인 계정/역할 (사원 ID, 로그인 ID, admin)")] = "admin",
     sql_total: Annotated[str | None, typer.Option("--total-sql", "--sql-total", help="페이징 총건수 검증용 AS-IS SQL ID (예: apr40_download_history.selectByTextPagingTotal)")] = None,
     from_log: Annotated[bool, typer.Option("--from-log", help="최근 로그 trace에서 매퍼 파라미터를 읽어 기본값으로 사용")] = False,
+    branch: Annotated[list[str] | None, typer.Option("--branch", help="분기 조건 강제 on/off (식=on|off, 반복 가능)")] = None,
 ) -> None:
     """조회 API와 AS-IS SQL 행 수 및 그리드 컬럼 커버리지 비교"""
     from yunhee.tools.comparator import compare_api_sql
@@ -913,6 +967,13 @@ def compare_cmd(
             if "=" in p:
                 k, v = p.split("=", 1)
                 sql_params_dict[k.strip()] = v.strip()
+
+    branch_dict = {}
+    if branch:
+        for b in branch:
+            if "=" in b:
+                k, v = b.split("=", 1)
+                branch_dict[k.strip()] = v.strip().lower() in ("on", "true", "1", "yes")
 
     effective_base = base or config.API_BASE_URL
     effective_tenant = config.resolve_api_tenant(tenant)
@@ -937,12 +998,16 @@ def compare_cmd(
         as_user=as_user,
         sql_total_ref=sql_total,
         from_log=from_log,
+        branch_overrides=branch_dict or None,
     )
     if not res.ok:
         err_msg = res.error or "비교 실패"
         if err_msg.startswith("API 호출 실패: "):
             err_msg = err_msg.replace("API 호출 실패: ", "")
-        typer.secho(f"[ERROR] {err_msg}", fg=typer.colors.RED, err=True)
+        if err_msg.startswith("❌"):
+            typer.secho(err_msg, fg=typer.colors.RED, err=True)
+        else:
+            typer.secho(f"[ERROR] {err_msg}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
     from yunhee.tools.api_client import header_tag
@@ -1192,23 +1257,26 @@ def index_src_cmd(
     out_dir = target if target is not None else find_as_is_dir("src")
 
     menus_path = menus
-    if menus_path is None:
+    target_menus_file = menus_path or (out_dir.parent / "menus.tsv")
+
+    if menus_from_db:
+        # DB의 sys06_menu 에서 menus.tsv 생성
+        from yunhee.tools import sql_runner
+
+        gen_res = sql_runner.run_sql(
+            builtin="menus",
+            db_name=menus_from_db,
+            output_fmt="tsv",
+            no_header=True,
+            out_file=target_menus_file,
+        )
+        if not gen_res.ok:
+            typer.secho(f"[ERROR] --menus-from-db 실행 실패: {gen_res.error}", fg=typer.colors.RED)
+            raise typer.Exit(1)
+        menus_path = target_menus_file
+    elif menus_path is None:
         cand = out_dir.parent / "menus.tsv"
         if cand.is_file():
-            menus_path = cand
-        elif menus_from_db:
-            from yunhee.tools import sql_runner
-
-            gen_res = sql_runner.run_sql(
-                builtin="menus",
-                db_name=menus_from_db,
-                output_fmt="tsv",
-                no_header=True,
-                out_file=cand,
-            )
-            if not gen_res.ok:
-                typer.secho(f"[ERROR] --menus-from-db 실행 실패: {gen_res.error}", fg=typer.colors.RED)
-                raise typer.Exit(1)
             menus_path = cand
 
     db_dir = db_index
@@ -1540,8 +1608,12 @@ def sql_check_cmd(
 
     if tobe:
         if not tobe.is_dir() and not tobe.is_file():
-            typer.secho(f"[ERROR] TOBE 매퍼 경로를 찾을 수 없습니다: {tobe}", fg=typer.colors.RED)
-            raise typer.Exit(1)
+            cand = getattr(config, "TOBE_SRC_DIR", config.WORK_DIR) / tobe
+            if cand.is_dir() or cand.is_file():
+                tobe = cand
+            else:
+                typer.secho(f"[ERROR] TOBE 매퍼 경로를 찾을 수 없습니다: {tobe}", fg=typer.colors.RED)
+                raise typer.Exit(1)
         res = check_tobe_sql(tobe, db=db, only=only, changed=changed, summary=summary)
         if not res.ok and not res.data:
             typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED)
@@ -1761,11 +1833,20 @@ def page_style_cmd(
                 cand = config.WORK_DIR / target_dir
                 if cand.is_dir():
                     target_dir = cand
+                elif getattr(config, "TOBE_SRC_DIR", None) and (config.TOBE_SRC_DIR / target_dir).is_dir():
+                    target_dir = config.TOBE_SRC_DIR / target_dir
                 else:
                     typer.secho(f"오류: 디렉터리를 찾을 수 없습니다: {target_dir_str}", fg=typer.colors.RED, err=True)
                     raise typer.Exit(code=2)
         else:
             target_dir = config.WORK_DIR
+            if (
+                not scan_tab_files(target_dir)
+                and getattr(config, "TOBE_SRC_DIR", None)
+                and config.TOBE_SRC_DIR != config.WORK_DIR
+                and scan_tab_files(config.TOBE_SRC_DIR)
+            ):
+                target_dir = config.TOBE_SRC_DIR
 
         files = scan_tab_files(target_dir)
         if not files:

@@ -158,11 +158,21 @@ def extract_trace_sql_params(trace_id: str, sql_ref: str, req_path: str = "") ->
     # 2. TOBE mapper XML 검색
     if not param_names:
         search_dirs = [
+            config.TOBE_SRC_DIR / "backend/src/main/resources/mapper",
+            config.TOBE_SRC_DIR / "src/main/resources/mapper",
+            config.TOBE_SRC_DIR,
             config.WORK_DIR / "backend/src/main/resources/mapper",
             config.WORK_DIR / "src/main/resources/mapper",
             config.WORK_DIR,
         ]
-        for sdir in search_dirs:
+        # 중복 디렉터리 제거
+        seen_dirs: set[Path] = set()
+        dedup_dirs: list[Path] = []
+        for d in search_dirs:
+            if d not in seen_dirs:
+                seen_dirs.add(d)
+                dedup_dirs.append(d)
+        for sdir in dedup_dirs:
             if sdir.is_dir():
                 for mf in sdir.rglob("*.xml"):
                     try:
@@ -225,6 +235,8 @@ def find_screen_grid_info(
         roots.append(src_root)
     if config.ASIS_SRC_DIR and config.ASIS_SRC_DIR.is_dir() and config.ASIS_SRC_DIR not in roots:
         roots.append(config.ASIS_SRC_DIR)
+    if config.TOBE_SRC_DIR and config.TOBE_SRC_DIR.is_dir() and config.TOBE_SRC_DIR not in roots:
+        roots.append(config.TOBE_SRC_DIR)
     if config.WORK_DIR not in roots:
         roots.append(config.WORK_DIR)
 
@@ -494,6 +506,7 @@ def compare_api_sql(
     sql_total_ref: str | None = None,
     from_log: bool = False,
     src_index: Path | None = None,
+    branch_overrides: dict[str, bool] | None = None,
 ) -> ToolResult:
     """조회 API와 AS-IS SQL의 결과 행 수 및 필드 커버리지를 비교 검증한다."""
     import sys
@@ -527,8 +540,58 @@ def compare_api_sql(
         params=api_params if method.upper() == "GET" else None,
         json_body=api_params if method.upper() != "GET" else None,
     )
-    if not api_res.ok and not api_res.data:
-        return ToolResult(ok=False, error=f"API 호출 실패: {api_res.error}")
+
+    api_data = api_res.data
+    raw_json = {}
+    if isinstance(api_data, dict):
+        text_str = api_data.get("text", "")
+        if text_str:
+            try:
+                raw_json = json.loads(text_str)
+            except Exception:  # noqa: BLE001
+                raw_json = {}
+        elif "data" in api_data:
+            raw_json = api_data["data"]
+
+    status_code = (api_data or {}).get("status_code", 0) if isinstance(api_data, dict) else 0
+    trace_id = (api_data or {}).get("trace_id") if isinstance(api_data, dict) else None
+
+    is_api_err = not api_res.ok
+    is_biz_err = False
+    err_code = ""
+    err_msg = ""
+    if isinstance(raw_json, dict) and raw_json.get("success") is False:
+        is_biz_err = True
+        err_code = str(raw_json.get("code") or "")
+        err_msg = str(raw_json.get("message") or "")
+
+    if is_api_err or is_biz_err:
+        status_part = f"HTTP {status_code}" if status_code else (f"HTTP {api_res.error}" if api_res.error else "")
+        detail_part = f"{err_code} {err_msg}".strip() if (err_code or err_msg) else (api_res.error or "")
+        is_client_or_biz = (400 <= status_code < 500) or (status_code == 200 and is_biz_err)
+        err_type = "API 업무 오류" if is_client_or_biz else "API 실패"
+
+        body_str = f"{status_part} {detail_part}".strip()
+        trace_str = f" (추적ID: {trace_id}) — yunhee log trace {trace_id} --raw" if trace_id else ""
+        full_err = f"❌ {err_type}: {body_str}{trace_str}"
+
+        if trace_id:
+            try:
+                from yunhee.tools.log_reader import get_trace_summary
+
+                t_sum = get_trace_summary(trace_id)
+                if t_sum:
+                    err_lines = [
+                        l.strip()
+                        for l in t_sum.splitlines()
+                        if any(w in l for w in ("ERROR", "WARN", "Exception", "오류", "실패"))
+                    ]
+                    if err_lines:
+                        full_err += "\n   " + "\n   ".join(err_lines[:2])
+            except Exception:  # noqa: BLE001, S110
+                pass
+
+        return ToolResult(ok=False, data=api_res.data, error=full_err)
 
     # 매퍼 문장 및 조건 분기 변수 사전 파악 (#2)
     stmts = {}
@@ -593,7 +656,11 @@ def compare_api_sql(
     try:
         if sql_ref in stmts or any(s.sid == sid for s in stmts.values()):
             sql, missing, branch_log = render_with_meta(
-                sql_ref, params=sql_params, mode="params", statements=stmts
+                sql_ref,
+                params=sql_params,
+                mode="params",
+                statements=stmts,
+                branch_overrides=branch_overrides,
             )
             for m_p in missing:
                 sys.stderr.write(f"⚠ 값 없음: {m_p}\n")
@@ -603,7 +670,12 @@ def compare_api_sql(
                 if not xml_path:
                     return ToolResult(ok=False, error=f"매퍼 XML을 찾을 수 없습니다: namespace={ns}")
                 xml_text_fallback = xml_path.read_text(encoding="utf-8", errors="replace")
-            sql, missing, branch_log = render_from_xml_with_meta(xml_text_fallback, sid, sql_params)
+            sql, missing, branch_log = render_from_xml_with_meta(
+                xml_text_fallback,
+                sid,
+                sql_params,
+                branch_overrides=branch_overrides,
+            )
             for m_p in missing:
                 sys.stderr.write(f"⚠ 값 없음: {m_p}\n")
     except Exception as e:  # noqa: BLE001
@@ -615,18 +687,6 @@ def compare_api_sql(
         b_str = f" (branch: {', '.join(branch_log)})" if branch_log else ""
         m_str = f" (-- 필요: {', '.join(missing)})" if missing else ""
         sql_params_line = f"SQL params: {p_str}{b_str}{m_str}"
-
-    api_data = api_res.data
-    raw_json = {}
-    if isinstance(api_data, dict):
-        text_str = api_data.get("text", "")
-        if text_str:
-            try:
-                raw_json = json.loads(text_str)
-            except Exception:  # noqa: BLE001
-                raw_json = {}
-        elif "data" in api_data:
-            raw_json = api_data["data"]
 
     raw_data = raw_json.get("data") if isinstance(raw_json, dict) and "data" in raw_json else raw_json
     if raw_data is None and isinstance(raw_json, list):
@@ -795,6 +855,10 @@ def compare_api_sql(
             rows_match = (api_row_count == sql_row_count)
             rows_mark = "✅" if rows_match else "❌"
             count_part = f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}"
+
+    uneval_branches = [b for b in branch_log if "평가 불가" in b]
+    if uneval_branches:
+        count_part += f" (분기 {len(uneval_branches)}개 평가 불가)"
 
     # 테이블 접두어 추출
     tbl_pfx_m = re.match(r"^([a-z]+\d*)_", ns)

@@ -25,6 +25,16 @@ def test_get_config_item_lookup():
     assert config.get_config_item("asis_src") == item
     assert config.get_config_item("asis") == item
 
+    # TOBE_SRC_DIR
+    item_tobe = config.get_config_item("YUNHEE_TOBE_SRC_DIR")
+    assert item_tobe is not None
+    assert item_tobe.key == "YUNHEE_TOBE_SRC_DIR"
+    assert config.get_config_item("TOBE_SRC_DIR") == item_tobe
+    assert config.get_config_item("tobe-src") == item_tobe
+    assert config.get_config_item("tobe_src") == item_tobe
+    assert config.get_config_item("tobe") == item_tobe
+    assert config.get_config_item("tobe-branch") is not None
+
     # 다른 주요 키들
     assert config.get_config_item("work-dir") is not None
     assert config.get_config_item("WORK_DIR") is not None
@@ -43,6 +53,10 @@ def test_get_config_value_raw_and_masked():
     # YUNHEE_ASIS_SRC_DIR
     val = config.get_config_value("YUNHEE_ASIS_SRC_DIR")
     assert val == str(config.ASIS_SRC_DIR)
+
+    # YUNHEE_TOBE_SRC_DIR
+    val_tobe = config.get_config_value("tobe-src")
+    assert val_tobe == str(config.TOBE_SRC_DIR)
 
     # WORK_DIR
     val_work = config.get_config_value("work-dir")

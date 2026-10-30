@@ -174,21 +174,24 @@ def collect_source_info(src_root: Path, vcs_root: Path | str | None = None) -> d
 
 def get_git_branch_sync_status(src_root: Path) -> str:
     """git fetch 없이 로컬 origin/<branch> 대비 ahead/behind 상태를 문자열로 반환한다."""
-    if not src_root or not src_root.is_dir() or not is_git_repo(src_root):
+    if not src_root or not src_root.is_dir():
         return "(git 아님)"
-    _, branch_out, _ = _run_git(src_root, ["rev-parse", "--abbrev-ref", "HEAD"])
+    repo_root = src_root if is_git_repo(src_root) else git_toplevel(src_root)
+    if not repo_root:
+        return "(git 아님)"
+    _, branch_out, _ = _run_git(repo_root, ["rev-parse", "--abbrev-ref", "HEAD"])
     branch = branch_out.strip() or "HEAD"
 
     upstream = f"origin/{branch}"
-    rc_up, _, _ = _run_git(src_root, ["rev-parse", "--verify", upstream])
+    rc_up, _, _ = _run_git(repo_root, ["rev-parse", "--verify", upstream])
     if rc_up != 0:
-        rc_u2, up_out, _ = _run_git(src_root, ["rev-parse", "--abbrev-ref", "@{upstream}"])
+        rc_u2, up_out, _ = _run_git(repo_root, ["rev-parse", "--abbrev-ref", "@{upstream}"])
         if rc_u2 == 0 and up_out.strip():
             upstream = up_out.strip()
         else:
             return branch
 
-    rc_cnt, cnt_out, _ = _run_git(src_root, ["rev-list", "--left-right", "--count", f"HEAD...{upstream}"])
+    rc_cnt, cnt_out, _ = _run_git(repo_root, ["rev-list", "--left-right", "--count", f"HEAD...{upstream}"])
     if rc_cnt != 0 or not cnt_out.strip():
         return branch
     parts = cnt_out.strip().split()

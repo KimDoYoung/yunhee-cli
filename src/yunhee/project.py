@@ -84,22 +84,28 @@ def status(root: Path | None = None) -> str:
 
 
 def init(root: Path | None = None) -> dict:
-    """.yunhee/project.json을 새로 만들거나(최초) 현재 버전으로 갱신하며, .yunhee/mcp.json을 기본 생성한다."""
-    effective_root = root or WORK_DIR
+    """.yunhee 디렉터리 및 필수 파일(project.json, mcp.json, memory.md, sessions/, runs/, .gitignore)을 초기화/갱신한다."""
+    effective_root = root or Path.cwd()
     pdir = effective_root / ".yunhee"
     pfile = pdir / "project.json"
     mfile = pdir / "mcp.json"
+    mem_file = pdir / "memory.md"
+    git_ignore = pdir / ".gitignore"
+    sessions_dir = pdir / "sessions"
+    runs_dir = pdir / "runs"
+
     data = load(effective_root) or {}
     now = datetime.now(UTC).isoformat()
     data.setdefault("name", effective_root.name)
     data.setdefault("created_at", now)
     data["updated_at"] = now
     data["yunhee_version"] = current_version()
+    data["project_dir"] = str(pdir)
 
     pdir.mkdir(parents=True, exist_ok=True)
     pfile.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    # .yunhee/mcp.json 기본 생성 (미존재 시)
+    # 1. .yunhee/mcp.json 기본 생성 (미존재 시)
     if not mfile.exists():
         mfile.write_text(
             json.dumps(DEFAULT_MCP_CONFIG, indent=2, ensure_ascii=False) + "\n",
@@ -108,5 +114,34 @@ def init(root: Path | None = None) -> dict:
         data["mcp_created"] = True
     else:
         data["mcp_created"] = False
+
+    # 2. .yunhee/memory.md 기본 생성 (미존재 시)
+    if not mem_file.exists():
+        mem_template = (
+            "# 프로젝트 규칙 및 특이사항\n\n"
+            "- 여기에 기록된 규칙은 에이전트 대화 시 시스템 프롬프트에 자동으로 주입됩니다.\n"
+            "- REPL에서 `/memory add <규칙>` 으로 손쉽게 추가할 수 있습니다.\n"
+        )
+        mem_file.write_text(mem_template, encoding="utf-8")
+        data["memory_created"] = True
+    else:
+        data["memory_created"] = False
+
+    # 3. .yunhee/sessions/ 및 .yunhee/runs/ 디렉터리 생성
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    runs_dir.mkdir(parents=True, exist_ok=True)
+
+    # 4. .yunhee/.gitignore 기본 생성 (미존재 시)
+    if not git_ignore.exists():
+        git_ignore_content = (
+            "# yunhee 세션 대화록 및 실행 로그 ignore\n"
+            "sessions/\n"
+            "runs/\n"
+            ".env*\n"
+        )
+        git_ignore.write_text(git_ignore_content, encoding="utf-8")
+        data["gitignore_created"] = True
+    else:
+        data["gitignore_created"] = False
 
     return data

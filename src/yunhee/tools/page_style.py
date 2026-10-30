@@ -55,6 +55,7 @@ JAVA_CHILD = re.compile(r"\bnew\s+(\w+_(?:Edit|TabPage|Page|Grid|Rd|Tab)_\w+)\s*
 def load_valid_sids() -> tuple[str, ...]:
     """docs/page-style.md 의 '## 스타일 목록' 표 첫 열에서 유효한 SID 목록을 로드한다."""
     cand_paths = [
+        config.TOBE_SRC_DIR / "docs" / "page-style.md",
         config.WORK_DIR / "docs" / "page-style.md",
         config.WORK_DIR / "AssetERP" / "docs" / "page-style.md",
         config.YUNHEE_DIR / "docs" / "page-style.md",
@@ -732,8 +733,14 @@ def resolve_target_path(
     if work_cand.is_file():
         return work_cand.resolve()
 
+    # 3. TOBE_SRC_DIR 기준
+    if getattr(config, "TOBE_SRC_DIR", None) and config.TOBE_SRC_DIR != config.WORK_DIR:
+        tobe_cand = config.TOBE_SRC_DIR / p
+        if tobe_cand.is_file():
+            return tobe_cand.resolve()
+
     target_name = p.name
-    # 3. 확장자가 없는 경우 보정
+    # 4. 확장자가 없는 경우 보정
     names_to_try = [target_name]
     if not target_name.endswith((".tsx", ".java")):
         if prefer_ext:
@@ -746,6 +753,12 @@ def resolve_target_path(
         found = list(config.WORK_DIR.glob(f"**/{name}"))
         if found:
             return found[0].resolve()
+
+        # TOBE_SRC_DIR 하위 glob 탐색
+        if getattr(config, "TOBE_SRC_DIR", None) and config.TOBE_SRC_DIR != config.WORK_DIR and config.TOBE_SRC_DIR.is_dir():
+            found = list(config.TOBE_SRC_DIR.glob(f"**/{name}"))
+            if found:
+                return found[0].resolve()
 
         # ASIS_SRC_DIR 하위 glob 탐색
         if config.ASIS_SRC_DIR and config.ASIS_SRC_DIR.is_dir():

@@ -51,15 +51,70 @@ def _find_env_file(yunhee_dir: Path) -> Path:
     return env_yunhee
 
 
-YUNHEE_DIR = _find_yunhee_dir()
-ENV_FILE = _find_env_file(YUNHEE_DIR)
+def _find_global_env_file(yunhee_dir: Path) -> Path | None:
+    """전역 설정 파일 탐색 (1. ~/.yunhee/.env.yunhee/.env.local, 2. YUNHEE_DIR/.env.yunhee/.env.local)."""
+    candidates = [
+        Path.home() / ".yunhee" / ".env.yunhee",
+        Path.home() / ".yunhee" / ".env.local",
+        yunhee_dir / ".env.yunhee",
+        yunhee_dir / ".env.local",
+    ]
+    for p in candidates:
+        if p.is_file():
+            return p.resolve()
+    return None
 
-# yunhee가 어느 디렉토리에서 실행됐는지 = 작업 대상 프로젝트 루트.
-# grep/파일 검색 등 "작업 대상"을 다루는 tool들은 전부 이 값을 기준으로 동작해야 한다.
+
+def _find_local_env_file(work_dir: Path, global_env: Path | None = None) -> Path | None:
+    """작업 디렉터리 및 상위 디렉터리에서 로컬 설정 파일 탐색.
+
+    1. WORK_DIR / .env.yunhee (.env.local)
+    2. WORK_DIR / .yunhee / .env.yunhee (.env.local)
+    3. WORK_DIR 상위 부모 폴더 (git root 또는 home 직전까지)
+    """
+    check_dirs = [work_dir, work_dir / ".yunhee"]
+
+    cur = work_dir.resolve()
+    home_dir = Path.home().resolve()
+    for parent in cur.parents:
+        if parent == home_dir or parent == parent.parent:
+            break
+        check_dirs.append(parent)
+        if (parent / ".git").exists():
+            break
+
+    global_resolved = global_env.resolve() if global_env else None
+
+    for d in check_dirs:
+        for fname in (".env.yunhee", ".env.local"):
+            f = d / fname
+            if f.is_file():
+                resolved = f.resolve()
+                if global_resolved is None or resolved != global_resolved:
+                    return resolved
+    return None
+
+
+YUNHEE_DIR = _find_yunhee_dir()
 WORK_DIR = Path.cwd()
 
-# 어디서 실행하든 항상 YUNHEE_DIR의 설정 파일(.env.yunhee 또는 .env.local)을 읽는다.
-load_dotenv(ENV_FILE)
+GLOBAL_ENV_FILE = _find_global_env_file(YUNHEE_DIR)
+LOCAL_ENV_FILE = _find_local_env_file(WORK_DIR, GLOBAL_ENV_FILE)
+
+LOADED_ENV_FILES: list[Path] = []
+
+# 1단계: 전역 기본 설정 로드 (사용자 홈 또는 설치본)
+if GLOBAL_ENV_FILE and GLOBAL_ENV_FILE.is_file():
+    load_dotenv(GLOBAL_ENV_FILE)
+    LOADED_ENV_FILES.append(GLOBAL_ENV_FILE)
+
+# 2단계: 로컬 프로젝트 설정 로드 및 오버라이드
+if LOCAL_ENV_FILE and LOCAL_ENV_FILE.is_file() and LOCAL_ENV_FILE != GLOBAL_ENV_FILE:
+    load_dotenv(LOCAL_ENV_FILE, override=True)
+    LOADED_ENV_FILES.append(LOCAL_ENV_FILE)
+
+# 하위 호환 단일 ENV_FILE 포인터 (로컬 우선, 없으면 전역, 없으면 기본 경로)
+ENV_FILE = LOCAL_ENV_FILE or GLOBAL_ENV_FILE or (YUNHEE_DIR / ".env.yunhee")
 
 # OLLAMA_HOST는 Ollama 서버 자체의 bind address 환경변수와 이름이 겹치므로
 # (예: OLLAMA_HOST=0.0.0.0) YUNHEE_ 접두사로 구분한다.
@@ -108,6 +163,7 @@ def _find_yunhee_toml(start_dir: Path | None = None) -> tuple[Path | None, dict]
 TOML_FILE, TOML_CONFIG = _find_yunhee_toml()
 _api_conf = TOML_CONFIG.get("api", {})
 _as_is_conf = TOML_CONFIG.get("as_is", {})
+_tobe_conf = TOML_CONFIG.get("tobe", {})
 
 # ASIS 색인 디렉터리 (.yunhee.toml [as_is] src_index 우선, 없으면 YUNHEE_SRC_INDEX_DIR 환경변수)
 _raw_src_index = _as_is_conf.get("src_index") or os.getenv("YUNHEE_SRC_INDEX_DIR")
@@ -120,6 +176,18 @@ if _raw_src_index:
         SRC_INDEX_DIR = _p_idx
 else:
     SRC_INDEX_DIR = None
+
+# TOBE(Spring Boot/React) 소스 루트 - TOBE 분석/매퍼/UI 탐색 기준 (미지정 시 WORK_DIR)
+_raw_tobe_src = (_tobe_conf.get("src") or os.getenv("YUNHEE_TOBE_SRC_DIR") or "").strip()
+if _raw_tobe_src:
+    _p_tobe = Path(_raw_tobe_src).expanduser()
+    if not _p_tobe.is_absolute():
+        _base_tobe = TOML_FILE.parent if (TOML_FILE and _tobe_conf.get("src")) else WORK_DIR
+        TOBE_SRC_DIR: Path = (_base_tobe / _p_tobe).resolve()
+    else:
+        TOBE_SRC_DIR = _p_tobe.resolve()
+else:
+    TOBE_SRC_DIR = WORK_DIR
 
 # API 스모크 테스트 기본 설정 (.yunhee.toml 우선, 없으면 .env.local)
 API_BASE_URL = _api_conf.get("base") or os.getenv("YUNHEE_API_BASE_URL", "http://localhost:8082/AssetERP_1")
@@ -182,7 +250,13 @@ def summary() -> dict[str, str]:
     return {
         "work-dir": str(WORK_DIR),
         "yunhee-dir": str(YUNHEE_DIR),
-        "env-file": f"{ENV_FILE} ({'exists' if ENV_FILE.exists() else 'not found'})",
+        "env-file": (
+            " + ".join(
+                f"{p} ({'local' if p == LOCAL_ENV_FILE else 'global'})" for p in LOADED_ENV_FILES
+            )
+            if LOADED_ENV_FILES
+            else f"{ENV_FILE} (not found)"
+        ),
         "ollama-url": OLLAMA_HOST,
         "ollama-model": OLLAMA_MODEL,
         "embed-model": EMBED_MODEL,
@@ -196,6 +270,8 @@ def summary() -> dict[str, str]:
         "schema-env": SCHEMA_ENV,
         "asis-src": str(ASIS_SRC_DIR),
         "asis-branch": get_git_branch_sync_status(ASIS_SRC_DIR),
+        "tobe-src": str(TOBE_SRC_DIR),
+        "tobe-branch": get_git_branch_sync_status(TOBE_SRC_DIR),
         "src-index": str(SRC_INDEX_DIR) if SRC_INDEX_DIR else "(auto)",
         "api-base": (
             f"{API_BASE_URL} (from {TOML_FILE.name})"
@@ -259,12 +335,27 @@ def _get_branch_status() -> str:
         return "(unknown)"
 
 
+def _get_tobe_branch_status() -> str:
+    try:
+        from yunhee.tools.as_is.drift import get_git_branch_sync_status
+
+        return get_git_branch_sync_status(TOBE_SRC_DIR)
+    except Exception:  # noqa: BLE001
+        return "(unknown)"
+
+
 CONFIG_ITEMS: list[ConfigItem] = [
     ConfigItem(
         key="YUNHEE_ASIS_SRC_DIR",
         aliases=["ASIS_SRC_DIR", "asis-src", "asis_src", "asis"],
         getter=lambda: str(ASIS_SRC_DIR),
         description="AS-IS 레거시 소스 루트 디렉터리",
+    ),
+    ConfigItem(
+        key="YUNHEE_TOBE_SRC_DIR",
+        aliases=["TOBE_SRC_DIR", "tobe-src", "tobe_src", "tobe"],
+        getter=lambda: str(TOBE_SRC_DIR),
+        description="TOBE 대상 소스 루트 디렉터리 (미지정 시 WORK_DIR)",
     ),
     ConfigItem(
         key="YUNHEE_SRC_INDEX_DIR",
@@ -289,6 +380,18 @@ CONFIG_ITEMS: list[ConfigItem] = [
         aliases=["env-file", "env_file"],
         getter=lambda: str(ENV_FILE),
         description="설정 파일 (.env.yunhee / .env.local) 경로",
+    ),
+    ConfigItem(
+        key="LOCAL_ENV_FILE",
+        aliases=["local-env", "local_env", "local-env-file"],
+        getter=lambda: str(LOCAL_ENV_FILE) if LOCAL_ENV_FILE else "",
+        description="로컬 프로젝트 설정 파일 경로",
+    ),
+    ConfigItem(
+        key="GLOBAL_ENV_FILE",
+        aliases=["global-env", "global_env", "global-env-file"],
+        getter=lambda: str(GLOBAL_ENV_FILE) if GLOBAL_ENV_FILE else "",
+        description="전역 기본 설정 파일 경로",
     ),
     ConfigItem(
         key="YUNHEE_DB",
@@ -413,6 +516,12 @@ CONFIG_ITEMS: list[ConfigItem] = [
         aliases=["ASIS_BRANCH", "asis-branch", "asis_branch"],
         getter=_get_branch_status,
         description="AS-IS 소스 git 브랜치 동기화 상태",
+    ),
+    ConfigItem(
+        key="YUNHEE_TOBE_BRANCH",
+        aliases=["TOBE_BRANCH", "tobe-branch", "tobe_branch"],
+        getter=_get_tobe_branch_status,
+        description="TOBE 소스 git 브랜치 동기화 상태",
     ),
     ConfigItem(
         key="YUNHEE_LOG_DOCKER",

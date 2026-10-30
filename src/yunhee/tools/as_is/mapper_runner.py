@@ -47,10 +47,16 @@ def run_mapper_statement(
     if not mapper_path.is_absolute():
         cand1 = config.WORK_DIR / file_part
         cand2 = Path.cwd() / file_part
+        cand3 = config.TOBE_SRC_DIR / file_part if getattr(config, "TOBE_SRC_DIR", None) else None
+        cand4 = config.ASIS_SRC_DIR / file_part if getattr(config, "ASIS_SRC_DIR", None) else None
         if cand1.is_file():
             mapper_path = cand1
         elif cand2.is_file():
             mapper_path = cand2
+        elif cand3 and cand3.is_file():
+            mapper_path = cand3
+        elif cand4 and cand4.is_file():
+            mapper_path = cand4
         else:
             mapper_path = cand1
 

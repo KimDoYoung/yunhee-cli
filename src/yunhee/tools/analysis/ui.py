@@ -467,6 +467,8 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
                 from yunhee.tools.as_is import find_repo_root
 
                 cands = [
+                    config.TOBE_SRC_DIR / p_str,
+                    config.TOBE_SRC_DIR / "frontend" / p_str,
                     config.WORK_DIR / p_str,
                     config.WORK_DIR.parent / p_str,
                 ]
