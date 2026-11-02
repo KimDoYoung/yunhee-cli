@@ -1,8 +1,8 @@
 """화면 파일(.tsx / .java)의 페이지 스타일 ID(SID) 판별기.
 
 SID 정의는 docs/page-style.md 참조:
-19개 스타일:
-SG · SGP · SGVF · SGEF · SGTP · SGT · TG · GG · CG · STP · TP · SR · GCG · SGHF · TO · GO · DSBRD · GDP · IN
+20개 스타일:
+SG · SGP · SGVF · SGEF · SGTP · SGT · TG · GG · GGH · CG · STP · TP · SR · GCG · SGHF · TO · GO · DSBRD · GDP · IN
 판별 불가 시 '미분류'.
 """
 
@@ -25,6 +25,7 @@ DEFAULT_SIDS: tuple[str, ...] = (
     "SGT",
     "TG",
     "GG",
+    "GGH",
     "CG",
     "STP",
     "TP",
@@ -565,6 +566,17 @@ def classify(features: dict[str, Any], declared: str | None = None) -> tuple[str
             return "SGTP", "위아래 분할 + 그리드 + 아래 탭 영역"
         return "GG", f"그리드 {g}개(마스터·상세)"
 
+    # 6-1. GGH (Grid+Grid 좌우): 위 SearchBar + 가로 Splitter + 그리드 2개(오른쪽이 *_Page_*/*_TabPage_* 컴포넌트가 아니다)
+    if (
+        g >= 2
+        and layout == "horizontal"
+        and (
+            declared == "GGH"
+            or (top_search and not has_detail_page and t == 0 and declared != "GG")
+        )
+    ):
+        return "GGH", f"위 조회 줄 + 좌우 분할 그리드 {g}개(마스터·상세)"
+
     # 7. 그리드 2개 이상 (GG)
     if g >= 2:
         return "GG", f"그리드 {g}개(마스터·상세)"
@@ -573,6 +585,8 @@ def classify(features: dict[str, Any], declared: str | None = None) -> tuple[str
     if g == 1:
         if popup:
             return "SGP", "조회 툴바 + 그리드 하나 + 편집 팝업"
+        if declared == "SG" and (search or top_search):
+            return "SG", "조회 툴바 + 그리드 하나"
         if editable_grid:
             return "CG", "편집 가능한 그리드 하나"
         if search or top_search:

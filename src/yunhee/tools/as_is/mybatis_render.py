@@ -617,6 +617,17 @@ def extract_branch_condition_vars(
             vars_found.update(
                 extract_branch_condition_vars(target.node, target.ns, statements, seen + (target.key,))
             )
+        for c in node.children:
+            if isinstance(c, Node) and c.tag == "property":
+                pval = c.attrs.get("value", "")
+                if pval:
+                    sub_target = find_target_statement(pval, current_ns, statements)
+                    if sub_target and sub_target.key not in seen:
+                        vars_found.update(
+                            extract_branch_condition_vars(
+                                sub_target.node, sub_target.ns, statements, seen + (sub_target.key,)
+                            )
+                        )
         return vars_found
 
     if tag in ("when", "if"):
@@ -676,19 +687,37 @@ def render_node(
 
     if tag == "include":
         ref = node.attrs.get("refid", "")
+        inc_props: dict[str, Any] = {}
+        for c in node.children:
+            if isinstance(c, Node) and c.tag == "property":
+                pname = c.attrs.get("name", "")
+                pval = c.attrs.get("value", "")
+                if pname:
+                    for pk, pv in params.items():
+                        if isinstance(pv, str):
+                            pval = pval.replace(f"${{{pk}}}", pv)
+                    inc_props[pname] = pval
+        merged_params = {**params, **inc_props} if inc_props else params
+        for pk, pv in merged_params.items():
+            if isinstance(pv, str) and f"${{{pk}}}" in ref:
+                ref = ref.replace(f"${{{pk}}}", pv)
         target = find_target_statement(ref, current_ns, statements)
         if target and target.key not in seen:
-            return render_node(
+            rendered = render_node(
                 target.node,
                 target.ns,
                 statements,
-                params,
+                merged_params,
                 mode,
                 seen + (target.key,),
                 missing_params,
                 branch_log,
                 branch_overrides=branch_overrides,
             )
+            if inc_props:
+                for pk, pv in inc_props.items():
+                    rendered = rendered.replace(f"${{{pk}}}", str(pv))
+            return rendered
         if mode == "structure":
             return f'<!-- include {ref} 없음 -->'
         return f" /* include {ref} 없음 */ "

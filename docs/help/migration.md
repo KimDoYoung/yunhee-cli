@@ -37,7 +37,7 @@ AS-IS MyBatis SQL을 TOBE 매퍼 XML 조각(`<select>`, `<sql id="...">`) 및 Ja
 
 ### `yunhee page-style <targets...>`
 화면 파일(.tsx / .java)의 컴포넌트·레이아웃을 정적 분석하여 페이지 스타일 ID(SID 19종: SG, SGP, SGVF, SGEF, SGTP, SGT, TG, GG, CG, STP, TP, SR, GCG, SGHF, TO, GO, DSBRD, GDP, IN)를 판별하고 대조합니다.
-- **주요 SID (19종)**:
+- **주요 SID (20종)**:
   - `SG`: SearchBar + 그리드 하나
   - `SGP`: SG + 편집 팝업(`*_Edit_*`)
   - `SGVF`: 위아래 분할 + 그리드 + 읽기 전용 폼
@@ -45,7 +45,8 @@ AS-IS MyBatis SQL을 TOBE 매퍼 XML 조각(`<select>`, `<sql id="...">`) 및 Ja
   - `SGTP`: 위아래 분할 + 그리드 + 아래 탭 영역
   - `SGT`: 툴바 전체 폭 + 좌(그리드)·우(트리) 분할
   - `TG`: 트리 + 오른쪽 내용 좌우 분할
-  - `GG`: 그리드 2개 이상 (마스터·상세)
+  - `GG`: 그리드 2개 이상 (상하 분할 마스터·상세)
+  - `GGH`: 위 조회 줄(`SearchBar`) + 좌우 분할 그리드 2개 이상 (마스터·상세)
   - `CG`: 편집 가능한 그리드 하나 (`CellEditGrid`, `useGridCrud` 등)
   - `STP`: 툴바 + 탭 컨테이너 (`PageTabs`/`Tabs`), 그리드 없음
   - `TP`: 툴바 없이 탭 컨테이너만 있음
@@ -91,7 +92,7 @@ AS-IS GXT 화면 파일의 생성자 라이프사이클(E0), 위젯 이벤트(E1
 ### `yunhee sql-check [src_root]`
 MyBatis 매퍼 XML의 동적 SQL(`<if>`, `<choose>`, `<foreach>`)을 펼쳐 대상 DB에서 `psql EXPLAIN` 정합성 및 소스 간 SQL Drift를 검증합니다.
 - **주요 옵션**:
-  - `--tobe <DIR>`: TOBE 매퍼 디렉터리 경로 (TOBE SQL 정합성 및 Record DTO 매핑 검증 모드)
+  - `--tobe <DIR>`: TOBE 매퍼 디렉터리 경로 (TOBE SQL 정합성 및 DTO 매핑 검증 모드 — Java `record` DTO의 열 누락은 런타임 500 방지를 위해 `❌` 오류 및 비-0 종료코드로 판정하며, 일반 setter 클래스 필드 누락은 `⚠` 경고로 표시, 남는 별칭은 무시, `<include><property/></include>` 전개 및 미해결 include `?` 표시 지원)
   - `--changed`: git diff (+untracked) 변경된 매퍼 XML만 검증
   - `--old <DIR> --new <DIR>`: 이전 소스와 새 소스 간 SQL Drift 검증 모드
   - `--db <DB>`: 검증 대상 DB명 (기본: `asseterpdb`)

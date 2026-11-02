@@ -2,8 +2,27 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
-## [0.7.1] - 2026-10-30
-신규 프로젝트 환경 초기화, 자료 셋업 스크립트(`data-setup.sh`) 및 MyBatis `<bind>` 리터럴 지원:
+## [0.7.2] - 2026-11-02
+수정사항 046 완료: `api`/`compare` `%25` 이중 인코딩 방지, `sql-check --tobe` `record` DTO 열 누락 오류 승격 및 `<include>` 프로퍼티 전개, `page-style` `GGH`/`SG` 규칙, `cat --head/--tail` 및 `grep` 명령 신설, `trace-crud` 타 화면 안내 및 `mapper-run` 파라미터 부족 결론 표시
+- **`api` / `compare` `-p` 쿼리 파라미터 `%XX` 이중 인코딩 방지 (수정사항 046 §1)**:
+  - `-p k=v` 값에 `%25` 등 이미 `%XX`(16진 두 자리) 패턴이 있으면 이중 인코딩(`%25` → `%2525`)하지 않도록 정규화하고, 문자 그대로 보내야 할 때를 위한 `--raw-param` 옵션 추가.
+  - `--help` 및 `docs/help/ops-and-log.md`에 "LIKE용 `%`는 `-p k=%`로 준다" 안내 명시.
+- **`sql-check --tobe` Java `record` DTO 열 누락 오류 승격 및 `<include>` 프로퍼티 전개 (수정사항 046 §2)**:
+  - `resultType`(및 `resultMap`)의 DTO가 Java `record`인 경우 `SELECT` 결과 열에 record 컴포넌트가 하나라도 빠지면 런타임 500(`Constructor auto-mapping … not found in the result set`)을 유발하므로 일반 경고(`⚠`) 대신 오류(`❌ record <DTO> 열 누락: ...`)로 판정하고 종료 코드를 비-0으로 반환.
+  - 일반(setter) 클래스 DTO의 필드 누락은 기존처럼 `⚠` 경고로 유지하고, DTO에 없는 잉여 별칭(`미사용 별칭`) 경고는 제거.
+  - `<include refid="..."><property name="cols" value="..."/></include>` (`${cols}`) 치환 전개를 지원하고, 미해결 `<include>`가 남으면 거짓 `❌` 대신 `? include 미해결 — mapper-run으로 확인`으로 표시.
+- **page-style: 새 SID `GGH`(좌우 분할 마스터-상세) 판별 및 `SG` 선언 우선 (수정사항 046 §3)**:
+  - 위 조회 줄(`SearchBar`) + 가로 `Splitter`(`layout == "horizontal"` / GXT `West`·`East`) + 그리드 2개 이상인 화면(`Pay50_Tab_ExpensePay` 등)을 `GGH`로 판별.
+  - 단일 그리드에서 머리 주석 선언이 `스타일: SG`이고 조회 툴바가 있으면 셀 편집 그리드(`editable_grid`)여도 선언된 `SG`를 우선 판정(`Pay50_Tab_ExpensePayWrite`).
+- **`yunhee cat --head/--tail` 및 문맥 출력 전용 `yunhee grep` 신설 (수정사항 046 §4)**:
+  - `yunhee cat`에 `--head N`, `--tail N` 옵션 추가 (`<파일>:<범위>`와 조합 가능, 200줄 상한 초과 시 `… N줄 더 있음 — 범위를 좁히세요` 표시).
+  - `yunhee grep <패턴> <파일|폴더…> [-C n | -A n | -B n] [--max M] [-F] [-i]` 명령 추가 (출력 상한 80줄, 겹치는 문맥 자동 병합, 항상 `파일:줄: 내용` 출력, 허용 범위 밖 시스템 경로 `/etc/passwd` 등 차단).
+- **`trace-crud --screen` 타 화면 변환 테이블 위치 안내 및 `mapper-run` 파라미터 부족 결론 표시 (수정사항 046 §5)**:
+  - `trace-crud --screen`에서 현재 화면의 TOBE 파일에 없는 테이블이라도 저장소 내 다른 TOBE 화면/연결 컴포넌트(`Act02_Grid_JournalFix` 등)에 있으면 `⚠ TOBE에 없음` 대신 `(다른 화면에 있음: ...)`으로 표시.
+  - `mapper-run`에서 필수 파라미터 누락 시 마지막 줄에 `❌ 파라미터 부족 (N건): ...` 결론 출력.
+
+## [0.7.1] - 2026-11-02
+신규 프로젝트 환경 초기화, 자료 셋업 스크립트(`data-setup.sh`), MyBatis `<bind>` 리터럴 지원:
 - **신규 프로젝트 격리 및 2단계 계층형 환경설정 캐스케이딩**:
   - `yunhee init` 및 REPL `/init`을 통해 작업 디렉터리 내 `.yunhee/` 필수 파일(`project.json`, `mcp.json`, `memory.md`, `sessions/`, `runs/`, `.gitignore`) 자동 생성.
   - 전역 설정(`~/.yunhee/.env.yunhee`) 로드 후 프로젝트 로컬(`.env.yunhee`) 오버라이드 계층형 로딩 구현.

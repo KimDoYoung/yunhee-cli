@@ -410,6 +410,45 @@ def _prepare_multipart(
     return data_dict, files_list, upload_info, None
 
 
+_PCT_HEX_RE = re.compile(r"%[0-9A-Fa-f]{2}")
+
+
+def normalize_query_param_value(val: Any, raw: bool = False) -> Any:
+    """-p k=v 의 v에 이미 %XX(16진 두 자리) 패턴이 있으면 이중 인코딩을 막기 위해 1회 디코딩한다.
+
+    - raw=True(--raw-param)이면 원문 그대로 유지한다.
+    - '%' 단독이나 '%2', '%ZZ'처럼 16진 두 자리가 아닌 경우 그대로 두어 httpx가 인코딩하게 한다.
+    """
+    if raw or not isinstance(val, str):
+        return val
+    if _PCT_HEX_RE.search(val):
+        from urllib.parse import unquote
+
+        return unquote(val)
+    return val
+
+
+def encode_query_param_value(val: str, raw: bool = False) -> str:
+    """쿼리 파라미터 값을 URL 인코딩한 문자열로 반환한다 (이중 인코딩 방지 포함)."""
+    from urllib.parse import quote
+
+    norm = normalize_query_param_value(val, raw=raw)
+    return quote(str(norm), safe="")
+
+
+def normalize_query_params(params: dict[str, Any] | None, raw: bool = False) -> dict[str, Any] | None:
+    """쿼리 파라미터 딕셔너리의 값들에 이중 인코딩 방지 정규화를 적용한다."""
+    if not params:
+        return params
+    out: dict[str, Any] = {}
+    for k, v in params.items():
+        if isinstance(v, list):
+            out[k] = [normalize_query_param_value(item, raw=raw) for item in v]
+        else:
+            out[k] = normalize_query_param_value(v, raw=raw)
+    return out
+
+
 def request_api(
     method: str,
     path: str,
@@ -425,6 +464,7 @@ def request_api(
     timeout: float | None = None,
     mask: bool = True,
     wait_deploy: float | None = None,
+    raw_param: bool = False,
 ) -> ToolResult:
     """인증 세션을 사용하여 API를 호출하고 결과를 요약 반환한다.
     
@@ -434,6 +474,8 @@ def request_api(
     - 재로그인이 실패하면 즉시 실패로 중단하여 계정 잠금(5회 실패 락) 위험 원천 차단.
     """
     import time
+
+    params = normalize_query_params(params, raw=raw_param)
 
     if json_body is not None and form_fields:
         return ToolResult(ok=False, error="--body(-b)와 --form(-F) 옵션은 함께 사용할 수 없습니다.")

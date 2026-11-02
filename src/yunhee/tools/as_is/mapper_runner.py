@@ -97,6 +97,12 @@ def run_mapper_statement(
     except Exception as exc:  # noqa: BLE001
         return ToolResult(ok=False, error=f"TOBE SQL 렌더링 실패: {exc}")
 
+    if missing:
+        return ToolResult(
+            ok=False,
+            error=f"실행 SQL: {tobe_sql}\n❌ 파라미터 부족 ({len(missing)}건): {', '.join(missing)}",
+        )
+
     conn_str = get_connection_string(db_name)
     if not conn_str:
         return ToolResult(ok=False, error="DB 접속 정보를 찾을 수 없습니다.")

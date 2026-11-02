@@ -507,6 +507,7 @@ def compare_api_sql(
     from_log: bool = False,
     src_index: Path | None = None,
     branch_overrides: dict[str, bool] | None = None,
+    raw_param: bool = False,
 ) -> ToolResult:
     """조회 API와 AS-IS SQL의 결과 행 수 및 필드 커버리지를 비교 검증한다."""
     import sys
@@ -539,6 +540,7 @@ def compare_api_sql(
         tenant=tenant,
         params=api_params if method.upper() == "GET" else None,
         json_body=api_params if method.upper() != "GET" else None,
+        raw_param=raw_param,
     )
 
     api_data = api_res.data

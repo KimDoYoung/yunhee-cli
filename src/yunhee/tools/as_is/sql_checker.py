@@ -283,31 +283,126 @@ def _record_fields(path: Path, cls_name: str) -> set[str] | None:
     return fields
 
 
+def _close_brace(text: str, open_pos: int) -> int:
+    depth = 0
+    for i in range(open_pos, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return len(text)
+
+
+def _class_fields(text: str, cls_name: str) -> set[str] | None:
+    """일반(setter) Java 클래스의 필드/setter 프로퍼티 목록을 추출한다."""
+    clean = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
+    clean = re.sub(r"//[^\n]*", " ", clean)
+    m = re.search(rf"\bclass\s+{re.escape(cls_name)}\b[^{{]*\{{", clean)
+    if not m:
+        return None
+    open_pos = m.end() - 1
+    end_pos = _close_brace(clean, open_pos)
+    body = clean[open_pos + 1 : end_pos]
+
+    top_chars: list[str] = []
+    depth = 0
+    for ch in body:
+        if ch == "{":
+            depth += 1
+            if depth == 1:
+                top_chars.append(";")
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            top_chars.append(ch)
+    top_body = "".join(top_chars)
+
+    fields: set[str] = set()
+    for sm in re.finditer(r"\bvoid\s+set([A-Z]\w*)\s*\(", top_body):
+        prop = sm.group(1)
+        fields.add(prop[0].lower() + prop[1:])
+
+    for stmt in top_body.split(";"):
+        stmt = re.sub(r"@\w+(?:\([^)]*\))?", " ", stmt).strip()
+        if not stmt or "(" in stmt:
+            continue
+        if re.search(r"\b(static|final|class|record|interface|enum)\b", stmt):
+            continue
+        decl = stmt.split("=", 1)[0].strip()
+        parts = decl.split()
+        if len(parts) >= 2:
+            fname = parts[-1].strip()
+            if re.match(r"^[a-zA-Z_]\w*$", fname) and fname not in ("return", "void", "new"):
+                fields.add(fname)
+
+    return fields if fields else None
+
+
+_DTO_CACHE: dict[tuple[Path, str, int], tuple[set[str] | None, bool]] = {}
+
+
+def _dto_fields(path: Path, cls_name: str) -> tuple[set[str] | None, bool]:
+    """Java 소스 파일에서 DTO 필드 집합과 record 여부를 (fields, is_record)로 반환한다 (파일별 캐시)."""
+    try:
+        mtime_ns = path.stat().st_mtime_ns
+    except OSError:
+        return None, False
+    cache_key = (path, cls_name, mtime_ns)
+    if cache_key in _DTO_CACHE:
+        return _DTO_CACHE[cache_key]
+    rec = _record_fields(path, cls_name)
+    if rec is not None:
+        res = (rec, True)
+        _DTO_CACHE[cache_key] = res
+        return res
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, False
+    cls_f = _class_fields(text, cls_name)
+    res = (cls_f, False)
+    _DTO_CACHE[cache_key] = res
+    return res
+
+
+def find_dto_fields(result_type: str, search_roots: list[Path]) -> tuple[set[str] | None, bool, str | None]:
+    """DTO(record 또는 일반 setter 클래스)를 찾아 (필드 목록, is_record, 경고)를 반환한다."""
+    name = result_type.replace("$", ".")
+    parts = name.split(".")
+    cls_name = parts[-1]
+    if len(parts) > 1:
+        for cut in range(len(parts), 1, -1):
+            rel = Path(*parts[:cut]).with_suffix(".java")
+            for r in search_roots:
+                f = r / rel
+                if f.is_file():
+                    fields, is_rec = _dto_fields(f, cls_name)
+                    return fields, is_rec, None
+        return None, False, None
+    found: list[Path] = []
+    for r in search_roots:
+        if r.is_dir():
+            found += [f for f in r.glob(f"**/{cls_name}.java") if "target" not in f.parts and f not in found]
+    if len(found) > 1:
+        return None, False, f"{cls_name} 후보 {len(found)}개 — FQN으로 써야 대조"
+    if found:
+        fields, is_rec = _dto_fields(found[0], cls_name)
+        return fields, is_rec, None
+    return None, False, None
+
+
 def find_record_fields(result_type: str, search_roots: list[Path]) -> tuple[set[str] | None, str | None]:
     """record DTO를 찾아 (필드 목록, 경고)를 반환한다.
 
     FQN(kr.co...dto.CompanyRes)이면 소스 루트 아래 정확한 경로에서만 찾는다 (같은 이름의 다른 패키지 record와 섞이지 않게).
     짧은 이름(typeAlias)이면 glob하고, 여러 개면 경고하고 대조를 건너뛴다.
     """
-    name = result_type.replace("$", ".")
-    parts = name.split(".")
-    cls_name = parts[-1]
-    if len(parts) > 1:
-        # 중첩 클래스(pkg.Outer.Inner)도 있으므로 뒤에서부터 파일 경로를 줄여 본다.
-        for cut in range(len(parts), 1, -1):
-            rel = Path(*parts[:cut]).with_suffix(".java")
-            for r in search_roots:
-                f = r / rel
-                if f.is_file():
-                    return _record_fields(f, cls_name), None
-        return None, None
-    found: list[Path] = []
-    for r in search_roots:
-        if r.is_dir():
-            found += [f for f in r.glob(f"**/{cls_name}.java") if "target" not in f.parts and f not in found]
-    if len(found) > 1:
-        return None, f"{cls_name} 후보 {len(found)}개 — FQN으로 써야 대조"
-    return (_record_fields(found[0], cls_name), None) if found else (None, None)
+    fields, is_rec, warn = find_dto_fields(result_type, search_roots)
+    if warn:
+        return None, warn
+    return (fields if is_rec else None), None
 
 
 def _close_paren(text: str, open_pos: int) -> int:
@@ -432,6 +527,12 @@ def to_camel(name: str) -> str:
     return parts[0] + "".join(p.capitalize() for p in parts[1:])
 
 
+def to_snake(name: str) -> str:
+    """camelCase를 snake_case로 변환한다."""
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)
+    return s.lower()
+
+
 def extract_select_aliases_from_sql(sql: str) -> set[str] | None:
     """최상위 SELECT 목록의 출력 이름을 camelCase 집합으로 반환한다. `*`가 있어 알 수 없으면 None."""
     names = select_output_names(sql)
@@ -493,6 +594,7 @@ def check_tobe_sql(
                 pass
 
     statements: dict[str, Statement] = {}
+    result_maps_by_ns: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     xml_errors_by_cls: dict[str, list[str]] = defaultdict(list)
     has_failure = bool(xml_errors_by_cls)
 
@@ -557,7 +659,26 @@ def check_tobe_sql(
         if not mapper:
             continue
         for child in mapper.children:
-            if isinstance(child, Node) and child.tag in STATEMENT_TAGS and "id" in child.attrs:
+            if isinstance(child, Node) and child.tag == "resultMap" and "id" in child.attrs:
+                rm_id = child.attrs["id"]
+                rm_type = child.attrs.get("type", "")
+                col_map: dict[str, str] = {}
+                for sub in child.children:
+                    if isinstance(sub, Node):
+                        if sub.tag in ("id", "result"):
+                            c_attr = sub.attrs.get("column", "")
+                            p_attr = sub.attrs.get("property", "")
+                            if c_attr and p_attr:
+                                col_map[c_attr.lower()] = p_attr
+                        elif sub.tag == "constructor":
+                            for arg_node in sub.children:
+                                if isinstance(arg_node, Node) and arg_node.tag in ("idArg", "arg"):
+                                    c_attr = arg_node.attrs.get("column", "")
+                                    p_attr = arg_node.attrs.get("name", "") or arg_node.attrs.get("property", "")
+                                    if c_attr and p_attr:
+                                        col_map[c_attr.lower()] = p_attr
+                result_maps_by_ns[ns][rm_id] = {"type": rm_type, "col_map": col_map}
+            elif isinstance(child, Node) and child.tag in STATEMENT_TAGS and "id" in child.attrs:
                 pos = re.search(rf'<{child.tag}\b[^>]*\bid\s*=\s*"{re.escape(child.attrs["id"])}"', raw)
                 line = raw.count("\n", 0, pos.start()) + 1 if pos else 0
                 st = Statement(ns, child.attrs["id"], child.tag, child, path.relative_to(base_dir), line)
@@ -629,6 +750,7 @@ def check_tobe_sql(
     for st in sorted(targets, key=lambda s: (s.ns, s.line)):
         cls_name = st.ns.split(".")[-1]
         raw_sql = to_sql(st, statements)
+        has_unresolved_include = bool(re.search(r"/\*\s*include\s+.*?\s+없음\s*\*/", raw_sql))
 
         call_m = re.match(r"^\s*call\s+([a-zA-Z0-9_]+)", raw_sql, re.IGNORECASE)
         err = None
@@ -639,30 +761,62 @@ def check_tobe_sql(
         else:
             err = explain(raw_sql, target_db, extra_env=db_env)
 
-        warn = ""
-        result_type = st.node.attrs.get("resultType", "")
-        if not err and result_type and st.kind == "select":
-            fields, find_warn = find_record_fields(result_type, search_roots)
-            aliases = extract_select_aliases_from_sql(raw_sql) if fields else None
-            if find_warn:
-                warn = f" ⚠ ({find_warn})"
-            elif fields and aliases is not None:
-                # MyBatis 자동 매핑은 대소문자를 가리지 않는다.
-                alias_lc = {a.lower() for a in aliases}
-                field_lc = {f.lower() for f in fields}
-                missing_in_select = {f for f in fields if f.lower() not in alias_lc}
-                extra_in_select = {a for a in aliases if a.lower() not in field_lc}
-                warn_parts = []
-                if missing_in_select:
-                    warn_parts.append(f"필드 누락: {', '.join(sorted(missing_in_select))}")
-                if extra_in_select:
-                    warn_parts.append(f"미사용 별칭: {', '.join(sorted(extra_in_select))}")
-                if warn_parts:
-                    warn = f" ⚠ ({'; '.join(warn_parts)})"
+        if has_unresolved_include and err is not None:
+            results_by_cls[cls_name].append(f"{st.sid} ? include 미해결 — mapper-run으로 확인")
+            success_count_by_cls[cls_name] += 1
+            continue
 
-        if err is None:
+        warn = ""
+        record_err = None
+        result_type = st.node.attrs.get("resultType", "")
+        result_map_id = st.node.attrs.get("resultMap", "")
+        rm_info: dict[str, Any] = {}
+        if not result_type and result_map_id:
+            rm_key = result_map_id.split(".")[-1]
+            rm_info = result_maps_by_ns.get(st.ns, {}).get(result_map_id) or result_maps_by_ns.get(st.ns, {}).get(rm_key) or {}
+            result_type = rm_info.get("type", "")
+
+        if not err and st.kind == "select":
+            if has_unresolved_include:
+                warn = " (? include 미해결 — mapper-run으로 확인)"
+            elif result_type:
+                fields, is_record, find_warn = find_dto_fields(result_type, search_roots)
+                aliases = extract_select_aliases_from_sql(raw_sql) if fields else None
+                if aliases is not None and rm_info.get("col_map"):
+                    col_map = rm_info["col_map"]
+                    raw_names = select_output_names(raw_sql) or []
+                    for rn in raw_names:
+                        if rn and rn.strip('"').lower() in col_map:
+                            aliases.add(col_map[rn.strip('"').lower()])
+                if find_warn:
+                    warn = f" ⚠ ({find_warn})"
+                elif fields and aliases is not None:
+                    # MyBatis 자동 매핑은 대소문자를 가리지 않는다.
+                    alias_lc = {a.lower() for a in aliases}
+                    missing_in_select = {f for f in fields if f.lower() not in alias_lc}
+                    if missing_in_select:
+                        sorted_missing = sorted(missing_in_select)
+                        missing_str = ", ".join(sorted_missing)
+                        if is_record:
+                            dto_cls = result_type.replace("$", ".").split(".")[-1]
+                            first_snake = to_snake(sorted_missing[0])
+                            record_err = (
+                                f"record {dto_cls} 열 누락: {missing_str} — "
+                                f"결과에 열이 없으면 행이 있을 때 MyBatis가 'Constructor auto-mapping … not found in the result set'으로 500을 낸다. "
+                                f"SELECT에 'NULL AS {first_snake}'을 더하거나 열 목록 <sql>을 공유하세요."
+                            )
+                        else:
+                            warn = f" ⚠ (필드 누락: {missing_str})"
+
+        if err is None and record_err is None:
             results_by_cls[cls_name].append(f"{st.sid} ✅{warn}")
             success_count_by_cls[cls_name] += 1
+        elif record_err is not None:
+            has_failure = True
+            fail_msg = f"{st.sid} ❌ {record_err}"
+            results_by_cls[cls_name].append(fail_msg)
+            failure_details_by_cls[cls_name].append(fail_msg)
+            failure_count_by_cls[cls_name] += 1
         else:
             has_failure = True
             fail_msg = f"{st.sid} ❌ {err} (L{st.line})"

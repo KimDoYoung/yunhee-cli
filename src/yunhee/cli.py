@@ -624,10 +624,16 @@ def outline(
 @app.command(name="cat")
 def cat_cmd(
     specs: Annotated[list[str], typer.Argument(help="출력할 파일과 줄 범위 목록 (예: a.java:1-30 b.xml:100-140 또는 a.java)")],
+    head: Annotated[int | None, typer.Option("--head", help="범위(또는 파일) 앞 N줄만 출력")] = None,
+    tail: Annotated[int | None, typer.Option("--tail", help="범위(또는 파일) 뒤 N줄만 출력")] = None,
     no_number: Annotated[bool, typer.Option("--no-number", help="줄 번호 생략")] = False,
 ):
     """지정한 파일들의 줄 범위를 핀포인트 출력 (외부 훅 차단 방지용 안전 읽기)"""
-    from yunhee.tools.outliner import read_file_range
+    from yunhee.tools.outliner import read_file_range_with_meta, resolve_read_target
+
+    if head is not None and tail is not None:
+        typer.echo("오류: --head와 --tail은 동시에 지정할 수 없습니다.", err=True)
+        raise typer.Exit(code=1)
 
     out_sections = []
     for spec in specs:
@@ -639,21 +645,13 @@ def cat_cmd(
         else:
             file_part = spec
 
-        p = Path(file_part)
-        if not p.is_file():
-            cand = config.WORK_DIR / file_part
-            if cand.is_file():
-                p = cand
-            elif getattr(config, "TOBE_SRC_DIR", None) and (config.TOBE_SRC_DIR / file_part).is_file():
-                p = config.TOBE_SRC_DIR / file_part
-            elif getattr(config, "ASIS_SRC_DIR", None) and (config.ASIS_SRC_DIR / file_part).is_file():
-                p = config.ASIS_SRC_DIR / file_part
-            else:
-                typer.echo(f"오류: 파일을 찾을 수 없습니다: {file_part}", err=True)
-                raise typer.Exit(code=1)
+        p, err = resolve_read_target(file_part)
+        if err or p is None or not p.is_file():
+            typer.echo(f"오류: {err or f'파일을 찾을 수 없습니다: {file_part}'}", err=True)
+            raise typer.Exit(code=1)
 
         try:
-            lines = read_file_range(p, range_str=range_str)
+            lines, omitted = read_file_range_with_meta(p, range_str=range_str, head=head, tail=tail)
         except Exception as e:  # noqa: BLE001
             typer.echo(f"오류: {p} 읽기 실패: {e}", err=True)
             raise typer.Exit(code=1)
@@ -670,9 +668,43 @@ def cat_cmd(
                 body_lines.append(ltext)
             else:
                 body_lines.append(f"{lnum:4d} | {ltext}")
-        out_sections.append(header + "\n" + "\n".join(body_lines))
+        if omitted > 0:
+            body_lines.append(f"… {omitted}줄 더 있음 — 범위를 좁히세요")
+        section = header + ("\n" + "\n".join(body_lines) if body_lines else "")
+        out_sections.append(section)
 
     print("\n\n".join(out_sections))
+
+
+@app.command(name="grep")
+def grep_cmd(
+    pattern: Annotated[str, typer.Argument(help="검색할 정규식(ERE) 또는 고정 문자열(-F)")],
+    paths: Annotated[list[str], typer.Argument(help="검색할 파일 또는 폴더 경로 (하나 이상)")],
+    context: Annotated[int, typer.Option("-C", "--context", help="일치 줄 앞뒤 문맥 줄 수 (상한 10)")] = 0,
+    after: Annotated[int | None, typer.Option("-A", "--after-context", help="일치 줄 뒤 문맥 줄 수 (상한 20)")] = None,
+    before: Annotated[int | None, typer.Option("-B", "--before-context", help="일치 줄 앞 문맥 줄 수 (상한 20)")] = None,
+    max_matches: Annotated[int, typer.Option("--max", "-m", help="최대 일치 건수 (기본 20)")] = 20,
+    fixed_strings: Annotated[bool, typer.Option("-F", "--fixed-strings", help="정규식 대신 고정 문자열 검색")] = False,
+    ignore_case: Annotated[bool, typer.Option("-i", "--ignore-case", help="대소문자 무시")] = False,
+):
+    """문맥 출력 전용 안전 grep (출력 상한 80줄, 파일:줄: 내용 형식)"""
+    from yunhee.tools.outliner import grep_files
+
+    res = grep_files(
+        pattern=pattern,
+        paths=paths,
+        context=context,
+        after=after,
+        before=before,
+        max_matches=max_matches,
+        fixed_strings=fixed_strings,
+        ignore_case=ignore_case,
+    )
+    if not res.ok:
+        typer.echo(f"오류: {res.error}", err=True)
+        raise typer.Exit(code=1)
+    if res.data:
+        print(res.data)
 
 
 TENANT_REQUIRED_MSG = (
@@ -690,7 +722,8 @@ def api(
     login_path: Annotated[str | None, typer.Option("--login-path", help="로그인 엔드포인트 경로 (기본: .env.local의 YUNHEE_API_LOGIN_PATH 또는 /api/auth/login)")] = None,
     company: Annotated[str | None, typer.Option("--company", "-c", help="로그인 시 전달할 회사 코드 (예: admin, kfstest — 회사 ID가 아님)")] = None,
     tenant: Annotated[str | None, typer.Option("--tenant", "-t", help="테넌트 식별자 (세션 분리 및 X-Tenant-Id 헤더)")] = None,
-    param: Annotated[list[str] | None, typer.Option("--param", "-p", help="쿼리 파라미터 key=val (반복 가능)")] = None,
+    param: Annotated[list[str] | None, typer.Option("--param", "-p", help="쿼리 파라미터 key=val (반복 가능, LIKE용 '%'는 -p k=% 로 준다)")] = None,
+    raw_param: Annotated[bool, typer.Option("--raw-param", help="-p 값의 %XX 패턴을 디코딩하지 않고 문자 그대로 다시 URL 인코딩")] = False,
     body: Annotated[str | None, typer.Option("--body", "-b", help="JSON 요청 본문")] = None,
     form: Annotated[list[str] | None, typer.Option("--form", "-F", help="멀티파트 폼 필드 name=@파일경로[;type=MIME] 또는 name=값 (반복 가능)")] = None,
     raw: Annotated[bool, typer.Option("--raw", help="압축 요약 대신 원본 JSON 본문 출력")] = False,
@@ -758,6 +791,7 @@ def api(
         timeout=timeout,
         mask=not no_mask,
         wait_deploy=wait_deploy,
+        raw_param=raw_param,
         **kw,
     )
 
@@ -932,7 +966,8 @@ def compare_cmd(
     method: Annotated[str, typer.Argument(help="HTTP 메서드 (GET, POST 등)")],
     path: Annotated[str, typer.Argument(help="API 경로 (예: /api/v1/sys/companies)")],
     sql: Annotated[str, typer.Option("--sql", help="비교 대상 AS-IS SQL ID (예: sys01_company.selectByName)")],
-    api_param: Annotated[list[str] | None, typer.Option("-p", "--param-api", help="API 요청 파라미터 (key=value, 반복 가능)")] = None,
+    api_param: Annotated[list[str] | None, typer.Option("-p", "--param-api", help="API 요청 파라미터 (key=value, 반복 가능, LIKE용 '%'는 -p k=% 로 준다)")] = None,
+    raw_param: Annotated[bool, typer.Option("--raw-param", help="-p 값의 %XX 패턴을 디코딩하지 않고 문자 그대로 다시 URL 인코딩")] = False,
     param: Annotated[list[str] | None, typer.Option("--param", help="SQL 파라미터 (key=value, 반복 가능)")] = None,
     base: Annotated[str | None, typer.Option("--base", "-b", help="API 기본 URL")] = None,
     tenant: Annotated[str | None, typer.Option("--tenant", "-t", help="테넌트 식별자")] = None,
@@ -999,6 +1034,7 @@ def compare_cmd(
         sql_total_ref=sql_total,
         from_log=from_log,
         branch_overrides=branch_dict or None,
+        raw_param=raw_param,
     )
     if not res.ok:
         err_msg = res.error or "비교 실패"

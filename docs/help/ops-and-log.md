@@ -20,10 +20,32 @@
   ```
 
 ### `yunhee cat <specs...>`
-지정한 파일들의 줄 범위를 핀포인트로 안전하게 출력합니다.
+지정한 파일들의 줄 범위를 핀포인트로 안전하게 출력합니다 (출력 상한 200줄, 초과 시 `… N줄 더 있음 — 범위를 좁히세요` 표시).
+- **주요 옵션**:
+  - `--head <N>`: 범위(또는 파일) 앞 N줄만 출력
+  - `--tail <N>`: 범위(또는 파일) 뒤 N줄만 출력 (`--head`와 동시 지정 불가)
+  - `--no-number`: 줄 번호 생략
 - **예시**:
   ```bash
   yunhee cat SysService.java:1-35 SysMapper.xml:100-140
+  yunhee cat docs/05-작업방법.md --head 20
+  yunhee cat docs/08-회차인계.md --tail 3
+  yunhee cat frontend/src/types/ast.ts:1200-1292 --tail 5
+  ```
+
+### `yunhee grep <pattern> <paths...>`
+문맥 출력 전용 안전 grep 도구입니다 (항상 `파일:줄: 내용` 형식 출력, 겹치는 문맥 자동 병합, 호출당 출력 상한 80줄).
+- **주요 옵션**:
+  - `-C, --context <N>`: 일치 줄 앞뒤 문맥 줄 수 (기본 0, 상한 10)
+  - `-A, --after-context <N>`: 일치 줄 뒤 문맥 줄 수 (상한 20)
+  - `-B, --before-context <N>`: 일치 줄 앞 문맥 줄 수 (상한 20)
+  - `--max, -m <M>`: 최대 일치 건수 (기본 20건, 초과 시 `… 일치 N건 더 있음` 표시)
+  - `-F, --fixed-strings`: 정규식 대신 고정 문자열 검색
+  - `-i, --ignore-case`: 대소문자 무시
+- **예시**:
+  ```bash
+  yunhee grep 'interface BookFundFee' frontend/src/types/ast.ts -A 12
+  yunhee grep import frontend/src -C 3
   ```
 
 ---
@@ -85,7 +107,8 @@ PostgreSQL 읽기 전용 쿼리를 실행하거나 `--rollback` 트랜잭션 격
 - **주요 옵션**:
   - `-c, --company <CODE>`: 로그인 회사 코드 (예: `kfstest`)
   - `-t, --tenant <TENANT>`: 테넌트 식별자
-  - `-p, --param <key=val>`: 쿼리 파라미터
+  - `-p, --param <key=val>`: 쿼리 파라미터 (**LIKE용 `%`는 `-p k=%`로 준다**. `%25` 등 이미 `%XX` 인코딩된 값은 이중 인코딩하지 않으며, 문자 그대로 `%25`를 보내야 할 때만 `--raw-param` 사용)
+  - `--raw-param`: `-p` 값의 `%XX` 패턴을 디코딩하지 않고 문자 그대로 다시 URL 인코딩
   - `-b, --body <JSON>`: JSON 요청 본문
   - `--log`: API 호출 직후 서버가 실제로 실행한 SQL 및 파라미터 요약 출력
 - **예시**:
@@ -98,7 +121,8 @@ PostgreSQL 읽기 전용 쿼리를 실행하거나 `--rollback` 트랜잭션 격
 ### `yunhee compare <method> <path> --sql <sql_id>`
 TOBE 조회 API 응답과 AS-IS SQL 결과를 대조하여 행 수 및 그리드 컬럼 커버리지를 검증합니다.
 - **주요 옵션**:
-  - `-p, --param-api <key=val>`: API 요청 파라미터 (반복 가능)
+  - `-p, --param-api <key=val>`: API 요청 파라미터 (반복 가능, **LIKE용 `%`는 `-p k=%`로 준다**)
+  - `--raw-param`: `-p` 값의 `%XX` 패턴을 디코딩하지 않고 문자 그대로 다시 URL 인코딩
   - `--param <key=val>`: AS-IS SQL 파라미터 (반복 가능)
   - `--branch <expr=on|off>`: MyBatis 조건 분기 강제 제어 (반복 가능)
   - `--grid <Screen#method>`: 대조할 화면 클래스 및 그리드 빌더 메서드 지정

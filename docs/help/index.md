@@ -10,7 +10,7 @@
 
 | 작업 상황 | 권장 명령어 | 상세 가이드 문서 |
 | :--- | :--- | :--- |
-| **코드 구조 파악 / 특정 줄 읽기** | `yunhee outline`, `yunhee cat` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
+| **코드 구조 파악 / 특정 줄·문맥 읽기** | `yunhee outline`, `yunhee cat`, `yunhee grep` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **DB 테이블 / 스키마 확인** | `yunhee table`, `yunhee sql`, `yunhee make-dbml` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **빌드 / 테스트 / 명령 실행** | `yunhee run "<명령>"`, `yunhee last-run` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **API 스모크 테스트 / 서버 로그** | `yunhee api`, `yunhee log <trace\|req\|errors\|tail>` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
@@ -28,7 +28,8 @@
 
 ### 1. 코드 탐색 및 일상 개발 (`ops-and-log.md`)
 - `outline <paths...>`: 소스 파일·디렉터리의 클래스·메서드 시그니처와 줄 번호를 추출합니다.
-- `cat <specs...>`: 파일의 특정 줄 범위(예: `file.java:10-50`)만 핀포인트로 읽어옵니다.
+- `cat <specs...>`: 파일의 특정 줄 범위(예: `file.java:10-50`) 또는 앞/뒤 N줄(`--head`/`--tail`)만 핀포인트로 읽어옵니다.
+- `grep <pattern> <paths...>`: 패턴이 일치하는 줄과 앞뒤 문맥(`-C`/`-A`/`-B`, 상한 80줄)을 `파일:줄: 내용` 형식으로 추출합니다.
 - `table <names...> [--page <PAGE>]`: 스키마 스냅샷에서 지정 테이블 또는 화면 연관 테이블 DBML만 추출합니다.
 - `sql [query]`: PostgreSQL 읽기 전용 쿼리 실행 또는 `--rollback` 트랜잭션 시험 실행을 지원합니다.
 - `run "<command>"`: 외부 명령을 실행하고 로그를 파일에 격리하며, 성공 시 1줄 / 실패 시 핵심 에러만 요약합니다.

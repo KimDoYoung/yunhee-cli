@@ -1,9 +1,69 @@
 import re
 from pathlib import Path
 
+from yunhee import config
 from yunhee.tools.base import ToolResult
 
 MAX_OUTLINE_CHARS = 30000
+CAT_MAX_LINES = 200
+GREP_MAX_LINES = 80
+GREP_MAX_CONTEXT = 10
+GREP_MAX_SIDE_CONTEXT = 20
+
+
+def is_allowed_read_path(p: Path) -> bool:
+    """cat / grep이 읽을 수 있는 허용 범위 경로인지 검사한다 (/etc/passwd 등 시스템 경로 차단)."""
+    import tempfile
+
+    resolved = p.resolve()
+    allowed_roots: list[Path] = []
+    for cand in (
+        Path.cwd(),
+        config.WORK_DIR,
+        getattr(config, "TOBE_SRC_DIR", None),
+        getattr(config, "ASIS_SRC_DIR", None),
+        config.YUNHEE_DIR,
+        Path(tempfile.gettempdir()),
+        Path("/tmp"),
+    ):
+        if cand is not None:
+            rc = Path(cand).resolve()
+            if rc not in allowed_roots:
+                allowed_roots.append(rc)
+            if (rc.parent / ".git").is_dir() and rc.parent not in allowed_roots:
+                allowed_roots.append(rc.parent)
+    return any(resolved == r or resolved.is_relative_to(r) for r in allowed_roots)
+
+
+def resolve_read_target(raw_path: str) -> tuple[Path | None, str | None]:
+    """cat / grep 대상 경로를 해석하고 허용 범위를 검증하여 (Path, error_msg)를 반환한다."""
+    p_raw = Path(raw_path)
+    if p_raw.is_absolute() and not is_allowed_read_path(p_raw):
+        return None, f"허용 범위 밖 경로입니다: {raw_path}"
+
+    candidates = [p_raw]
+    if not p_raw.is_absolute():
+        candidates.extend(
+            c / raw_path
+            for c in (
+                config.WORK_DIR,
+                getattr(config, "TOBE_SRC_DIR", None),
+                getattr(config, "ASIS_SRC_DIR", None),
+            )
+            if c is not None
+        )
+
+    for cand in candidates:
+        if cand.exists():
+            if not is_allowed_read_path(cand):
+                return None, f"허용 범위 밖 경로입니다: {raw_path}"
+            return cand, None
+
+    # 존재하지 않는 경로라도 절대경로이거나 .. 순회로 허용 범위를 벗어나면 거절
+    if not is_allowed_read_path(p_raw):
+        return None, f"허용 범위 밖 경로입니다: {raw_path}"
+
+    return None, f"파일을 찾을 수 없습니다: {raw_path}"
 
 NOT_JAVA_METHOD = {
     "if", "for", "while", "switch", "catch", "synchronized", "return",
@@ -754,6 +814,233 @@ def read_file_range(file_path: Path, range_str: str | None = None, max_lines: in
     for idx in range(start - 1, min(end, total)):
         selected.append((idx + 1, all_lines[idx]))
     return selected
+
+
+def read_file_range_with_meta(
+    file_path: Path,
+    range_str: str | None = None,
+    head: int | None = None,
+    tail: int | None = None,
+    max_lines: int = CAT_MAX_LINES,
+) -> tuple[list[tuple[int, str]], int]:
+    """파일의 줄 범위(및 --head / --tail)를 읽고 (선택된 줄 목록, 생략된 줄 수)를 반환한다."""
+    if head is not None and tail is not None:
+        raise ValueError("--head와 --tail은 동시에 지정할 수 없습니다.")
+    if head is not None and head < 0:
+        raise ValueError("--head는 0 이상이어야 합니다.")
+    if tail is not None and tail < 0:
+        raise ValueError("--tail은 0 이상이어야 합니다.")
+    if not file_path.is_file():
+        raise FileNotFoundError(f"파일이 존재하지 않습니다: {file_path}")
+
+    content = file_path.read_text(encoding="utf-8", errors="replace")
+    all_lines = content.splitlines()
+    total = len(all_lines)
+    if total == 0:
+        return [], 0
+
+    if range_str:
+        start, end = parse_line_range(range_str, total)
+    else:
+        start, end = 1, total
+
+    candidates = [(idx + 1, all_lines[idx]) for idx in range(start - 1, min(end, total))]
+    cand_total = len(candidates)
+
+    if head is not None:
+        if head == 0:
+            return [], cand_total
+        take = min(head, max_lines)
+        sliced = candidates[:take]
+        omitted = max(0, cand_total - len(sliced))
+        return sliced, omitted
+
+    if tail is not None:
+        if tail == 0:
+            return [], 0
+        take = min(tail, max_lines)
+        sliced = candidates[-take:] if take < cand_total else candidates
+        omitted = max(0, min(tail, cand_total) - len(sliced))
+        return sliced, omitted
+
+    if cand_total > max_lines:
+        return candidates[:max_lines], cand_total - max_lines
+    return candidates, 0
+
+
+_GREP_IGNORE_DIRS = {
+    ".git",
+    "node_modules",
+    "target",
+    ".venv",
+    "build",
+    "dist",
+    "__pycache__",
+    ".yunhee",
+}
+_GREP_BINARY_EXTS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".pdf",
+    ".jar",
+    ".war",
+    ".class",
+    ".pyc",
+    ".pyo",
+    ".so",
+    ".dll",
+    ".dylib",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".bz2",
+    ".xz",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+}
+
+
+def _format_grep_display_path(file_path: Path, raw_arg: str) -> str:
+    """출력용 파일 경로를 간결하게 만든다."""
+    raw_p = Path(raw_arg)
+    if not raw_p.is_absolute():
+        for base in (
+            Path.cwd(),
+            config.WORK_DIR,
+            getattr(config, "TOBE_SRC_DIR", None),
+            getattr(config, "ASIS_SRC_DIR", None),
+        ):
+            if base is not None:
+                try:
+                    rel = file_path.resolve().relative_to(Path(base).resolve())
+                    return rel.as_posix()
+                except ValueError:
+                    pass
+    return str(file_path)
+
+
+def grep_files(
+    pattern: str,
+    paths: list[str | Path],
+    context: int = 0,
+    after: int | None = None,
+    before: int | None = None,
+    max_matches: int = 20,
+    fixed_strings: bool = False,
+    ignore_case: bool = False,
+    max_lines: int = GREP_MAX_LINES,
+) -> ToolResult:
+    """지정된 파일/폴더에서 패턴을 검색하고 문맥 줄과 함께 상한(기본 80줄) 내에서 반환한다."""
+    import os
+
+    eff_c = min(max(0, context), GREP_MAX_CONTEXT)
+    eff_before = min(max(0, before), GREP_MAX_SIDE_CONTEXT) if before is not None else eff_c
+    eff_after = min(max(0, after), GREP_MAX_SIDE_CONTEXT) if after is not None else eff_c
+    eff_max_matches = max(1, max_matches)
+
+    flags = re.IGNORECASE if ignore_case else 0
+    try:
+        regex = re.compile(re.escape(pattern) if fixed_strings else pattern, flags)
+    except re.error as exc:
+        return ToolResult(ok=False, error=f"잘못된 정규식 패턴: {exc}")
+
+    target_files: list[tuple[Path, str]] = []
+    seen_files: set[Path] = set()
+    for raw_item in paths:
+        raw_str = str(raw_item)
+        resolved, err = resolve_read_target(raw_str)
+        if err or resolved is None:
+            return ToolResult(ok=False, error=err or f"파일을 찾을 수 없습니다: {raw_str}")
+        if resolved.is_file():
+            rf = resolved.resolve()
+            if rf not in seen_files:
+                seen_files.add(rf)
+                disp = raw_str if not Path(raw_str).is_absolute() else _format_grep_display_path(resolved, raw_str)
+                target_files.append((resolved, disp))
+        elif resolved.is_dir():
+            for root, dirs, files in os.walk(resolved):
+                dirs[:] = sorted(d for d in dirs if d not in _GREP_IGNORE_DIRS and not d.startswith("."))
+                for fname in sorted(files):
+                    if fname.startswith("."):
+                        continue
+                    fpath = Path(root) / fname
+                    if fpath.suffix.lower() in _GREP_BINARY_EXTS:
+                        continue
+                    rf = fpath.resolve()
+                    if rf not in seen_files:
+                        seen_files.add(rf)
+                        disp = _format_grep_display_path(fpath, raw_str)
+                        target_files.append((fpath, disp))
+
+    output_lines: list[str] = []
+    total_matches = 0
+    shown_matches = 0
+    truncated_by_cap = False
+
+    for fpath, disp in target_files:
+        try:
+            text = fpath.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        lines = text.splitlines()
+        if not lines:
+            continue
+
+        match_indices = [idx for idx, line in enumerate(lines) if regex.search(line)]
+        if not match_indices:
+            continue
+
+        total_matches += len(match_indices)
+        if truncated_by_cap or shown_matches >= eff_max_matches:
+            continue
+
+        emitted_in_file: set[int] = set()
+        for m_idx in match_indices:
+            if shown_matches >= eff_max_matches or len(output_lines) >= max_lines:
+                truncated_by_cap = True
+                break
+
+            win_start = max(0, m_idx - eff_before)
+            win_end = min(len(lines) - 1, m_idx + eff_after)
+            match_counted = False
+            for idx in range(win_start, win_end + 1):
+                if idx in emitted_in_file:
+                    if idx == m_idx and not match_counted:
+                        shown_matches += 1
+                        match_counted = True
+                    continue
+                if len(output_lines) >= max_lines:
+                    truncated_by_cap = True
+                    break
+                output_lines.append(f"{disp}:{idx + 1}: {lines[idx]}")
+                emitted_in_file.add(idx)
+                if idx == m_idx and not match_counted:
+                    shown_matches += 1
+                    match_counted = True
+
+            if truncated_by_cap:
+                break
+
+    omitted_matches = max(0, total_matches - shown_matches)
+    if truncated_by_cap and omitted_matches == 0 and total_matches > 0:
+        omitted_matches = 1
+    if omitted_matches > 0:
+        output_lines.append(f"… 일치 {omitted_matches}건 더 있음")
+
+    return ToolResult(
+        ok=True,
+        data="\n".join(output_lines),
+        truncated=omitted_matches > 0,
+    )
 
 
 def outline_file(file_path: Path, members: bool = False, symbol: str | None = None) -> list[str]:

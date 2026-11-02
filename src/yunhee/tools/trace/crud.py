@@ -77,13 +77,58 @@ def tobe_matrix(names: list[str], idx: TobeIndex, ops_by_stmt: dict[str, dict[st
     return dict(m)
 
 
-def _compare(a: dict[str, set[str]], t: dict[str, set[str]]) -> list[str]:
+def _other_tobe_screens(
+    doc: ScreenDoc,
+    current_names: set[str],
+    idx: TobeIndex | None,
+    ops_by_stmt: dict[str, dict[str, set[str]]],
+) -> dict[str, list[str]]:
+    """현재 화면의 TOBE 파일에서는 안 보이지만 저장소 내 다른 TOBE 화면/컴포넌트·매퍼에 있는 테이블 위치를 찾는다."""
+    if idx is None:
+        return {}
+    by_table: dict[str, list[str]] = defaultdict(list)
+    shared_links = [
+        s for s in ((doc.frontmatter or {}).get("shared_links") or [])
+        if isinstance(s, str) and s in idx.tsx and s not in current_names
+    ]
+    for tsx_name in sorted(idx.tsx.keys()):
+        if tsx_name in current_names:
+            continue
+        m = tobe_matrix([tsx_name], idx, ops_by_stmt)
+        for tbl in m:
+            if tsx_name not in by_table[tbl]:
+                by_table[tbl].append(tsx_name)
+
+    for st_key, tbl_ops in ops_by_stmt.items():
+        mapper_short = st_key.split(".")[-2] if "." in st_key else st_key
+        for tbl in tbl_ops:
+            if tbl not in by_table:
+                by_table[tbl].append(mapper_short)
+
+    if shared_links:
+        for tbl, hits in list(by_table.items()):
+            if hits:
+                prioritized = [s for s in shared_links if s not in hits] + [h for h in hits if h in shared_links] + [h for h in hits if h not in shared_links]
+                by_table[tbl] = prioritized
+    return dict(by_table)
+
+
+def _compare(
+    a: dict[str, set[str]],
+    t: dict[str, set[str]],
+    other_tobe: dict[str, list[str]] | None = None,
+) -> list[str]:
     lines = []
     for table in sorted(set(a) | set(t)):
         sa, st = a.get(table, set()), t.get(table, set())
         note = ""
         if table not in t:
-            note = "  ⚠ TOBE에 없음"
+            others = (other_tobe or {}).get(table, [])
+            if others:
+                shown = ", ".join(others[:2]) + ("…" if len(others) > 2 else "")
+                note = f"  (다른 화면에 있음: {shown})"
+            else:
+                note = "  ⚠ TOBE에 없음"
         elif table not in a:
             note = "  (TOBE에만)"
         elif sa != st:
@@ -139,8 +184,10 @@ def trace_crud(
         if doc is None:
             res.unresolved.append(f"ASIS 색인 문서를 찾지 못함: {name}.md")
             return res
+        screen_names = [name, *[c for c in doc.ui if c != name]]
         a, t = asis_matrix(doc, a_ops, udm), tobe_for(name, doc)
-        res.facts.append(f"화면 {name}: 테이블 {len(set(a) | set(t))}개 (ASIS {len(a)} / TOBE {len(t)})\n" + "\n".join(_compare(a, t)))
+        other_tobe = _other_tobe_screens(doc, set(screen_names), idx, t_ops)
+        res.facts.append(f"화면 {name}: 테이블 {len(set(a) | set(t))}개 (ASIS {len(a)} / TOBE {len(t)})\n" + "\n".join(_compare(a, t, other_tobe=other_tobe)))
     elif table:
         tbl = table.lower()
         rows = []
