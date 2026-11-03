@@ -105,12 +105,18 @@ MyBatis 매퍼 XML의 동적 SQL(`<if>`, `<choose>`, `<foreach>`)을 펼쳐 대�
 ### `yunhee mapper-run <target>`
 TOBE MyBatis 매퍼 statement를 직접 실행하고 AS-IS SQL 결과와 건수/데이터를 비교합니다.
 - **주요 옵션**:
-  - `-p, --param <key=val>`: 쿼리 파라미터
+  - `-p, --param <key=val>`: 쿼리 파라미터 (반복 가능. `<foreach>` 컬렉션은 `-p <collection>=a,b,c` 또는 `-p 'collection=[a,b]'`)
   - `--compare <ASIS_SQL_ID>`: 비교할 AS-IS SQL ID
   - `--rollback`: 트랜잭션 실행 후 롤백 (쓰기 쿼리 필수)
+  - `--count`: 행 수만 출력
+  - `-n, --rows <N>`: 출력할 최대 행 수
 - **예시**:
   ```bash
+  # 단일 파라미터 조회 및 AS-IS 비교
   yunhee mapper-run backend/src/main/resources/mapper/SysRoleMapper.xml#selectRoles -p roleName=관리자
+
+  # <foreach> 목록 삭제 및 롤백 검증
+  yunhee mapper-run backend/src/main/resources/mapper/ActAccountNumMapper.xml#deleteAccountNums -p companyId=28000 -p accountNumIds=1,2 --rollback
   ```
 
 ### `yunhee drift [screens...]`

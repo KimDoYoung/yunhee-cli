@@ -296,13 +296,14 @@
 #### `yunhee mapper-run <target>`
 - **설명**: TOBE MyBatis 매퍼 statement를 직접 실행하고 AS-IS SQL 결과와 비교합니다.
 - **주요 옵션**:
-  - `-p, --param <KEY=VAL>`: 매퍼 파라미터
+  - `-p, --param <KEY=VAL>`: 매퍼 파라미터 (반복 가능. `<foreach>` 컬렉션은 `-p <collection>=a,b,c` 또는 `-p 'collection=[a,b]'`)
   - `--compare <ASIS_SQL_ID>`: 비교할 AS-IS SQL ID
   - `--rollback`: 트랜잭션 실행 후 롤백 (쓰기 쿼리 검증용)
   - `--count`: 행 수만 출력
 - **예시**:
   ```bash
   yunhee mapper-run backend/src/main/resources/mapper/SysRoleMapper.xml#selectRoles -p roleName=관리자
+  yunhee mapper-run backend/src/main/resources/mapper/ActAccountNumMapper.xml#deleteAccountNums -p companyId=28000 -p accountNumIds=1,2 --rollback
   ```
 
 #### `yunhee sql-check [src_root]`

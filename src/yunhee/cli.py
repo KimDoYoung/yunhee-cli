@@ -755,6 +755,8 @@ def api(
                 v = v.strip()
                 if v == "null:" or v.startswith("null:"):
                     params_dict[k] = None
+                elif k in params_dict:
+                    params_dict[k] = f"{params_dict[k]},{v}"
                 else:
                     params_dict[k] = v
 
@@ -1001,7 +1003,12 @@ def compare_cmd(
         for p in param:
             if "=" in p:
                 k, v = p.split("=", 1)
-                sql_params_dict[k.strip()] = v.strip()
+                k = k.strip()
+                v = v.strip()
+                if k in sql_params_dict:
+                    sql_params_dict[k] = f"{sql_params_dict[k]},{v}"
+                else:
+                    sql_params_dict[k] = v
 
     branch_dict = {}
     if branch:
@@ -1064,7 +1071,7 @@ def compare_cmd(
 @app.command(name="mapper-run")
 def mapper_run_cmd(
     target: Annotated[str, typer.Argument(help="실행할 TOBE 매퍼와 statement ID (예: backend/src/main/resources/mapper/FbxFileMapper.xml#selectByBoxId)")],
-    param: Annotated[list[str] | None, typer.Option("--param", "-p", help="쿼리 파라미터 (key=value, 반복 가능)")] = None,
+    param: Annotated[list[str] | None, typer.Option("--param", "-p", help="쿼리 파라미터 (key=value, 반복 가능. <foreach>는 -p <collection>=a,b,c)")] = None,
     compare: Annotated[str | None, typer.Option("--compare", help="비교할 AS-IS SQL ID (예: fbx03_file.selectByBoxId)")] = None,
     count: Annotated[bool, typer.Option("--count", help="행 수만 출력")] = False,
     rows: Annotated[int | None, typer.Option("--rows", "-n", help="출력할 최대 행 수")] = None,
@@ -1072,7 +1079,10 @@ def mapper_run_cmd(
     db: Annotated[str, typer.Option("--db", "-c", help="대상 DB명 (기본: asseterpdb)")] = "asseterpdb",
     src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
 ) -> None:
-    """TOBE 매퍼 statement 실행 및 AS-IS SQL 비교"""
+    """TOBE 매퍼 statement 실행 및 AS-IS SQL 비교.
+
+    <foreach>는 -p <collection>=a,b,c로 준다.
+    """
     from yunhee.tools.as_is.mapper_runner import run_mapper_statement
 
     params_dict = {}
@@ -1080,7 +1090,14 @@ def mapper_run_cmd(
         for p in param:
             if "=" in p:
                 k, v = p.split("=", 1)
-                params_dict[k.strip()] = v.strip()
+                k = k.strip()
+                v = v.strip()
+                if v == "null:" or v.startswith("null:"):
+                    params_dict[k] = None
+                elif k in params_dict:
+                    params_dict[k] = f"{params_dict[k]},{v}"
+                else:
+                    params_dict[k] = v
 
     res = run_mapper_statement(
         target=target,

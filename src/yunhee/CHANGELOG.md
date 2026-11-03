@@ -2,6 +2,14 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.7.3] - 2026-11-03
+수정사항 047 완료: `mapper-run` 및 MyBatis `<foreach>` 컬렉션 파라미터 바인딩 지원
+- **`mapper-run` / `mybatis_render` `<foreach>` 목록 파라미터 바인딩 (수정사항 047)**:
+  - `<foreach collection="coll" item="item">` 문장에 대해 `-p coll=1,2`, `-p 'coll=[1,2]'`, 또는 반복 옵션(`-p coll=1 -p coll=2`)으로 목록 값을 전달하면 전개된 각 자리마다 컬렉션 요소를 순서대로 치환·바인딩하도록 개선.
+  - `item` 이름의 파라미터는 요구하지 않으며, 컬렉션 파라미터 누락 시 `item`이 아닌 `collection` 이름을 누락 파라미터로 결론(`❌ 파라미터 부족 (1건): <collection>`) 보고.
+  - 요소 타입은 숫자로 읽히면 숫자 리터럴, 아니면 문자열 리터럴로 치환하며 명시적 타입 접두사(`s:`, `n:`, `null:`, `b:`) 규칙을 승계.
+  - `--help` 및 `docs/help/migration.md`, `docs/yunhee-사용설명서.md`에 `<foreach>`는 `-p <collection>=a,b,c`로 준다는 안내 추가.
+
 ## [0.7.2] - 2026-11-02
 수정사항 046 완료: `api`/`compare` `%25` 이중 인코딩 방지, `sql-check --tobe` `record` DTO 열 누락 오류 승격 및 `<include>` 프로퍼티 전개, `page-style` `GGH`/`SG` 규칙, `cat --head/--tail` 및 `grep` 명령 신설, `trace-crud` 타 화면 안내 및 `mapper-run` 파라미터 부족 결론 표시
 - **`api` / `compare` `-p` 쿼리 파라미터 `%XX` 이중 인코딩 방지 (수정사항 046 §1)**:

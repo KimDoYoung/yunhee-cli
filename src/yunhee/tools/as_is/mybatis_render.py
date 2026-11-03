@@ -307,11 +307,11 @@ def _clean_params_for_eval(params: dict[str, Any]) -> dict[str, Any]:
 
 
 _STRING_LIKE_VAR_RE = re.compile(
-    r"(?:Type|Cd|Code|Ym|Year|Month|Date|Dt|Yn|Text|Txt|Nm|Name|Status|Stat|Div|Gb|Kind|Cls|Class|Flag|Mode|Tel|Phone|Zip|Addr|Address|Email|Url|Path|Key|Msg|Note|Rmk|Desc|Content|Title|Step|Grade)$",
+    r"(?:Type|Cd|Code|Ym|Year|Month|Date|Dt|Yn|Text|Txt|Nm|Name|Status|Stat|Div|Gb|Kind|Cls|Class|Flag|Mode|Tel|Phone|Zip|Addr|Address|Email|Url|Path|Key|Msg|Note|Rmk|Desc|Content|Title|Step|Grade)s?$",
     re.IGNORECASE,
 )
 _NUMERIC_LIKE_VAR_RE = re.compile(
-    r"(?:Id|Seq|Cnt|Count|Limit|Offset|Size|Page|Row|Idx|Amt|Price|Rate|Num|Order)$",
+    r"(?:Ids?|Seqs?|Cnt|Count|Limit|Offset|Size|Page|Rows?|Idx|Amt|Price|Rate|Nums?|Order)$",
     re.IGNORECASE,
 )
 _STRING_LIKE_COL_RE = re.compile(
@@ -327,6 +327,142 @@ def _is_string_like_param(var: str, sql_before: str = "") -> bool:
     if _STRING_LIKE_VAR_RE.search(var):
         return True
     return bool(sql_before and _STRING_LIKE_COL_RE.search(sql_before))
+
+
+def format_param_value(var: str, raw_val: Any, sql_before: str = "") -> str:
+    """단일 파라미터 값을 SQL 리터럴(숫자 또는 따옴표 문자열)로 변환한다."""
+    type_pfx, val = _strip_type_prefix(raw_val)
+    if type_pfx == "null" or val is None:
+        return "NULL"
+    val_str = str(val)
+    if type_pfx == "s":
+        val_escaped = val_str.replace("'", "''")
+        return f"'{val_escaped}'"
+    if type_pfx == "n":
+        return val_str
+    if type_pfx == "b":
+        return "TRUE" if bool(val) else "FALSE"
+    if (
+        val_str.lstrip("-").isdigit()
+        and not (val_str.startswith("0") and len(val_str) > 1)
+        and not _is_string_like_param(var, sql_before)
+    ):
+        return val_str
+    val_escaped = val_str.replace("'", "''")
+    return f"'{val_escaped}'"
+
+
+def parse_collection_param(val: Any) -> list[str]:
+    """컬렉션 파라미터 값(문자열, 리스트 등)을 요소 문자열 목록으로 파싱한다.
+
+    지원 형태:
+    - 1 -> ["1"]
+    - 1,2 -> ["1", "2"]
+    - [1,2] -> ["1", "2"]
+    - [ 1 , 2 ] -> ["1", "2"]
+    - a,b -> ["a", "b"]
+    - 빈 값 ("", None, [], "[]", "[  ]") -> []
+    - 공백이 든 값 (" 1 , 2 ", "a, b") -> ["1", "2"], ["a", "b"]
+    - [1], [2] -> ["1", "2"]
+    """
+    if val is None:
+        return []
+    if isinstance(val, (list, tuple, set)):
+        items: list[str] = []
+        for it in val:
+            items.extend(parse_collection_param(it))
+        return items
+    if isinstance(val, (int, float)):
+        return [str(val)]
+
+    s = str(val).strip()
+    if not s:
+        return []
+
+    # 전체가 대괄호로 둘러싸인 형태: [1, 2] 또는 ['a', 'b']
+    if s.startswith("[") and s.endswith("]"):
+        inner = s[1:-1].strip()
+        if "[" not in inner and "]" not in inner:
+            s = inner
+
+    if not s:
+        return []
+
+    raw_parts = s.split(",")
+    items = []
+    for p in raw_parts:
+        p = p.strip()
+        if not p:
+            continue
+        # [1], [2] 와 같이 개별 요소가 대괄호로 둘러싸인 경우
+        if p.startswith("[") and p.endswith("]"):
+            p = p[1:-1].strip()
+            if not p:
+                continue
+        # 따옴표 ('a', "b") 제거
+        if (p.startswith("'") and p.endswith("'") and len(p) >= 2) or (
+            p.startswith('"') and p.endswith('"') and len(p) >= 2
+        ):
+            p = p[1:-1].strip()
+        if p:
+            items.append(p)
+    return items
+
+
+def _bind_foreach_item(
+    sub_sql: str,
+    item_var: str,
+    it: Any,
+    collection: str = "",
+    index_var: str | None = None,
+    idx: int = 0,
+) -> str:
+    """foreach 내부 템플릿의 item_var, index_var 참조를 바인딩 값으로 치환한다."""
+    effective_type_var = item_var if item_var not in ("item", "it") else (collection or item_var)
+
+    def replace_sharp_item(m: re.Match) -> str:
+        full_expr = m.group(1).strip()
+        first_token = full_expr.split(",")[0].strip()
+        parts = first_token.split(".")
+        base_var = parts[0]
+        if base_var == item_var:
+            if len(parts) > 1 and isinstance(it, dict):
+                prop_val = it
+                for p in parts[1:]:
+                    if isinstance(prop_val, dict):
+                        prop_val = prop_val.get(p)
+                    else:
+                        prop_val = getattr(prop_val, p, None)
+                sql_before = sub_sql[max(0, m.start() - 80):m.start()]
+                return format_param_value(parts[-1], prop_val, sql_before)
+            sql_before = sub_sql[max(0, m.start() - 80):m.start()]
+            return format_param_value(effective_type_var, it, sql_before)
+        if index_var and base_var == index_var:
+            return str(idx)
+        return m.group(0)
+
+    def replace_dollar_item(m: re.Match) -> str:
+        full_expr = m.group(1).strip()
+        first_token = full_expr.split(",")[0].strip()
+        parts = first_token.split(".")
+        base_var = parts[0]
+        if base_var == item_var:
+            if len(parts) > 1 and isinstance(it, dict):
+                prop_val = it
+                for p in parts[1:]:
+                    if isinstance(prop_val, dict):
+                        prop_val = prop_val.get(p)
+                    else:
+                        prop_val = getattr(prop_val, p, None)
+                return str(prop_val) if prop_val is not None else ""
+            return str(it)
+        if index_var and base_var == index_var:
+            return str(idx)
+        return m.group(0)
+
+    res = re.sub(r"#\{([^}]+)\}", replace_sharp_item, sub_sql)
+    res = re.sub(r"\$\{([^}]+)\}", replace_dollar_item, res)
+    return res
 
 
 def _eval_single_condition_status(expr: str, params: dict[str, Any]) -> bool | None:
@@ -462,7 +598,7 @@ def _eval_single_condition_status(expr: str, params: dict[str, Any]) -> bool | N
         if isinstance(val, (list, tuple, set, dict)):
             length = len(val)
         elif isinstance(val, str) and val.strip():
-            length = len([s for s in val.split(",") if s.strip()])
+            length = len(parse_collection_param(val))
         else:
             length = 0
         if op == ">":
@@ -868,26 +1004,78 @@ def render_node(
             return f"\n/* ⚠ 분기 평가 불가(기본 OFF): {test}\n{body}\n*/\n"
 
     if tag == "foreach":
-        collection = node.attrs.get("collection", "")
-        item_var = node.attrs.get("item", "item")
-        open_ch = node.attrs.get("open", "(")
-        close_ch = node.attrs.get("close", ")")
-        sep = node.attrs.get("separator", ",")
-        items = params.get(collection)
-        if isinstance(items, str) and items:
-            items = [s.strip() for s in items.split(",") if s.strip()]
-        if items and isinstance(items, (list, tuple, set)):
-            sub_sqls = []
-            for it in items:
-                sub_params = dict(params)
-                sub_params[item_var] = it
-                sub_sql = "".join(
-                    render_node(c, current_ns, statements, sub_params, mode, seen, missing_params, branch_log, branch_overrides=branch_overrides)
-                    for c in node.children
+        collection = node.attrs.get("collection", "").strip()
+        item_var = node.attrs.get("item", "").strip()
+        index_var = node.attrs.get("index", "").strip() or None
+        open_ch = node.attrs.get("open")
+        if open_ch is None:
+            open_ch = "("
+        close_ch = node.attrs.get("close")
+        if close_ch is None:
+            close_ch = ")"
+        sep = node.attrs.get("separator")
+        if sep is None:
+            sep = ","
+
+        if not item_var:
+            for c in node.children:
+                if isinstance(c, str):
+                    m_item = re.search(r"#\{\s*(\w+)", c)
+                    if m_item:
+                        item_var = m_item.group(1)
+                        break
+            if not item_var:
+                item_var = "item"
+
+        items_raw = None
+        if collection and collection in params:
+            items_raw = params[collection]
+        elif item_var and item_var in params:
+            items_raw = params[item_var]
+
+        if items_raw is None:
+            if missing_params is not None and collection:
+                missing_params.append(collection)
+            return f" {open_ch} NULL {close_ch} "
+
+        items = parse_collection_param(items_raw)
+        if not items:
+            return f" {open_ch} NULL {close_ch} "
+
+        sub_sqls = []
+        for idx, it in enumerate(items):
+            sub_params = dict(params)
+            sub_params[item_var] = it
+            if index_var:
+                sub_params[index_var] = idx
+
+            child_pieces = []
+            for c in node.children:
+                piece = render_node(
+                    c,
+                    current_ns,
+                    statements,
+                    sub_params,
+                    mode,
+                    seen,
+                    missing_params,
+                    branch_log,
+                    branch_overrides=branch_overrides,
                 )
-                sub_sqls.append(sub_sql.strip())
-            return f" {open_ch} {sep.join(sub_sqls)} {close_ch} "
-        return f" {open_ch} NULL {close_ch} "
+                child_pieces.append(piece)
+            sub_sql = "".join(child_pieces)
+
+            bound_sql = _bind_foreach_item(
+                sub_sql,
+                item_var,
+                it,
+                collection=collection,
+                index_var=index_var,
+                idx=idx,
+            )
+            sub_sqls.append(bound_sql.strip())
+
+        return f" {open_ch} {sep.join(sub_sqls)} {close_ch} "
 
     if tag in ("where", "set", "trim"):
         body = "".join(
@@ -972,27 +1160,8 @@ def render_with_meta(
         if "," in var:
             var = var.split(",")[0].strip()
         if var in local_params and local_params[var] is not None:
-            raw_val = local_params[var]
-            type_pfx, val = _strip_type_prefix(raw_val)
-            if type_pfx == "null" or val is None:
-                return "NULL"
-            val_str = str(val)
-            if type_pfx == "s":
-                val_escaped = val_str.replace("'", "''")
-                return f"'{val_escaped}'"
-            if type_pfx == "n":
-                return val_str
-            if type_pfx == "b":
-                return "TRUE" if bool(val) else "FALSE"
             sql_before = rendered[max(0, m.start() - 80):m.start()]
-            if (
-                val_str.lstrip("-").isdigit()
-                and not (val_str.startswith("0") and len(val_str) > 1)
-                and not _is_string_like_param(var, sql_before)
-            ):
-                return val_str
-            val_escaped = val_str.replace("'", "''")
-            return f"'{val_escaped}'"
+            return format_param_value(var, local_params[var], sql_before)
         missing_params.append(var)
         return f":{var}"
 
