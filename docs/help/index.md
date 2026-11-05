@@ -13,14 +13,14 @@
 | **코드 구조 파악 / 특정 줄·문맥 읽기** | `yunhee outline`, `yunhee cat`, `yunhee grep` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **DB 테이블 / 스키마 확인** | `yunhee table`, `yunhee sql`, `yunhee make-dbml` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **빌드 / 테스트 / 명령 실행** | `yunhee run "<명령>"`, `yunhee last-run` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
-| **API 스모크 테스트 / 서버 로그** | `yunhee api`, `yunhee log <trace\|req\|errors\|tail>` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
-| **AS-IS 화면 구조 / 폼 레이아웃 / 그리드 컬럼** | `yunhee analysis <screen\|ui\|grid\|layout>` | [`analysis.md`](file:///home/kdy987/work/yunhee-cli/docs/help/analysis.md) |
-| **AS-IS 메서드 로직 / 실행 가능 SQL 전개** | `yunhee analysis <method\|sql\|model\|servlet>` | [`analysis.md`](file:///home/kdy987/work/yunhee-cli/docs/help/analysis.md) |
+| **API 스모크 테스트 / 서버 로그 / 쓰기 행 추적** | `yunhee api [--track <table>]`, `yunhee log <trace\|req\|errors\|tail>` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
+| **AS-IS 화면 구조 / 폼 레이아웃 / 그리드 / 창 호출부** | `yunhee analysis <screen\|ui\|grid\|layout\|callers>` | [`analysis.md`](file:///home/kdy987/work/yunhee-cli/docs/help/analysis.md) |
+| **AS-IS 메서드 로직 / 실행 가능 SQL 전개 (서비스명 지원)** | `yunhee analysis <method\|sql\|model\|servlet>` | [`analysis.md`](file:///home/kdy987/work/yunhee-cli/docs/help/analysis.md) |
 | **업무 흐름 추적 (메뉴→화면→이벤트→RPC→SQL→DB)** | `yunhee trace-menu`, `trace-screen`, `trace-flow` | [`trace.md`](file:///home/kdy987/work/yunhee-cli/docs/help/trace.md) |
 | **테이블 CRUD 매트릭스 / 컬럼 상태 전이 로직** | `yunhee trace-table`, `trace-crud`, `trace-state` | [`trace.md`](file:///home/kdy987/work/yunhee-cli/docs/help/trace.md) |
-| **AS-IS ↔ TOBE 비교 / 갭(Gap) 분석** | `yunhee trace-pair`, `trace-diff`, `trace-gap` | [`trace.md`](file:///home/kdy987/work/yunhee-cli/docs/help/trace.md) |
-| **AS-IS SQL/CUD → TOBE 매퍼/DTO 코드 생성** | `yunhee port-sql`, `yunhee port-save` | [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
-| **화면 스타일 판별 / AS-IS 원본 변경(Drift) 감지** | `yunhee page-style`, `yunhee drift`, `yunhee sql-check`| [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
+| **AS-IS ↔ TOBE 비교 / 갭(Gap) 및 미연결 자리(--stubs)** | `yunhee trace-pair`, `trace-diff`, `trace-gap [--stubs]` | [`trace.md`](file:///home/kdy987/work/yunhee-cli/docs/help/trace.md) |
+| **AS-IS SQL/CUD → TOBE 매퍼/DTO 코드 생성 (서비스명·DB 객체 검증)** | `yunhee port-sql`, `yunhee port-save` | [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
+| **화면 스타일 판별 / AS-IS 원본 변경(Drift)·신규 매퍼 검증** | `yunhee page-style`, `yunhee drift`, `yunhee sql-check [--new-since-index]`| [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
 
 ---
 
@@ -34,14 +34,15 @@
 - `sql [query]`: PostgreSQL 읽기 전용 쿼리 실행 또는 `--rollback` 트랜잭션 시험 실행을 지원합니다.
 - `run "<command>"`: 외부 명령을 실행하고 로그를 파일에 격리하며, 성공 시 1줄 / 실패 시 핵심 에러만 요약합니다.
 - `last-run` / `runs`: 직전 실행 결과 확인 및 최근 실행 이력 테이블을 표시합니다.
-- `api <method> <path>`: 자동 로그인 세션 기반으로 API를 호출하고 응답 요약(상태, 행 수, 키 목록)만 출력합니다.
-- `compare <method> <path> --sql <sql_id>`: TOBE 조회 API 응답과 AS-IS SQL 결과를 대조하여 행 수 및 컬럼 커버리지를 검증합니다.
+- `api <method> <path> [--track <tables>]`: 자동 로그인 세션 기반으로 API를 호출하고 응답 요약(상태, 행 수, 키 목록) 및 `--track` 테이블 행 수/신규 PK 변화를 출력합니다.
+- `compare <method> <path> --sql <sql_id|dom.Class.method>`: TOBE 조회 API 응답과 AS-IS SQL 결과를 대조하여 행 수 및 컬럼 커버리지를 검증합니다.
 - `log <trace|req|errors|tail>`: 서버 로그에서 trace ID 상세(실행 SQL/파라미터), 최근 요청, 에러 묶음, 접은 흐름을 분석합니다.
 - `config` / `value [KEY]`: Target/Source 경로, 브랜치 상태, DB 접속 정보 등 환경 설정을 조회합니다.
 
 ### 2. 정적 분석 전문 (`analysis.md`)
 - `analysis method <클래스.메서드>`: AS-IS 메서드 본문 요약, 호출 흐름 및 클라이언트/서버 연계 분석
-- `analysis sql <namespace.id>`: MyBatis 매퍼 statement 분석 및 파라미터 바인딩 실행 가능 SQL 전개
+- `analysis sql <namespace.id|dom.Class.method>`: MyBatis 매퍼 statement(또는 서비스 메서드명) 분석, DB 부재 객체(`⚠ DB에 없는 객체`) 자동 검증 및 실행 가능 SQL 전개
+- `analysis callers <클래스> [--tobe <경로>]`: AS-IS에서 팝업/창을 `new`하여 여는 모든 호출부(메서드·리터럴 인자·감싼 메서드·메뉴)와 TOBE 렌더링 짝 대조
 - `analysis model <모델클래스>`: 화면 모델 속성 → `@Path` 필드 → MyBatis/DB 컬럼 간 매핑 관계 분석
 - `analysis grid <클래스>`: ColumnModel 구성 순서, GridType 판정 및 DB 컬럼 부재 검증
 - `analysis screen <화면클래스>`: 색인 화면 파일에서 클래스 목록 통계(`--list`)나 특정 절(`--section layout`) 추출
@@ -65,16 +66,16 @@
 - `trace-dblogic [name]`: DB 저장 함수, 프로시저, 트리거 본문과 이를 호출하는 SQL 추적
 - `trace-pair <screen_id>`: ASIS 화면과 TOBE 구현체 간 짝지어진 항목 및 매칭 근거 확인
 - `trace-diff <target>`: ASIS와 TOBE 간 SQL 정규화 diff, 조건 분기 대응표, UI 필드/버튼 대응표 대조
-- `trace-gap`: ASIS에만 있거나 TOBE에만 있는 요소, 아직 추적되지 않은 누락 지점(Gap) 분석
+- `trace-gap [--stubs]`: ASIS/TOBE 누락 지점(Gap) 분석 및 `--stubs`로 TOBE `frontend/src` 미연결 안내 자리(다음 단계 안내·`[E… 생략]`·화면 머리 주석) 수집
 - `trace-rule <action> [target]`: 마이그레이션 규칙을 저장·조회하고 근거의 정합성을 검증 (`verify` 등)
 - `trace-term [term]`: 화면 라벨, DB 컬럼명, 공통 코드명 간의 용어 교차 참조 사전 검색
 - `trace-doc <domain>`: 신규 담당자를 위해 카탈로그와 팩트를 체계적인 업무 인수인계 문서 골격으로 자동 조립
 
 ### 4. 마이그레이션 코드 생성 및 형상 관리 (`migration.md`)
-- `port-sql <sql_id>`: AS-IS MyBatis SQL을 TOBE 매퍼 XML 조각 및 Java 21 Record DTO로 결정적 변환
+- `port-sql <sql_id|dom.Class.method>`: AS-IS MyBatis SQL(또는 서비스명)을 TOBE 매퍼 XML 조각 및 Java 21 Record DTO로 결정적 변환 (DB 부재 객체 자동 경고 포함)
 - `port-save <table> --cols <cols>`: 테이블 스키마 기반으로 명시적인 INSERT/UPDATE/DELETE 및 채번/사이드이펙트 생성
 - `mapper-run <target>`: TOBE 매퍼 statement 실행 및 AS-IS SQL 결과 비교
-- `sql-check [src_root]`: MyBatis 매퍼 XML의 동적 SQL을 펼쳐 대상 DB에서 EXPLAIN 정합성 및 SQL Drift 검증
+- `sql-check [src_root] [--new-since-index]`: MyBatis 매퍼 XML의 동적 SQL을 펼쳐 대상 DB에서 EXPLAIN 정합성 및 SQL Drift 검증 (`--new-since-index`: 색인 이후 신규/변경 매퍼만)
 - `page-style <targets...>`: 화면 파일(.tsx / .java)의 구조를 정적 분석하여 페이지 스타일 ID(SID) 판별 및 대조
 - `events <target>`: AS-IS GXT 화면 파일의 이벤트(E0~En), 메서드 테이블, Grid Spec, 버튼 목록 추출
 - `drift [screens...]`: 색인 또는 기준선(baseline) 대비 AS-IS 화면 및 의존 파일의 변경(drift) 감지

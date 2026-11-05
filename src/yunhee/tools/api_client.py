@@ -411,6 +411,140 @@ def _prepare_multipart(
 
 
 _PCT_HEX_RE = re.compile(r"%[0-9A-Fa-f]{2}")
+_TABLE_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$")
+
+
+def snapshot_tables(track_spec: str | list[str] | None, db_name: str | None = None) -> dict[str, dict[str, Any]]:
+    """--track에 지정된 테이블들의 호출 전 행 수와 PK 집합을 스냅샷으로 저장한다."""
+    if not track_spec:
+        return {}
+    if isinstance(track_spec, str):
+        tables = [t.strip() for t in track_spec.split(",") if t.strip()]
+    else:
+        tables = [t.strip() for item in track_spec for t in item.split(",") if t.strip()]
+    if not tables:
+        return {}
+
+    import psycopg
+
+    from yunhee.tools.sql_runner import get_connection_string
+
+    db_url = get_connection_string(db_name)
+    if not db_url:
+        return {"__error__": {"error": "DB 연결 정보를 찾을 수 없습니다 (YUNHEE_DB)"}}
+
+    snaps: dict[str, dict[str, Any]] = {}
+    try:
+        with psycopg.connect(db_url, autocommit=True) as conn:
+            conn.read_only = True
+            with conn.cursor() as cur:
+                for raw_tbl in tables:
+                    if not _TABLE_IDENT_RE.match(raw_tbl):
+                        snaps[raw_tbl] = {"error": f"유효하지 않은 테이블명: {raw_tbl}"}
+                        continue
+                    if "." in raw_tbl:
+                        schema, tbl = raw_tbl.split(".", 1)
+                    else:
+                        schema, tbl = "public", raw_tbl
+                    schema_l, tbl_l = schema.lower(), tbl.lower()
+                    cur.execute(
+                        """
+                        SELECT kcu.column_name
+                        FROM information_schema.table_constraints tc
+                        JOIN information_schema.key_column_usage kcu
+                          ON tc.constraint_name = kcu.constraint_name
+                         AND tc.table_schema = kcu.table_schema
+                        WHERE tc.constraint_type = 'PRIMARY KEY'
+                          AND tc.table_schema = %s
+                          AND tc.table_name = %s
+                        ORDER BY kcu.ordinal_position
+                        """,
+                        (schema_l, tbl_l),
+                    )
+                    pk_cols = [r[0] for r in cur.fetchall()]
+                    qualified = f'"{schema_l}"."{tbl_l}"'
+                    try:
+                        cur.execute(f"SELECT COUNT(*) FROM {qualified}")
+                        cnt_row = cur.fetchone()
+                        count = int(cnt_row[0]) if cnt_row else 0
+                    except Exception as exc:  # noqa: BLE001
+                        snaps[raw_tbl] = {"error": str(exc).splitlines()[0]}
+                        continue
+
+                    pks: set[tuple[Any, ...]] = set()
+                    max_pks: tuple[Any, ...] | None = None
+                    if pk_cols:
+                        pk_select = ", ".join(f'"{c}"' for c in pk_cols)
+                        if count <= 100000:
+                            cur.execute(f"SELECT {pk_select} FROM {qualified}")
+                            pks = {tuple(r) for r in cur.fetchall()}
+                        else:
+                            order_desc = ", ".join(f'"{c}" DESC' for c in pk_cols)
+                            cur.execute(f"SELECT {pk_select} FROM {qualified} ORDER BY {order_desc} LIMIT 500")
+                            rows = cur.fetchall()
+                            pks = {tuple(r) for r in rows}
+                            if rows:
+                                max_pks = tuple(rows[0])
+                    snaps[raw_tbl] = {
+                        "schema": schema_l,
+                        "table": tbl_l,
+                        "pk_cols": pk_cols,
+                        "count": count,
+                        "pks": pks,
+                        "max_pks": max_pks,
+                    }
+    except Exception as exc:  # noqa: BLE001
+        return {"__error__": {"error": f"DB 연결 실패: {exc}"}}
+    return snaps
+
+
+def format_table_tracks(before_snaps: dict[str, dict[str, Any]], db_name: str | None = None) -> list[str]:
+    """호출 전 스냅샷과 현재 DB 상태를 비교하여 테이블별 행 수 변화 및 신규 PK 문자열 목록을 반환한다."""
+    if not before_snaps:
+        return []
+    if "__error__" in before_snaps:
+        return [f"⚠ track 실패: {before_snaps['__error__']['error']}"]
+
+    after_snaps = snapshot_tables(list(before_snaps.keys()), db_name=db_name)
+    if "__error__" in after_snaps:
+        return [f"⚠ track 실패: {after_snaps['__error__']['error']}"]
+
+    lines: list[str] = []
+    for tbl, b_info in before_snaps.items():
+        if "error" in b_info:
+            lines.append(f"{tbl}: ⚠ {b_info['error']}")
+            continue
+        a_info = after_snaps.get(tbl, {})
+        if "error" in a_info:
+            lines.append(f"{tbl}: ⚠ {a_info['error']}")
+            continue
+        b_cnt = b_info["count"]
+        a_cnt = a_info["count"]
+        delta = a_cnt - b_cnt
+        pk_cols: list[str] = b_info.get("pk_cols") or []
+        b_pks: set[tuple[Any, ...]] = b_info.get("pks") or set()
+        a_pks: set[tuple[Any, ...]] = a_info.get("pks") or set()
+        added = sorted(a_pks - b_pks)
+        removed = sorted(b_pks - a_pks)
+
+        if delta == 0 and not added and not removed:
+            lines.append(f"{tbl}: {b_cnt} → {a_cnt} (변화 없음)")
+        elif delta > 0 or added:
+            sign_delta = f"+{delta}" if delta >= 0 else str(delta)
+            if added and pk_cols:
+                pk_items = []
+                for tup in added[:5]:
+                    if len(pk_cols) == 1:
+                        pk_items.append(f"{pk_cols[0]}={tup[0]}")
+                    else:
+                        pk_items.append("(" + ", ".join(f"{c}={v}" for c, v in zip(pk_cols, tup, strict=False)) + ")")
+                more = f" 외 {len(added) - 5}건" if len(added) > 5 else ""
+                lines.append(f"{tbl}: {b_cnt} → {a_cnt} ({sign_delta}: {', '.join(pk_items)}{more})")
+            else:
+                lines.append(f"{tbl}: {b_cnt} → {a_cnt} ({sign_delta})")
+        else:
+            lines.append(f"{tbl}: {b_cnt} → {a_cnt} ({delta})")
+    return lines
 
 
 def normalize_query_param_value(val: Any, raw: bool = False) -> Any:
@@ -465,6 +599,7 @@ def request_api(
     mask: bool = True,
     wait_deploy: float | None = None,
     raw_param: bool = False,
+    track: str | list[str] | None = None,
 ) -> ToolResult:
     """인증 세션을 사용하여 API를 호출하고 결과를 요약 반환한다.
     
@@ -561,6 +696,8 @@ def request_api(
             req_kwargs["files"] = form_files
     elif json_body is not None:
         req_kwargs["json"] = json_body
+
+    before_track_snaps = snapshot_tables(track) if track else {}
 
     start = time.perf_counter()
     try:
@@ -682,6 +819,9 @@ def request_api(
         notice=notice,
         upload_info=upload_info or None,
     )
+    track_lines = format_table_tracks(before_track_snaps) if before_track_snaps else []
+    if track_lines:
+        summary = summary + "\n" + "\n".join(track_lines)
     return ToolResult(
         ok=resp.is_success,
         data={
@@ -691,6 +831,7 @@ def request_api(
             "summary": summary,
             "trace_id": trace_id,
             "user_info": user_info,
+            "track": track_lines,
         },
         error=None if resp.is_success else f"HTTP {resp.status_code}",
     )

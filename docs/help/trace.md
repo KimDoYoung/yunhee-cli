@@ -128,11 +128,16 @@ ASIS와 TOBE 간 SQL 정규화 diff, 조건 분기 대응표, UI 필드 대응�
   ```
 
 ### `yunhee trace-gap`
-ASIS에만 있거나 TOBE에만 있는 요소, 아직 추적되지 않은 마이그레이션 누락 지점(Gap)을 분석합니다.
-- **옵션**: `-d, --domain <영역>`
+ASIS에만 있거나 TOBE에만 있는 요소, 아직 추적되지 않은 마이그레이션 누락 지점(Gap)을 분석합니다. `--stubs`를 주면 TOBE `frontend/src`에서 미연결 자리(`message.info/warning`의 `다음 단계`·`아직 변환`·`연결됩니다`·`연결합니다`·`제공됩니다`·`아직 연결되지` 안내, `// [E… 생략]`, 화면 머리에만 남은 `1단계:`/`다음 단계:` 주석)를 여는 `_Tab_` 화면 및 메뉴 번호(`#번호`)와 함께 표 및 `13-누락대장.md` 체크리스트 꼴(`- [ ] \`파일:줄\` — 메뉴명 #번호 (\`Tab 클래스\`)`)로 수집합니다.
+- **옵션**:
+  - `-d, --domain <영역>`: 도메인 필터 (예: `emp`, `apr`, `tdm`)
+  - `--stubs`: TOBE `frontend/src` 미연결 안내 자리·생략 주석·화면 머리 주석 수집
+  - `--pattern <REGEX>`: `--stubs` 안내 문구 검색 정규식 재정의
 - **예시**:
   ```bash
   yunhee trace-gap -d emp
+  yunhee trace-gap --stubs
+  yunhee trace-gap --stubs -d emp
   ```
 
 ---

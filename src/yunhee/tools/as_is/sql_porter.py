@@ -706,10 +706,33 @@ def port_sql(
     if "." not in sql_id:
         return ToolResult(ok=False, error=f"올바른 형식(namespace.sqlId)으로 입력해 주세요. 예: sys04_role.selectByName (입력값: {sql_id})")
 
+    from yunhee.tools.as_is.mybatis_render import get_all_statements, mask_sql_preserve
+    from yunhee.tools.as_is.mybatis_render import render as mr_render
+    from yunhee.tools.as_is.sql_checker import (
+        _depth0_matches,
+        check_statement_db_objects,
+        resolve_service_to_sql_id,
+    )
+
+    stmts = get_all_statements(src_root)
+    service_note: str | None = None
+    if sql_id not in stmts:
+        resolved_key, s_note, multi_called, cands = resolve_service_to_sql_id(sql_id, src_root, statements=stmts)
+        if multi_called:
+            return ToolResult(
+                ok=False,
+                error=f"서비스 {sql_id}가 여러 매퍼 문장을 호출합니다: {', '.join(multi_called)}",
+            )
+        if resolved_key:
+            sql_id = resolved_key
+            service_note = s_note
+
     ns, sid = sql_id.split(".", 1)
     xml_path = find_mapper_file(ns, src_root)
     if not xml_path:
-        return ToolResult(ok=False, error=f"매퍼 XML 파일을 찾을 수 없습니다: namespace={ns}")
+        _, _, _, cands = resolve_service_to_sql_id(sql_id, src_root, statements=stmts)
+        cand_hint = f"\n비슷한 문장: {', '.join(cands)} (매퍼 이름은 '테이블.id' 꼴입니다)" if cands else ""
+        return ToolResult(ok=False, error=f"매퍼 XML 파일을 찾을 수 없습니다: namespace={ns}{cand_hint}")
 
     try:
         xml_text = xml_path.read_text(encoding="utf-8", errors="replace")
@@ -718,15 +741,18 @@ def port_sql(
 
     sql_fragments, result_maps, selects = parse_select_elements(xml_text)
     if sid not in selects:
-        return ToolResult(ok=False, error=f"매퍼 {xml_path.name} 에서 <select id=\"{sid}\">를 찾을 수 없습니다.")
+        _, _, _, cands = resolve_service_to_sql_id(sql_id, src_root, statements=stmts)
+        cand_hint = f"\n비슷한 문장: {', '.join(cands)} (매퍼 이름은 '테이블.id' 꼴입니다)" if cands else ""
+        return ToolResult(ok=False, error=f"매퍼 {xml_path.name} 에서 <select id=\"{sid}\">를 찾을 수 없습니다.{cand_hint}")
 
     sel_info = selects[sid]
-    # mybatis_render를 통해 structure 모드로 include 완전 펼치기
-    from yunhee.tools.as_is.mybatis_render import get_all_statements, mask_sql_preserve
-    from yunhee.tools.as_is.mybatis_render import render as mr_render
-    from yunhee.tools.as_is.sql_checker import _depth0_matches
+    db_obj_warn: str | None = None
+    st_obj = stmts.get(sql_id)
+    if st_obj is not None:
+        db_check = check_statement_db_objects(st_obj, stmts, src_root=src_root)
+        db_obj_warn = db_check.get("warning")
 
-    stmts = get_all_statements(src_root)
+    # mybatis_render를 통해 structure 모드로 include 완전 펼치기
     if sql_id in stmts or any(s.sid == sid for s in stmts.values()):
         sbody, _ = mr_render(sql_id, mode="structure", statements=stmts)
         m_tag = re.match(r"^\s*<(?:select|insert|update|delete|sql)\b[^>]*>(.*?)</(?:select|insert|update|delete|sql)>\s*$", sbody, re.DOTALL | re.IGNORECASE)
@@ -741,6 +767,8 @@ def port_sql(
         clean_cdata_sql = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", converted_sql, flags=re.DOTALL)
 
         warnings: list[str] = []
+        if db_obj_warn:
+            warnings.append(db_obj_warn)
         # 원본 첫 줄이 SELECT *이고 조인이 있으면 모호 열 경고
         m_first_sel = re.search(r"^\s*SELECT\s+.*?\bFROM\b", clean_cdata_sql, re.IGNORECASE | re.DOTALL)
         if m_first_sel and re.search(r"\*", m_first_sel.group(0)) and re.search(r"\bJOIN\b", clean_cdata_sql, re.IGNORECASE):
@@ -783,7 +811,12 @@ def port_sql(
           FROM (<include refid="{sid}"/>) y
     </insert>"""
 
-        full_output = f"<!-- AS-IS {ns}.{sid} verbatim query -->\n{warn_comment}{sql_fragment}{insert_fragment}"
+        top_prefix = ""
+        if service_note:
+            top_prefix += f"<!-- {service_note} -->\n"
+        if db_obj_warn:
+            top_prefix += f"<!-- {db_obj_warn} -->\n"
+        full_output = f"{top_prefix}<!-- AS-IS {ns}.{sid} verbatim query -->\n{warn_comment}{sql_fragment}{insert_fragment}"
         return ToolResult(
             ok=True,
             data={
@@ -1132,7 +1165,15 @@ def port_sql(
 ) {{
 }}"""
 
-    full_output = f"""<!-- 1. 매퍼 조각 -->
+    if db_obj_warn:
+        warnings.insert(0, db_obj_warn)
+    top_prefix = ""
+    if service_note:
+        top_prefix += f"<!-- {service_note} -->\n"
+    if db_obj_warn:
+        top_prefix += f"<!-- {db_obj_warn} -->\n"
+
+    full_output = f"""{top_prefix}<!-- 1. 매퍼 조각 -->
 {mapper_fragment}
 
 // 2. Record DTO

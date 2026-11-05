@@ -71,7 +71,7 @@ def trace_guide() -> TraceResult:
         ("화면을 파악한다", "`trace-screen #1029` (필드·그리드·이벤트·서비스·테이블) → 하위 탭은 `--class <클래스>`"),
         ("규칙이 걸린 곳을 찾는다", "`trace-flow #1029 -e E3` (이벤트 하나의 끝까지) · `trace-branch #1029` / `trace-branch <mapper id>` (조건 지점 전체)"),
         ("데이터를 이해한다", "`trace-table`, `trace-column`, `trace-code <그룹>`, 상태 컬럼은 `trace-state <테이블.컬럼>`, 영향 범위는 `trace-crud`"),
-        ("ASIS와 TOBE를 대조한다", "`trace-pair #1029` (짝과 근거) → `trace-diff #1029 [--sql|--branch|--ui]` (차이) → `trace-gap -d <영역>` (빠진 것)"),
+        ("ASIS와 TOBE를 대조한다", "`trace-pair #1029` (짝과 근거) → `trace-diff #1029 [--sql|--branch|--ui]` (차이) → `trace-gap -d <영역>` (빠진 것) · `trace-gap --stubs` (TOBE 미연결 '다음 단계' 안내·생략 주석·머리 주석 수집)"),
         ("판정을 저장하고 검증한다", "`trace-rule add <대상> -v <판정> --note … -E <근거> …` → 이후 `trace-rule verify`로 근거가 살아 있는지 확인"),
         ("문서로 남긴다", "`trace-doc <영역>`으로 골격을 만들고 `<!-- 서술(에이전트): … -->` 자리를 채운다"),
     ]

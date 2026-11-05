@@ -50,6 +50,18 @@ AS-IS 화면 대비 TOBE 이벤트 구현율 및 단계별 버튼/이벤트/그�
   yunhee analysis grid Org00_Lookup_Fund
   ```
 
+### `yunhee analysis callers <클래스>` (별칭: `caller`)
+AS-IS에서 특정 팝업·조회창·편집창을 `new`하여 여는 모든 호출부와 호출 메서드(`open`/`view`/`edit`/`gridInsert` 등), 리터럴 인자(모드 문자열 등), 감싼 메서드, 메뉴 번호를 한 번에 표로 출력합니다.
+- **주요 옵션**:
+  - `--tobe <DIR>`: TOBE `frontend/src`(또는 프로젝트 루트)를 지정하면 해당 컴포넌트를 렌더링하는 TOBE `<클래스 ...>` 위치와 props를 나란히 짝지어 보여주며, TOBE에 아직 짝이 없는 호출부를 표시합니다.
+  - `-o, --output <md|json>`: 출력 형식 지정
+- **예시**:
+  ```bash
+  yunhee analysis callers Crm09_Lookup_SelectSingle
+  yunhee analysis callers Tdm00_Lookup_RelateAppr
+  yunhee analysis callers Crm09_Lookup_SelectSingle --tobe frontend/src
+  ```
+
 ---
 
 ## 2. 비즈니스 로직 및 SQL 분석 (`method`, `sql`, `model`, `servlet`, `save-script`)
@@ -67,8 +79,8 @@ AS-IS 및 TOBE 메서드의 본문 요약, 호출 흐름, 클라이언트/서버
   yunhee analysis method SysService.saveCompany --follow
   ```
 
-### `yunhee analysis sql <namespace.id>`
-MyBatis 매퍼 statement를 분석하고 파라미터가 바인딩된 실제 실행 가능 SQL을 펼쳐냅니다.
+### `yunhee analysis sql <namespace.id 또는 dom.Class.method>`
+MyBatis 매퍼 statement(또는 화면 주석에 적힌 서비스 이름 `dom.Class.method`)를 분석하고 파라미터가 바인딩된 실제 실행 가능 SQL을 펼쳐냅니다.
 - **주요 옵션**:
   - `--param <key=val>`: 파라미터 값 바인딩 (반복 가능, `s:`, `n:`, `b:`, `null:` 타입 접두사 지원)
   - `--branch <expr=on|off>`: MyBatis 조건 분기(`<if>`, `<when>`) 강제 ON/OFF 지정 (반복 가능)
@@ -76,12 +88,15 @@ MyBatis 매퍼 statement를 분석하고 파라미터가 바인딩된 실제 실
   - `--no-cte`: CTE(WITH ...) 블록을 생략하고 본문 SELECT/WHERE만 출력
   - `-o, --output <FORMAT>`: `md`, `sql`, `code`, `json`
 - **동작 특징**:
+  - **서비스 이름 자동 해석**: 인자가 `ics.Ics40_DcrPreconfirm.selectByApprId`처럼 `dom.ClassName.method` 꼴이면 서버 클래스 `server/{dom}/{ClassName}.java`의 해당 메서드가 부르는 매퍼 문장(`mapperName + ".id"` 등)을 자동으로 찾아 첫 줄에 `서비스 ... → 매퍼 ...`를 표시하고 SQL을 출력합니다.
+  - **DB 부재 객체 자동 경고**: `YUNHEE_DB`에 단일 문장 `EXPLAIN` 및 `sql-check.md` 대조를 수행하여, DB에 없는 테이블·뷰·함수가 있으면 `⚠ DB에 없는 객체: ... — 변환 가이드 1절에 따라 보류 검토` 경고와 `sql-check` 상태 줄을 출력합니다.
   - `x.equals('lit')`, `'lit'.equals(x)`, `!x.equals('lit')`, `.size`, `0L` 등 MyBatis OGNL 조건식을 자동 평가합니다.
   - 평가할 수 없는 분기식은 임의로 켜지지 않고 주석(`/* ⚠ 분기 평가 불가(기본 OFF): ... */`) 처리되어 실행을 차단하며, `--branch`로 명시적 제어가 가능합니다.
 - **예시**:
   ```bash
   yunhee analysis sql emp00_trans_info.selectByText --param text=홍길동
-  yunhee analysis sql car03_booking.selectByDate --param type=all --param personId=1 -o sql
+  yunhee analysis sql ics.Ics40_DcrPreconfirm.selectByApprId -o sql
+  yunhee analysis sql dcr.Dcr00_DocList.selectNoAuthByText
   yunhee analysis sql car03_booking.selectByDate --branch "type.equals('my')=on" -o sql
   ```
 

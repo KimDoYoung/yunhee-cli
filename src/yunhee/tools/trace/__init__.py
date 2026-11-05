@@ -291,6 +291,8 @@ def register_trace_commands(app: typer.Typer) -> None:
     @app.command(name="trace-gap")
     def trace_gap_cmd(
         domain: Annotated[str | None, typer.Option("--domain", "-d", help="업무 영역 (예: emp, sys, fnd). 생략하면 전체")] = None,
+        stubs: Annotated[bool, typer.Option("--stubs", help="TOBE frontend/src의 미연결 자리(다음 단계 안내·[E… 생략]·머리 주석) 수집")] = False,
+        pattern: Annotated[str | None, typer.Option("--pattern", help="--stubs 안내 문구 정규식 (기본: 다음 단계|아직 변환|연결됩니다|연결합니다|제공됩니다|아직 연결되지)")] = None,
         tobe: TobeOption = None,
         side: SideOption = "both",
         format: FormatOption = "md",
@@ -298,10 +300,13 @@ def register_trace_commands(app: typer.Typer) -> None:
         src: SrcOption = None,
         src_index: SrcIndexOption = None,
     ) -> None:
-        """ASIS에만 있는 것, TOBE에만 있는 것, 추적하지 못한 지점 전체"""
-        from yunhee.tools.trace.gap import trace_gap
+        """ASIS에만 있는 것, TOBE에만 있는 것, 추적하지 못한 지점 전체 (--stubs: TOBE 미연결 안내 자리 수집)"""
+        from yunhee.tools.trace.gap import trace_gap, trace_stubs
 
-        _emit(lambda ctx: trace_gap(ctx, tobe, domain), "asis", format, max, src, src_index)
+        if stubs:
+            _emit(lambda ctx: trace_stubs(ctx, tobe, domain, pattern), "tobe", format, max, src, src_index)
+        else:
+            _emit(lambda ctx: trace_gap(ctx, tobe, domain), "asis", format, max, src, src_index)
 
     # -------------------------------------------------------------------------
     # 5. 카탈로그 및 가이드 계층 (Catalog & Guide)

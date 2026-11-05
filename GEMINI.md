@@ -39,15 +39,17 @@ uv run yunhee index-db .yunhee/LOCAL_DB-dbml.md -t docs/as-is/db # 대용량 DBM
 uv run yunhee index-src ~/workspace26/Asset-OMS -t docs/as-is/src # AS-IS GXT 소스 호출경로(화면→서비스→SQL→테이블) 및 UI/이벤트 색인 빌드
 uv run yunhee events src/.../Sys01_Tab_Company.java # GXT 화면 라이프사이클/이벤트/그리드 스펙/버튼 목록 추출
 uv run yunhee sql "SELECT * FROM sys01_company LIMIT 5" -c kfstest   # 안전한 읽기 전용 쿼리 실행 (\gset 변수 바인딩, --rollback 지원)
-uv run yunhee sql-check ~/workspace26/Asset-OMS --db asseterpdb      # AS-IS 매퍼 SQL 대상 DB EXPLAIN 정합성 검증 (스키마 차이/영향 화면)
+uv run yunhee sql-check ~/workspace26/Asset-OMS --db asseterpdb      # AS-IS 매퍼 SQL 대상 DB EXPLAIN 정합성 검증 (--new-since-index로 신규/변경 매퍼만)
 uv run yunhee sql-check --tobe src/main/resources/mapper             # TOBE 매퍼 XML 대상 DB EXPLAIN 정합성 및 DTO 프로퍼티 검증
-uv run yunhee port-sql sys04_role.selectByName                       # AS-IS MyBatis SQL → TOBE 매퍼 조각 및 Java Record DTO 자동 생성
+uv run yunhee port-sql sys04_role.selectByName                       # AS-IS MyBatis SQL(또는 서비스명 dom.Class.method) → TOBE 매퍼 조각 및 Java Record DTO 생성 (DB 부재 객체 자동 경고)
 uv run yunhee port-save sys04_role --cols role_nm,seq,note           # AS-IS 테이블 기반 TOBE CUD 명시적 쿼리 및 채번/사이드이펙트 생성
 uv run yunhee compare GET /api/v1/sys/roles sys04_role.selectByName -c kfstest # HTTP API 결과와 AS-IS SQL 결과 행수/컬럼 커버리지 비교
 uv run yunhee page-style Fnd01_Tab_FundSearch.tsx        # 화면 파일(.tsx/.java) 페이지 스타일 ID(SID) 판별 (--compare, --all, --json)
 uv run yunhee analysis screen <화면> --list # 화면 및 연결 컴포넌트 클래스 목록 통계 (--no-linked 지원)
 uv run yunhee analysis screen <화면> --section layout # GXT 폼 탭 레이아웃(라벨 폭, 행 구조, 위젯 크기, readOnly/disable) 추출
-uv run yunhee api GET /api/v1/emp/others -c kfstest --log # API 호출 직후 서버가 실제로 실행한 SQL과 바인딩 파라미터(이름=값) 요약
+uv run yunhee analysis callers Crm09_Lookup_SelectSingle --tobe frontend/src # AS-IS 팝업/창 호출부(open/view/edit 및 인자)와 TOBE 렌더링 짝 대조
+uv run yunhee trace-gap --stubs                       # TOBE frontend/src의 미연결 자리(다음 단계 안내·[E… 생략]·화면 머리 주석) 및 메뉴 번호 수집
+uv run yunhee api GET /api/v1/emp/others -c kfstest --log # API 호출 직후 서버가 실제로 실행한 SQL과 바인딩 파라미터(이름=값) 요약 (--track 테이블명 지원)
 uv run yunhee log trace <traceId>                     # 단일 요청 trace의 실행 요약 및 SQL/바인딩 파라미터(이름=값) 목록
 uv run yunhee log req GET /api/v1/emp/others          # 접근 로그에서 최근 요청 목록 검색
 uv run yunhee log errors                              # WARN/ERROR 묶음 요약

@@ -528,6 +528,21 @@ def compare_api_sql(
     if "." not in sql_ref:
         return ToolResult(ok=False, error=f"올바른 형식(namespace.sqlId)으로 입력해 주세요: {sql_ref}")
 
+    from yunhee.tools.as_is.sql_checker import resolve_service_to_sql_id
+
+    resolved_sql, service_note, multi_called, _ = resolve_service_to_sql_id(sql_ref, src_root)
+    if multi_called:
+        return ToolResult(ok=False, error=f"서비스 {sql_ref}가 여러 매퍼 문장을 호출합니다: {', '.join(multi_called)}")
+    if resolved_sql:
+        if service_note:
+            sys.stderr.write(f"{service_note}\n")
+        sql_ref = resolved_sql
+
+    if sql_total_ref and "." in sql_total_ref:
+        res_tot, _, _, _ = resolve_service_to_sql_id(sql_total_ref, src_root)
+        if res_tot:
+            sql_total_ref = res_tot
+
     ns, sid = sql_ref.split(".", 1)
 
     # 1. API 호출

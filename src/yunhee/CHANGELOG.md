@@ -2,6 +2,20 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.7.4] - 2026-11-05
+수정사항 048 완료: `port-sql`/`analysis sql` DB 부재 객체 즉시 경고 및 서비스명(`dom.Class.method`) 해석, `analysis callers` 창 호출부/인자 추출, `trace-gap --stubs` TOBE 미연결 안내 수집, `api --track` 테이블 행 수/PK 변화 추적
+- **`port-sql` · `analysis sql` DB 부재 객체 즉시 경고 및 `sql-check --new-since-index` (수정사항 048 §1)**:
+  - 단일 문장 `EXPLAIN` 및 `sql-check.md` 대조를 통해 DB에 없는 테이블·뷰·함수 참조 시 `⚠ DB에 없는 객체: ... — 변환 가이드 1절에 따라 보류 검토` 경고 및 `sql-check` 상태 줄 즉시 출력 (`port-sql`은 첫 줄 주석으로 출력).
+  - `yunhee sql-check --new-since-index` (`--changed-asis`): 마지막 색인/`sql-check.md` 이후 AS-IS에 새로 추가·변경된 매퍼 XML만 선별 검증.
+- **`analysis sql` · `port-sql` · `compare --sql` 서비스 이름(`dom.Class.method`) 자동 해석 (수정사항 048 §2)**:
+  - 인자가 `ics.Ics40_DcrPreconfirm.selectByApprId` 꼴이면 `server/{dom}/{ClassName}.java`의 메서드가 부르는 매퍼 문장을 추적하여 `서비스 ... → 매퍼 ...` 안내와 함께 SQL을 반환하고, 실패 시 같은 매퍼 내 후보 문장을 제시.
+- **`yunhee analysis callers <클래스> [--tobe <경로>]` 신설 (수정사항 048 §4)**:
+  - AS-IS에서 특정 팝업·조회창·편집창을 `new`하여 여는 모든 호출부의 `파일:줄 | 부른 메서드(open/view/edit 등) | 리터럴 인자 | 감싼 메서드 | 메뉴` 표 출력 및 `--tobe` 지정 시 TOBE `<클래스 ...>` 렌더링 위치/props 대조.
+- **`yunhee trace-gap --stubs` TOBE 미연결 자리 수집 (수정사항 048 §3)**:
+  - TOBE `frontend/src`에서 `message.info/warning`의 미연결 안내(`다음 단계`·`아직 변환`·`연결됩니다` 등, 템플릿 헬퍼 포함), `// [E… 생략]` 주석, 화면 머리에 남은 `1단계:`/`다음 단계:` 주석을 역방향 import `_Tab_` 화면 및 `#메뉴번호`와 함께 표 및 `13-누락대장.md` 체크리스트 형식으로 출력.
+- **`yunhee api --track <테이블>[,<테이블>]` 행 수 및 신규 PK 추적 (수정사항 048 §5)**:
+  - API 호출 전후로 지정 테이블의 행 수 변화와 새로 생긴 PK(`information_schema` 기준)를 한 줄로 출력 (예: `biz05_relate_appr: 40 → 41 (+1: biz05_relate_appr_id=...)`, 삭제 시 `(-1)`, 실패 시 `(변화 없음)`).
+
 ## [0.7.3] - 2026-11-03
 수정사항 047 완료: `mapper-run` 및 MyBatis `<foreach>` 컬렉션 파라미터 바인딩 지원
 - **`mapper-run` / `mybatis_render` `<foreach>` 목록 파라미터 바인딩 (수정사항 047)**:

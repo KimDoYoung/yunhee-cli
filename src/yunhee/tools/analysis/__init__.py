@@ -4,6 +4,7 @@ from types import ModuleType
 from typing import Any
 
 from yunhee.tools.analysis import (
+    callers,
     grid,
     method,
     model,
@@ -28,6 +29,8 @@ REGISTRY: dict[str, ModuleType] = {
     "save-script": save_script,
     "save_script": save_script,
     "servlet": servlet,
+    "callers": callers,
+    "caller": callers,
 }
 
 

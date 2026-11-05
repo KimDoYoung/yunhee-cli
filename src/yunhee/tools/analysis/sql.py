@@ -19,14 +19,20 @@ EXAMPLES = [
 
 def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
     """대상 statement를 찾아 준비한다."""
-    src_root, _ = resolve_as_is_paths(src=opts.get("src"), src_index=opts.get("src_index"))
+    from yunhee.tools.analysis.common import AmbiguousTargetError
+    from yunhee.tools.as_is.sql_checker import resolve_service_to_sql_id
+
+    src_root, src_index = resolve_as_is_paths(src=opts.get("src"), src_index=opts.get("src_index"))
     stmts = get_all_statements(src_root)
 
-    st = stmts.get(target)
+    resolved_key, service_note, multi_called, candidates = resolve_service_to_sql_id(target, src_root, statements=stmts)
+    if multi_called:
+        raise AmbiguousTargetError(multi_called, target)
+
+    st = stmts.get(resolved_key) if resolved_key else None
     if not st:
-        st = next((s for s in stmts.values() if s.sid == target), None)
-    if not st:
-        raise ValueError(f"statement를 찾을 수 없습니다: {target}")
+        cand_hint = f"\n비슷한 문장: {', '.join(candidates)} (매퍼 이름은 '테이블.id' 꼴입니다)" if candidates else ""
+        raise ValueError(f"statement를 찾을 수 없습니다: {target}{cand_hint}")
 
     # 파라미터 수집
     raw_params = opts.get("param", [])
@@ -42,7 +48,9 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         "statement": st,
         "params": params_dict,
         "src_root": src_root,
+        "src_index": src_index,
         "statements": stmts,
+        "service_note": service_note,
     }
 
 
@@ -186,6 +194,7 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     params = obj["params"]
     stmts = obj["statements"]
     key = obj["key"]
+    service_note = obj.get("service_note")
     count_opt = opts.get("count", False)
 
     # 1. code 모드
@@ -208,7 +217,8 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
             else:
                 missing_inc.append(inc)
 
-        header = f"<!-- {st.key} ({xml_path}:{st.line}) -->\n"
+        header = f"<!-- {service_note} -->\n" if service_note else ""
+        header += f"<!-- {st.key} ({xml_path}:{st.line}) -->\n"
         if inc_comments:
             header += "\n".join(inc_comments) + "\n"
 
@@ -301,9 +311,39 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
 
         no_cte_opt = bool(opts.get("no_cte"))
         section_opt = str(opts.get("section") or "").lower()
-        return _fold_cte_and_section(sql, no_cte=no_cte_opt, section=section_opt)
+        folded_sql = _fold_cte_and_section(sql, no_cte=no_cte_opt, section=section_opt)
+
+        from yunhee.tools.as_is.sql_checker import check_statement_db_objects
+
+        db_check = check_statement_db_objects(
+            st,
+            stmts,
+            db=opts.get("db"),
+            src_root=obj.get("src_root"),
+            src_index=obj.get("src_index"),
+        )
+        prefix_lines: list[str] = []
+        if service_note:
+            prefix_lines.append(f"-- {service_note}")
+        if db_check.get("warning"):
+            prefix_lines.append(f"-- {db_check['warning']}")
+        elif db_check.get("explain_status") == "확인 못 함":
+            prefix_lines.append("-- ⚠ DB 객체 확인 못 함 (동적 SQL EXPLAIN 한계)")
+        if prefix_lines:
+            return "\n".join(prefix_lines) + "\n" + folded_sql
+        return folded_sql
 
     # 3. md 모드 (요약)
+    from yunhee.tools.as_is.sql_checker import check_statement_db_objects
+
+    db_check = check_statement_db_objects(
+        st,
+        stmts,
+        db=opts.get("db"),
+        src_root=obj.get("src_root"),
+        src_index=obj.get("src_index"),
+    )
+
     raw_xml = st.raw
     m = re.search(rf'<{st.kind}\b[^>]*\bid="{re.escape(st.sid)}"[^>]*>(.*?)</{st.kind}>', raw_xml, re.DOTALL)
     body = m.group(1) if m else raw_xml
@@ -376,13 +416,22 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
                 "tables": table_names,
                 "functions": funcs,
                 "order_by": order_by,
+                "sql_check": db_check.get("sql_check_line"),
+                "warning": db_check.get("warning"),
             },
             ensure_ascii=False,
             indent=2,
             default=str,
         )
 
-    lines = [f"### `{st.key}` ({st.rel}:{st.line})"]
+    lines: list[str] = []
+    if service_note:
+        lines.append(service_note)
+    if db_check.get("warning"):
+        lines.append(db_check["warning"])
+    lines.append(f"### `{st.key}` ({st.rel}:{st.line})")
+    if db_check.get("sql_check_line"):
+        lines.append(f"- **sql-check**: {db_check['sql_check_line']}")
     if inc_list:
         lines.append(f"- **include**: {', '.join(inc_list)}")
     if bind_vars:

@@ -6,9 +6,11 @@
 
 ## 1. 코드 및 SQL 생성 도구
 
-### `yunhee port-sql <sql_id>`
-AS-IS MyBatis SQL을 TOBE 매퍼 XML 조각(`<select>`, `<sql id="...">`) 및 Java 21 Record DTO로 결정적 변환합니다.
-- **주요 옵션**:
+### `yunhee port-sql <sql_id 또는 dom.Class.method>`
+AS-IS MyBatis SQL(또는 화면 주석의 서비스 이름 `dom.Class.method`)을 TOBE 매퍼 XML 조각(`<select>`, `<sql id="...">`) 및 Java 21 Record DTO로 결정적 변환합니다.
+- **주요 옵션 및 자동 검증**:
+  - **서비스 이름 자동 해석**: `ics.Ics40_DcrPreconfirm.selectByApprId` 꼴로 넘겨도 서버 클래스를 거쳐 매퍼 문장을 찾아 변환합니다.
+  - **DB 부재 객체 자동 경고**: `YUNHEE_DB`에 없는 테이블·뷰·함수를 참조하는 SQL이면 출력 첫 줄에 `<!-- ⚠ DB에 없는 객체: ... — 변환 가이드 1절에 따라 보류 검토 -->` 경고를 붙입니다.
   - `--cols <COLS>`: 추출할 컬럼 목록 (쉼표 구분)
   - `--getter-defaults`: AS-IS 모델 getter null 기본값을 COALESCE로 적용
   - `--package <PKG>`: 생성될 DTO 패키지명 (resultType FQN에 사용)
@@ -16,6 +18,7 @@ AS-IS MyBatis SQL을 TOBE 매퍼 XML 조각(`<select>`, `<sql id="...">`) 및 Ja
 - **예시**:
   ```bash
   yunhee port-sql sys04_role.selectByName --package kr.co.kfs.asseterp.biz.sys.dto
+  yunhee port-sql ics.Ics40_DcrPreconfirm.selectByApprId
   yunhee port-sql sys04_role.selectByName --cols role_cd,role_nm,note
   ```
 
@@ -94,11 +97,13 @@ MyBatis 매퍼 XML의 동적 SQL(`<if>`, `<choose>`, `<foreach>`)을 펼쳐 대�
 - **주요 옵션**:
   - `--tobe <DIR>`: TOBE 매퍼 디렉터리 경로 (TOBE SQL 정합성 및 DTO 매핑 검증 모드 — Java `record` DTO의 열 누락은 런타임 500 방지를 위해 `❌` 오류 및 비-0 종료코드로 판정하며, 일반 setter 클래스 필드 누락은 `⚠` 경고로 표시, 남는 별칭은 무시, `<include><property/></include>` 전개 및 미해결 include `?` 표시 지원)
   - `--changed`: git diff (+untracked) 변경된 매퍼 XML만 검증
+  - `--new-since-index`, `--changed-asis`: 마지막 `sql-check.md` 생성 이후 AS-IS에 새로 추가·변경된 매퍼 XML만 빠르게 검증 (`git pull` 직후 추천)
   - `--old <DIR> --new <DIR>`: 이전 소스와 새 소스 간 SQL Drift 검증 모드
   - `--db <DB>`: 검증 대상 DB명 (기본: `asseterpdb`)
 - **예시**:
   ```bash
   yunhee sql-check ~/workspace26/Asset-OMS --db asseterpdb
+  yunhee sql-check --new-since-index
   yunhee sql-check --tobe src/main/resources/mapper --changed
   ```
 

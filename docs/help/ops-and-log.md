@@ -111,15 +111,17 @@ PostgreSQL 읽기 전용 쿼리를 실행하거나 `--rollback` 트랜잭션 격
   - `--raw-param`: `-p` 값의 `%XX` 패턴을 디코딩하지 않고 문자 그대로 다시 URL 인코딩
   - `-b, --body <JSON>`: JSON 요청 본문
   - `--log`: API 호출 직후 서버가 실제로 실행한 SQL 및 파라미터 요약 출력
+  - `--track <테이블>[,<테이블>]`: 호출 전후 지정 테이블의 행 수 변화 및 새로 생긴 PK(`information_schema` 기준)를 한 줄로 출력 (예: `biz05_relate_appr: 40 → 41 (+1: biz05_relate_appr_id=202611059009067)`, 삭제 시 `41 → 40 (-1)`, 실패 시 `변화 없음`)
 - **예시**:
   ```bash
   yunhee api GET /api/v1/sys/roles
   yunhee api GET /api/v1/sys/companies -c kfstest -t admin --log
-  yunhee api POST /api/v1/sys/roles -b '{"role_cd":"TEST","role_nm":"테스트"}'
+  yunhee api POST /api/v1/biz/relate-apprs/promo -t admin -c kfstest -b '{"promoId":202204280115828,"apprId":202509189046469}' --track biz05_relate_appr
+  yunhee api DELETE /api/v1/biz/relate-apprs -t admin -c kfstest -b '[202611059009067]' --track biz05_relate_appr
   ```
 
-### `yunhee compare <method> <path> --sql <sql_id>`
-TOBE 조회 API 응답과 AS-IS SQL 결과를 대조하여 행 수 및 그리드 컬럼 커버리지를 검증합니다.
+### `yunhee compare <method> <path> --sql <sql_id 또는 dom.Class.method>`
+TOBE 조회 API 응답과 AS-IS SQL 결과를 대조하여 행 수 및 그리드 컬럼 커버리지를 검증합니다 (`--sql`에 매퍼 ID뿐 아니라 서비스 이름 `dom.Class.method`도 그대로 줄 수 있습니다).
 - **주요 옵션**:
   - `-p, --param-api <key=val>`: API 요청 파라미터 (반복 가능, **LIKE용 `%`는 `-p k=%`로 준다**)
   - `--raw-param`: `-p` 값의 `%XX` 패턴을 디코딩하지 않고 문자 그대로 다시 URL 인코딩

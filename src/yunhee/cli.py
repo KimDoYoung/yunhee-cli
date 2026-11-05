@@ -52,9 +52,9 @@ def main(
   1. [bold green]코드 파악[/bold green]: [cyan]yunhee outline <경로>[/cyan] (시그니처·줄 번호 추출, 전체 읽기 금지)
   2. [bold green]DB 스키마[/bold green]: [cyan]yunhee table <패턴>[/cyan] (필요한 테이블 DBML만 추출)
   3. [bold green]빌드/테스트[/bold green]: [cyan]yunhee run "<명령>"[/cyan] (1줄 성공/에러 요약, 셸 직실행 금지)
-  4. [bold green]API/로그[/bold green]: [cyan]yunhee api GET <경로> [--log][/cyan] · [cyan]yunhee log trace|req|errors|tail[/cyan]
-  5. [bold green]AS-IS 분석[/bold green]: [cyan]yunhee analysis screen|ui|method|sql|grid <대상>[/cyan] · [cyan]yunhee page-style <화면>[/cyan]
-  6. [bold green]원본 변경[/bold green]: [cyan]yunhee drift --all --base baseline[/cyan] · [cyan]drift --record <화면>[/cyan]
+  4. [bold green]API/로그[/bold green]: [cyan]yunhee api <METHOD> <경로> [--log] [--track <테이블>][/cyan] · [cyan]yunhee log trace|req|errors|tail[/cyan]
+  5. [bold green]AS-IS 분석[/bold green]: [cyan]yunhee analysis screen|ui|method|sql|grid|callers <대상>[/cyan] · [cyan]yunhee page-style <화면>[/cyan]
+  6. [bold green]미연결/원본변경[/bold green]: [cyan]yunhee trace-gap --stubs[/cyan] · [cyan]yunhee drift --all --base baseline[/cyan] · [cyan]yunhee sql-check --new-since-index[/cyan]
   7. [bold green]설정/이력[/bold green]: [cyan]yunhee config[/cyan] · [cyan]yunhee changelog --since <버전>[/cyan]
 """
     if ctx.invoked_subcommand is None:
@@ -731,6 +731,7 @@ def api(
     log: Annotated[bool, typer.Option("--log", help="호출 후 서버 로그(trace) 요약 출력")] = False,
     no_mask: Annotated[bool, typer.Option("--no-mask", help="개인정보 마스킹 해제")] = False,
     wait_deploy: Annotated[float | None, typer.Option("--wait-deploy", help="배포 후 앱 기동 완료까지 대기(초, 기본 60초)")] = None,
+    track: Annotated[str | None, typer.Option("--track", help="호출 전후 테이블 행 수 및 신규 PK 추적 (쉼표 구분, 예: biz02_person,biz05_relate_appr)")] = None,
 ):
     """자동 로그인 기반 API 호출 및 응답(상태·행수·필드) 요약
 
@@ -794,6 +795,7 @@ def api(
         mask=not no_mask,
         wait_deploy=wait_deploy,
         raw_param=raw_param,
+        track=track,
         **kw,
     )
 
@@ -803,6 +805,8 @@ def api(
 
     if raw:
         print(res.data.get("text", ""))
+        for tline in res.data.get("track") or []:
+            print(tline)
     else:
         print(res.data.get("summary", ""))
 
@@ -1178,21 +1182,24 @@ def agent_guide():
 - 실패/상세 로그 추출: `yunhee analysis run last --stderr` (에러/예외 출력만 확인), `yunhee analysis run last --stdout` (표준 출력만 확인)
 
 ## 4. 로그인 기반 API 스모크 검증 시 (토큰 95% 절약)
-- ❌ 절대 금지: curl 등으로 직접 로그인하고 수천 줄의 JSON 응답을 그대로 터미널에 쏟아내지 마세요.
-- ✅ 권장 명령: `yunhee api <METHOD> <PATH> [--as admin|user] [--company CODE] [--tenant TENANT]`
+- ❌ 절대 금지: curl 등으로 직접 로그인하고 수천 줄의 JSON 응답을 그대로 터미널에 쏟아내지 마세요. 쓰기 시험 후 새 행 PK를 찾으려고 따로 SQL을 여러 번 돌리지 마세요.
+- ✅ 권장 명령: `yunhee api <METHOD> <PATH> [--as admin|user] [--company CODE] [--tenant TENANT] [--track <테이블>[,<테이블>]]`
   - 예: `yunhee api GET /api/v1/sys/menus/company`
   - 예: `yunhee api GET /api/v1/sys/roles --as admin`
-  - 예: `yunhee api GET /api/v1/sys/user-roles/companies/28000?roleId=28118`
-  - 예: `yunhee api POST /api/v1/sys/roles --body '{"role_cd":"TEST"}'`
-- 📄 산출물: 세션 쿠키/JWT가 자동 관리되며(계정 잠금 방지 안전 가드 내장), 응답은 `HTTP 200 (rows=12, fields: [...])` 압축 헤더로 요약됩니다.
+  - 예: `yunhee api POST /api/v1/biz/relate-apprs/promo -c kfstest -b '{"promoId":...}' --track biz05_relate_appr` (호출 전후 행 수와 새로 생긴 PK `biz05_relate_appr: 40 → 41 (+1: biz05_relate_appr_id=...)` 출력)
+  - 예: `yunhee api DELETE /api/v1/biz/relate-apprs -c kfstest -b '[...]' --track biz05_relate_appr` (`41 → 40 (-1)` 한 줄로 삭제 확인)
+- 📄 산출물: 세션 쿠키/JWT가 자동 관리되며(계정 잠금 방지 안전 가드 내장), 응답은 `HTTP 200 (rows=12, fields: [...])` 압축 헤더와 `--track` 테이블 행 수/신규 PK 변화로 요약됩니다.
 
-## 5. AS-IS 정적 분석 및 폼 레이아웃 파악 (토큰 90% 절약)
-- ❌ 절대 금지: 복잡한 GXT 폼 탭의 컴포넌트 크기, 라벨, 배치, 읽기 전용 속성을 파악하려고 수백 줄의 자바 소스를 직접 열지 마세요.
+## 5. AS-IS 정적 분석 및 폼 레이아웃·호출부 파악 (토큰 90% 절약)
+- ❌ 절대 금지: 복잡한 GXT 폼 탭의 컴포넌트 크기, 라벨, 배치, 읽기 전용 속성이나 팝업 호출 인자를 파악하려고 수백 줄의 자바 소스를 직접 열거나 grep하지 마세요.
 - ✅ 권장 명령:
     - `yunhee page-style <화면.java|tsx>`: 화면 파일의 페이지 스타일(SID: SG, SGP, SGVF, SGEF, SGTP, SGT, TG, GG, CG) 및 분할 레이아웃 판별 (대조: `yunhee page-style --compare <asis.java> <tobe.tsx>`)
     - `yunhee analysis screen <화면> --list`: 클래스 목록 및 줄/버튼/이벤트/그리드 통계 (연결 컴포넌트 포함(`(연결)` 표시), `--no-linked` 지원)
     - `yunhee analysis screen <화면> --section layout`: 폼 탭은 원본 Java를 열기 전에 이것부터 확인하세요.
-    - `yunhee analysis screen <화면> --section source`: 색인 시점의 소스 커밋과 의존 파일 개수 요약 확인.
+    - `yunhee analysis callers <클래스> [--tobe frontend/src]`: AS-IS에서 해당 팝업/창을 `new`하여 여는 모든 호출부(`파일:줄 | 부른 메서드(open/view/edit) | 리터럴 인자 | 감싼 메서드 | 메뉴`)와 TOBE 렌더링 짝(`<컴포넌트 ...>`)을 한 번에 대조하세요.
+    - `yunhee analysis sql <매퍼ID 또는 dom.Class.method>` / `yunhee port-sql <매퍼ID 또는 dom.Class.method>`: 매퍼 이름(`ics40_dcr_preconfirm.selectByApprId`)뿐 아니라 화면 주석에 적힌 **서비스 이름(`ics.Ics40_DcrPreconfirm.selectByApprId`)을 그대로 넘겨도** 서버 메서드를 거쳐 매퍼 SQL을 자동 해석하며, DB에 없는 테이블/함수가 있으면 즉시 `⚠ DB에 없는 객체` 경고를 표시합니다.
+    - `yunhee trace-gap --stubs [-d <도메인>]`: TOBE `frontend/src`에서 미연결 자리(`message.info/warning`의 '다음 단계'·'아직 변환'·'연결됩니다' 안내, `[E… 생략]`, 화면 머리에만 남은 `1단계:`/`다음 단계:` 주석)를 여는 `_Tab_` 화면 및 메뉴 번호(`#번호`)와 함께 표 및 `13-누락대장.md` 체크리스트 꼴로 수집합니다.
+    - `yunhee sql-check --new-since-index`: 마지막 `sql-check.md` 생성 이후 AS-IS에 새로 추가·변경된 매퍼 XML만 빠르게 EXPLAIN 검증합니다.
     - `yunhee analysis ui <화면>`: TOBE 이벤트 구현율 및 `(생략 N)` (TOBE에서 생략하기로 결정된 이벤트 수) 확인 (연결 컴포넌트 포함(`(연결)` 표시)).
 
 ## 6. 서버 로그 및 실제 실행 SQL 확인 시 (grep 금지)
@@ -1629,6 +1636,10 @@ def sql_check_cmd(
         bool,
         typer.Option("--summary", help="매퍼별 ✅ n / ❌ m 한 줄 및 ❌ statement만 상세 출력"),
     ] = False,
+    new_since_index: Annotated[
+        bool,
+        typer.Option("--new-since-index", "--changed-asis", help="색인 기준 이후 새로 생겼거나 최근 변경된 AS-IS 매퍼 SQL만 EXPLAIN 검증"),
+    ] = False,
 ):
     """MyBatis 매퍼 SQL EXPLAIN 정합성 및 SQL Drift 검증"""
     import json
@@ -1694,12 +1705,18 @@ def sql_check_cmd(
             src_idx = cand
 
     typer.echo(f"[INFO] AS-IS 매퍼 SQL 정합성 검증 중 (DB: {db}) ...")
-    res = check_sql(root, out_file, db=db, src_index_dir=src_idx)
+    res = check_sql(root, out_file, db=db, src_index_dir=src_idx, new_since_index=new_since_index)
     if not res.ok:
         typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED)
         raise typer.Exit(1)
 
     d = res.data
+    if new_since_index:
+        if target is not None:
+            out_file.parent.mkdir(parents=True, exist_ok=True)
+            out_file.write_text(d.get("report_md", ""), encoding="utf-8")
+        typer.echo(d.get("report_md", "").strip())
+        return
     typer.secho(f"✅ SQL 정합성 검증 완료: {d['target_file']}", fg=typer.colors.GREEN, bold=True)
     typer.echo(f"  - 대상 DB: {db}, 총 SQL: {d['total_sql']}개")
     typer.echo(f"  - 통과: {d['passed_count']}개")

@@ -13,7 +13,13 @@ from yunhee.tools.as_is.sql_drift import check_sql_drift
 from yunhee.tools.as_is.src_indexer import find_app
 from yunhee.tools.base import ToolResult
 
-__all__ = ["check_sql", "check_sql_drift", "check_tobe_sql"]
+__all__ = [
+    "check_sql",
+    "check_sql_drift",
+    "check_statement_db_objects",
+    "check_tobe_sql",
+    "resolve_service_to_sql_id",
+]
 
 ENV_ERROR_RE = re.compile(r'collation "[^"]+" for encoding "[^"]+" does not exist', re.IGNORECASE)
 SCHEMA_ERROR_RE = re.compile(
@@ -114,6 +120,263 @@ def explain(sql: str, db: str, extra_env: dict[str, str] | None = None) -> str |
     return f"{err} — {near[:160]}" if near else err
 
 
+def _restore_obj_case(obj_err: str, sql_text: str) -> str:
+    """PostgreSQL 오류 메시지의 소문자 식별자를 원본 SQL의 대소문자로 복원한다."""
+    m = re.match(r"^(function|column|relation|type|schema)\s+\"?([a-zA-Z0-9_.]+)\"?(.*)$", obj_err, re.IGNORECASE)
+    if not m or not sql_text:
+        return obj_err
+    kind, ident, tail = m.group(1), m.group(2), m.group(3)
+    base_ident = ident.split(".")[-1]
+    orig_m = re.search(rf"\b({re.escape(base_ident)})\b", sql_text, re.IGNORECASE)
+    if orig_m:
+        orig_ident = orig_m.group(1)
+        if "." in ident:
+            prefix = ident.rsplit(".", 1)[0]
+            ident_restored = f"{prefix}.{orig_ident}"
+        else:
+            ident_restored = orig_ident
+        quote = '"' if f'"{ident}"' in obj_err else ""
+        return f"{kind} {quote}{ident_restored}{quote}{tail}"
+    return obj_err
+
+
+def _class_to_snake_ns(cls_name: str) -> str:
+    parts = cls_name.split("_")
+    conv = [re.sub(r"(?<=[a-z0-9])([A-Z])", r"_\1", p).lower() for p in parts if p]
+    return "_".join(conv)
+
+
+def resolve_service_to_sql_id(
+    target: str,
+    src_root: Path | None,
+    statements: dict[str, Statement] | None = None,
+) -> tuple[str | None, str | None, list[str], list[str]]:
+    """매퍼 문장 ID 또는 서비스 메서드(dom.Class.method)를 해석한다.
+
+    반환: (resolved_key, service_note, multi_called_ids, candidate_keys)
+    """
+    import difflib
+
+    from yunhee.tools.as_is.mybatis_render import get_all_statements
+    from yunhee.tools.as_is.src_indexer import (
+        SEQ_SQL_ID,
+        SQL_CALL_RE,
+        call_argument,
+        eval_string,
+        find_methods,
+        strip_java,
+    )
+
+    stmts = statements if statements is not None else get_all_statements(src_root)
+    target_clean = target.strip()
+
+    # 1. 매퍼 문장 ID로 직접 존재하는 경우
+    st = stmts.get(target_clean)
+    if not st and "." not in target_clean:
+        st = next((s for s in stmts.values() if s.sid == target_clean), None)
+    if st:
+        return st.key, None, [], []
+
+    # 2. 서비스 메서드 이름 (dom.ClassName.method 또는 ClassName.method) 해석 시도
+    tokens = target_clean.split(".")
+    cand_ns = ""
+    cand_sid = tokens[-1] if tokens else target_clean
+    server_file: Path | None = None
+    cls_name = ""
+    meth_name = ""
+
+    if len(tokens) >= 2:
+        meth_name = tokens[-1]
+        cls_name = tokens[-2]
+        dom_parts = tokens[:-2]
+        if cls_name and cls_name[0].isupper():
+            cand_ns = _class_to_snake_ns(cls_name)
+        else:
+            cand_ns = cls_name
+
+        app = (find_app(src_root) or src_root) if src_root and src_root.is_dir() else None
+        if app and app.is_dir():
+            sdir = app / "server" if (app / "server").is_dir() else app
+            if dom_parts:
+                cand_path = sdir / Path(*dom_parts) / f"{cls_name}.java"
+                if cand_path.is_file():
+                    server_file = cand_path
+            if not server_file and cls_name and cls_name[0].isupper():
+                found = [f for f in sdir.rglob(f"{cls_name}.java") if "target" not in f.parts]
+                if found:
+                    server_file = found[0]
+
+    if server_file and server_file.is_file():
+        try:
+            raw_java = server_file.read_text(encoding="utf-8", errors="replace")
+            no_comment, bare = strip_java(raw_java)
+            mapper_vals = eval_string("mapperName", [no_comment])
+            if mapper_vals:
+                cand_ns = min(mapper_vals)
+
+            methods_map: dict[str, tuple[str, str]] = {}
+            for m_name, _npos, b_start, b_end, _is_pub, _params in find_methods(bare):
+                body = no_comment[b_start : b_end + 1]
+                body_bare = bare[b_start : b_end + 1]
+                methods_map.setdefault(m_name, (body, body_bare))
+
+            if meth_name in methods_map:
+                all_m_names = set(methods_map.keys())
+                visited: set[str] = set()
+                called_sqls: list[str] = []
+
+                def _collect(m_nm: str) -> None:
+                    if m_nm in visited or m_nm not in methods_map:
+                        return
+                    visited.add(m_nm)
+                    b_text, b_bare = methods_map[m_nm]
+                    for m_call in SQL_CALL_RE.finditer(b_text):
+                        arg = call_argument(b_text, m_call.end() - 1)
+                        vals = eval_string(arg, [b_text, no_comment])
+                        if vals:
+                            for v in sorted(vals):
+                                sid_val = SEQ_SQL_ID if v == "getSeq" else v
+                                if sid_val not in called_sqls:
+                                    called_sqls.append(sid_val)
+                    for sub_m in re.findall(r"(?<![\w.])(\w+)\s*\(", b_bare):
+                        if sub_m in all_m_names and sub_m != m_nm:
+                            _collect(sub_m)
+
+                _collect(meth_name)
+                non_seq = [s for s in called_sqls if s != SEQ_SQL_ID]
+                effective = non_seq or called_sqls
+                valid = [s for s in effective if s in stmts] or effective
+                if len(valid) == 1 and valid[0] in stmts:
+                    mapped = valid[0]
+                    return mapped, f"서비스 {target_clean} → 매퍼 {mapped}", [], []
+                if len(valid) > 1:
+                    return None, None, valid, []
+        except OSError:
+            pass
+
+    # 3. 후보 문장 목록 생성
+    candidates: list[str] = []
+    if cand_ns:
+        direct_cand = f"{cand_ns}.{cand_sid}"
+        if direct_cand in stmts:
+            candidates.append(direct_cand)
+        ns_stmts = [s for s in stmts.values() if s.ns.lower() == cand_ns.lower() and s.kind != "sql" and s.key == f"{s.ns}.{s.sid}"]
+        if ns_stmts:
+            close_sids = difflib.get_close_matches(cand_sid, [s.sid for s in ns_stmts], n=5, cutoff=0.35)
+            for c_sid in close_sids:
+                full_k = f"{ns_stmts[0].ns}.{c_sid}"
+                if full_k not in candidates:
+                    candidates.append(full_k)
+            if not candidates:
+                for s in ns_stmts[:8]:
+                    if s.key not in candidates:
+                        candidates.append(s.key)
+
+    if not candidates:
+        all_keys = [s.key for s in stmts.values() if s.kind != "sql" and s.key == f"{s.ns}.{s.sid}"]
+        candidates = difflib.get_close_matches(target_clean, all_keys, n=5, cutoff=0.4)
+
+    return None, None, [], candidates
+
+
+def check_statement_db_objects(
+    st: Statement,
+    statements: dict[str, Statement],
+    db: str | None = None,
+    src_root: Path | None = None,
+    src_index: Path | None = None,
+) -> dict[str, Any]:
+    """단일 statement의 DB 객체 존재 여부(EXPLAIN)와 sql-check.md 상태를 반환한다."""
+    from datetime import UTC, datetime
+
+    from yunhee.tools.as_is import find_as_is_dir
+
+    if st.kind == "sql":
+        return {"warning": None, "explain_status": "조각", "sql_check_line": None}
+
+    raw_sql = to_sql(st, statements)
+    target_db, pg_env = get_db_env(db)
+    err = explain(raw_sql, target_db, extra_env=pg_env)
+
+    warning: str | None = None
+    if err is None:
+        explain_status = "통과"
+    else:
+        m_schema = SCHEMA_ERROR_RE.search(err)
+        if m_schema:
+            obj_err = _restore_obj_case(m_schema.group(0), raw_sql)
+            warning = f"⚠ DB에 없는 객체: {obj_err} — 변환 가이드 1절에 따라 보류 검토"
+            explain_status = f"없는 객체({obj_err})"
+        elif "psql 명령어를 찾을 수 없습니다" in err or "connection to server" in err.lower() or "could not connect" in err.lower():
+            explain_status = "미검증"
+        else:
+            explain_status = "확인 못 함"
+
+    # sql-check.md 상태 확인
+    sql_check_file: Path | None = None
+    if src_index and (src_index.parent / "sql-check.md").is_file():
+        sql_check_file = src_index.parent / "sql-check.md"
+    else:
+        cand_file = find_as_is_dir() / "sql-check.md"
+        if cand_file.is_file():
+            sql_check_file = cand_file
+
+    sql_check_status = explain_status
+    if sql_check_file and sql_check_file.is_file():
+        try:
+            md_text = sql_check_file.read_text(encoding="utf-8", errors="replace")
+            check_mtime = sql_check_file.stat().st_mtime
+            check_date = datetime.fromtimestamp(check_mtime, tz=UTC).astimezone().strftime("%Y-%m-%d")
+
+            row_re = re.compile(rf"^\|\s*`{re.escape(st.key)}`\s*\|\s*`[^`]+`\s*\|\s*[^|]+\|\s*(.+?)\s*\|$", re.MULTILINE)
+            m_row = row_re.search(md_text)
+            if m_row:
+                err_col = m_row.group(1)
+                m_sc = SCHEMA_ERROR_RE.search(err_col)
+                if m_sc:
+                    obj_err = _restore_obj_case(m_sc.group(0), raw_sql)
+                    sql_check_status = f"없는 객체({obj_err})"
+                elif ENV_ERROR_RE.search(err_col):
+                    sql_check_status = "DB 환경 차이"
+                else:
+                    sql_check_status = "확인 못 함"
+            else:
+                # sql-check.md 실패 목록에 없음 -> 생성일과 SQL 추가 시점/현재 EXPLAIN 비교
+                is_older = False
+                if warning is not None:
+                    # 현재 DB에는 없는 객체인데 sql-check.md 실패 표에 없다면 sql-check.md가 오래된 것
+                    is_older = True
+                elif src_root and src_root.is_dir():
+                    app = find_app(src_root) or src_root
+                    xml_full = app / st.rel
+                    if xml_full.is_file():
+                        try:
+                            git_res = subprocess.run(
+                                ["git", "-C", str(src_root), "log", "-S", st.sid, "-1", "--format=%ct", "--", str(xml_full)],
+                                capture_output=True,
+                                text=True,
+                                check=False,
+                                timeout=2.0,
+                            )
+                            ts_str = git_res.stdout.strip()
+                            if ts_str.isdigit() and int(ts_str) > int(check_mtime):
+                                is_older = True
+                        except Exception:  # noqa: BLE001, S110
+                            pass
+                if is_older:
+                    sql_check_status = f"결과 없음(sql-check.md가 이 SQL보다 오래됨 — {check_date} 생성)"
+                else:
+                    sql_check_status = "통과"
+        except OSError:
+            pass
+
+    return {
+        "warning": warning,
+        "explain_status": explain_status,
+        "sql_check_line": sql_check_status,
+    }
+
+
 def screens_using(src_index: Path | None, keys: list[str]) -> dict[str, set[str]]:
     """src-index 화면 파일에서 SQL ID를 쓰는 화면"""
     result: dict[str, set[str]] = defaultdict(set)
@@ -136,6 +399,7 @@ def check_sql(
     target_file: Path,
     db: str = "asseterpdb",
     src_index_dir: Path | None = None,
+    new_since_index: bool = False,
 ) -> ToolResult:
     """AS-IS MyBatis 매퍼 SQL을 대상 DB에서 EXPLAIN으로 정합성을 검증한다."""
     if not src_root.is_dir():
@@ -152,6 +416,54 @@ def check_sql(
     targets = [s for s in statements.values() if s.kind != "sql"]
     if not targets:
         return ToolResult(ok=False, error=f"{app} 아래에서 실행 대상 SQL을 찾지 못했습니다.")
+
+    if new_since_index:
+        import json
+
+        indexed_keys: set[str] = set()
+        if src_index_dir and (src_index_dir / "_index.json").is_file():
+            try:
+                idx_json = json.loads((src_index_dir / "_index.json").read_text(encoding="utf-8"))
+                indexed_keys = set((idx_json.get("statements") or {}).keys())
+            except Exception:  # noqa: BLE001, S110
+                pass
+
+        changed_rels: set[str] = set()
+        since_arg = "14 days ago"
+        if target_file and target_file.is_file():
+            import time
+            from datetime import UTC, datetime
+
+            mtime = target_file.stat().st_mtime
+            if (time.time() - mtime) > 86400:
+                since_arg = datetime.fromtimestamp(mtime, tz=UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            git_res = subprocess.run(
+                ["git", "-C", str(src_root), "log", f"--since={since_arg}", "--name-only", "--pretty=format:", "--", "*.xml"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5.0,
+            )
+            app_rel = app.relative_to(src_root).as_posix() if app != src_root else ""
+            for line in git_res.stdout.splitlines():
+                line_s = line.strip()
+                if not line_s:
+                    continue
+                if app_rel and line_s.startswith(app_rel + "/"):
+                    changed_rels.add(line_s[len(app_rel) + 1 :])
+                else:
+                    changed_rels.add(line_s)
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+        filtered = [
+            s
+            for s in targets
+            if (indexed_keys and s.key not in indexed_keys) or (s.rel.as_posix() in changed_rels)
+        ]
+        if filtered:
+            targets = filtered
 
     target_db, db_env = get_db_env(db)
 
@@ -218,7 +530,9 @@ def check_sql(
     for scr, keys in sorted(affected.items()):
         lines.append(f"| `{scr}` | " + ", ".join(f"`{k}`" for k in sorted(keys)) + " |")
 
-    target_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    report_md = "\n".join(lines) + "\n"
+    if not new_since_index:
+        target_file.write_text(report_md, encoding="utf-8")
 
     return ToolResult(
         ok=True,
@@ -231,6 +545,7 @@ def check_sql(
             "env_diff_count": len(env_list),
             "other_count": len(other_list),
             "affected_screens_count": len(affected),
+            "report_md": report_md,
         },
     )
 
