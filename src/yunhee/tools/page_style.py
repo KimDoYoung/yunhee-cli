@@ -37,7 +37,13 @@ DEFAULT_SIDS: tuple[str, ...] = (
     "DSBRD",
     "GDP",
     "IN",
+    "MF",
+    "MG",
+    "MFG",
+    "MH",
 )
+MODAL_SIDS: tuple[str, ...] = ("MF", "MG", "MFG", "MH")
+MODAL_NAME = re.compile(r"_(?:Edit|Lookup|Popup)_")
 SIDS: tuple[str, ...] = DEFAULT_SIDS
 UNKNOWN: str = "미분류"
 
@@ -80,6 +86,9 @@ def load_valid_sids() -> tuple[str, ...]:
                             if re.match(r"^[A-Z0-9_]{2,10}$", sid_cand):
                                 loaded.append(sid_cand)
                     if loaded:
+                        for s in MODAL_SIDS:  # 모달 스타일 표(## 모달 스타일)는 별도 절이라 항상 더한다
+                            if s not in loaded:
+                                loaded.append(s)
                         return tuple(loaded)
             except (OSError, UnicodeDecodeError):
                 continue
@@ -613,6 +622,50 @@ def classify(features: dict[str, Any], declared: str | None = None) -> tuple[str
     return UNKNOWN, "그리드 없음"
 
 
+def is_modal_file(path: Path | str) -> bool:
+    """TOBE 모달 파일(*_Edit_* · *_Lookup_* · *_Popup_*, .tsx)인지 본다."""
+    p = Path(path)
+    return p.suffix.lower() == ".tsx" and bool(MODAL_NAME.search(p.stem))
+
+
+def classify_modal(code: str) -> tuple[str, str]:
+    """모달 TSX(주석 제거한 코드)를 MF·MG·MFG·MH 로 판별한다 (page-style.md '모달 스타일').
+
+    파일 이름(Edit/Lookup/Popup)은 보지 않고 내용 구조만 본다.
+    """
+    grid = bool(re.search(r"<\w*Grid\b", code))
+    form = bool(
+        re.search(
+            r"<(?:Input|Select|DatePicker|Field|Checkbox|TextArea|Input\.TextArea|DoubleInput|LongInput)\b",
+            code,
+        )
+    )
+    search = bool(re.search(r"<SearchBar|<SearchPanel", code))
+    if re.search(r"HtmlView|HtmlEditor", code):
+        return "MH", "HTML 보기·편집(HtmlView/HtmlEditor)"
+    if grid and form and not search:
+        return "MFG", "폼 + 그리드(조회 줄 없음)"
+    if grid:
+        return "MG", "그리드 중심" + (" + 조회 줄" if search else "") + (" + 폼" if form else "")
+    return "MF", "그리드 없음(입력 폼 위주)"
+
+
+def analyze_modal(p: Path) -> dict[str, Any]:
+    raw = read_text(p)
+    declared, warning = extract_declared(raw, load_valid_sids())
+    sid, why = classify_modal(strip_comments(raw))
+    return {
+        "file": p.name,
+        "path": str(p),
+        "side": "TOBE",
+        "sid": sid,
+        "declared": declared,
+        "warning": warning,
+        "why": why,
+        "features": {"modal": True},
+    }
+
+
 def analyze(path: Path | str) -> dict[str, Any]:
     """화면 파일(.tsx / .java)을 분석하여 판별 결과를 반환한다."""
     p = Path(path).resolve()
@@ -620,6 +673,8 @@ def analyze(path: Path | str) -> dict[str, Any]:
         raise FileNotFoundError(f"파일을 찾을 수 없습니다: {path}")
 
     ext = p.suffix.lower()
+    if is_modal_file(p):
+        return analyze_modal(p)
     if ext == ".tsx":
         features, declared = extract_tsx(p)
         side = "TOBE"
@@ -706,6 +761,11 @@ def compare_pages(path_a: Path | str, path_b: Path | str) -> dict[str, Any]:
 
 def scan_tab_files(dir_path: Path | str) -> list[Path]:
     """디렉토리 내의 모든 *_Tab_* 화면 파일(.tsx, .java)을 재귀적으로 검색한다."""
+    return [f for f in scan_files(dir_path, (".tsx", ".java")) if "_Tab_" in f.name]
+
+
+def scan_files(dir_path: Path | str, exts: tuple[str, ...]) -> list[Path]:
+    """디렉토리 아래 지정 확장자 파일을 재귀적으로 모은다(무시 폴더 제외)."""
     root_dir = Path(dir_path).resolve()
     if not root_dir.is_dir():
         return []
@@ -724,9 +784,16 @@ def scan_tab_files(dir_path: Path | str) -> list[Path]:
     for root, dirs, files in os.walk(root_dir):
         dirs[:] = [d for d in dirs if d not in ignore_dirs]
         for name in files:
-            if "_Tab_" in name and name.endswith((".tsx", ".java")):
+            if name.endswith(exts):
                 found.append(Path(root) / name)
     return sorted(found)
+
+
+def scan_modal_files(dir_path: Path | str) -> list[Path]:
+    """디렉토리 내의 모든 TOBE 모달 파일(*_Edit_* · *_Lookup_* · *_Popup_*, .tsx)을 재귀적으로 검색한다."""
+    return sorted(
+        f for f in scan_files(dir_path, (".tsx",)) if is_modal_file(f)
+    )
 
 
 def resolve_target_path(

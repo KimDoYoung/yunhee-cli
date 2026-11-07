@@ -2,6 +2,12 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.7.5] - 2026-11-08
+`page-style` 모달 SID(MF·MG·MFG·MH) 판별 및 `--all --modal` 신설
+- **모달 판별**: `*_Edit_*`·`*_Lookup_*`·`*_Popup_*`(.tsx)는 Tab 규칙 대신 내용 구조로 판별한다 — HtmlView/HtmlEditor → `MH`, 그리드 + 폼(조회 줄 없음) → `MFG`, 그리드 → `MG`, 그 외 → `MF`. 파일 이름 접미로는 가르지 않는다(`docs/page-style.md` "모달 스타일").
+- **`yunhee page-style --all --modal [디렉터리]`**: `*_Tab_*` 대신 모달 파일 전체를 판별하고 SID별 분포를 낸다.
+- 유효 SID 목록에 `MF`·`MG`·`MFG`·`MH`를 항상 포함(별도 절의 표라서 `## 스타일 목록` 표 파싱에 안 잡힘).
+
 ## [0.7.4] - 2026-11-05
 수정사항 048 완료: `port-sql`/`analysis sql` DB 부재 객체 즉시 경고 및 서비스명(`dom.Class.method`) 해석, `analysis callers` 창 호출부/인자 추출, `trace-gap --stubs` TOBE 미연결 안내 수집, `api --track` 테이블 행 수/PK 변화 추적
 - **`port-sql` · `analysis sql` DB 부재 객체 즉시 경고 및 `sql-check --new-since-index` (수정사항 048 §1)**:

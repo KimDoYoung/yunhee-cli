@@ -74,6 +74,7 @@ AS-IS MyBatis SQL(또는 화면 주석의 서비스 이름 `dom.Class.method`)�
   ```bash
   yunhee page-style Fnd01_Tab_FundSearch.tsx
   yunhee page-style --compare Fnd01_Tab_FundSearch.java Fnd01_Tab_FundSearch.tsx
+  yunhee page-style --all --modal      # 모달(*_Edit_*·*_Lookup_*·*_Popup_*) 판별: MF·MG·MFG·MH (내용 구조 기준)
   yunhee page-style --all frontend/src/pages
   ```
 

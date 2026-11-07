@@ -1841,6 +1841,10 @@ def page_style_cmd(
         bool,
         typer.Option("--json", help="특징·근거까지 JSON 형식으로 출력"),
     ] = False,
+    modal: Annotated[
+        bool,
+        typer.Option("--modal", help="--all과 함께: *_Tab_* 대신 모달(*_Edit_*·*_Lookup_*·*_Popup_*) 판별"),
+    ] = False,
 ):
     """화면 파일(.tsx / .java)의 페이지 스타일 ID(SID) 판별 및 비교
 
@@ -1849,6 +1853,7 @@ def page_style_cmd(
       yunhee page-style Fnd01_Tab_FundSearch.java         # AS-IS → SID만 출력
       yunhee page-style --json a.tsx b.java               # 특징·근거까지 JSON 출력
       yunhee page-style --all [디렉터리]                  # 모든 *_Tab_* 판별 + SID별 분포
+      yunhee page-style --all --modal [디렉터리]          # 모든 모달(*_Edit_*·*_Lookup_*·*_Popup_*) 판별 (MF·MG·MFG·MH)
       yunhee page-style --compare <asis.java> <tobe.tsx>  # 두 SID가 같은지 (종료코드 0/1)
     """
     import json
@@ -1860,10 +1865,12 @@ def page_style_cmd(
         compare_pages,
         format_line,
         resolve_target_path,
+        scan_modal_files,
         scan_tab_files,
     )
 
     args = targets or []
+    scan_tab_files = scan_modal_files if modal else scan_tab_files  # noqa: F811
 
     # 1. --compare 모드
     if compare:
@@ -1920,7 +1927,7 @@ def page_style_cmd(
 
         files = scan_tab_files(target_dir)
         if not files:
-            typer.secho(f"안내: {target_dir} 아래에 *_Tab_* 화면 파일이 없습니다.", fg=typer.colors.YELLOW, err=True)
+            typer.secho(f"안내: {target_dir} 아래에 {"모달" if modal else "*_Tab_* 화면"} 파일이 없습니다.", fg=typer.colors.YELLOW, err=True)
             raise typer.Exit(code=0)
 
         results = []

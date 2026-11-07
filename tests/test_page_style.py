@@ -604,3 +604,20 @@ def test_gg_vs_sgtp_tabpage_distinction():
 
 
 
+
+
+def test_modal_classify(tmp_path):
+    cases = {
+        "A_Edit_Form.tsx": ("<Modal><Input /></Modal>", "MF"),
+        "A_Lookup_List.tsx": ("<LookupModal><SingleGrid /></LookupModal>", "MG"),
+        "A_Lookup_Sel.tsx": ("<LookupModal><SearchBar /><SingleGrid /><Input /></LookupModal>", "MG"),
+        "A_Edit_Master.tsx": ("<Modal><Input /><MultiGrid /></Modal>", "MFG"),
+        "A_Lookup_Html.tsx": ("<LookupModal><HtmlView /></LookupModal>", "MH"),
+        "A_Popup_Form.tsx": ("<Modal><DatePicker /></Modal>", "MF"),
+    }
+    for name, (body, want) in cases.items():
+        f = tmp_path / name
+        f.write_text(f"/**\n * 스타일: {want}\n */\n{body}\n", encoding="utf-8")
+        r = analyze(f)
+        assert r["sid"] == want, (name, r["sid"])
+        assert r["declared"] == r["sid"] and not r["warning"]
