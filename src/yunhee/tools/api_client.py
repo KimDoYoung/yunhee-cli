@@ -114,6 +114,7 @@ def resolve_user_credentials(user_or_role: str, db_name: str | None = None) -> t
                         SELECT emp01_person_id, emp01_emp_no, TO_DECRYPTS(emp01_password) AS pwd, emp01_company_id
                         FROM emp01_person
                         WHERE emp01_person_id::text = %s OR emp01_emp_no = %s
+                        ORDER BY (emp01_company_id = 28000) DESC, emp01_person_id ASC
                         LIMIT 1;
                         """,
                         (user_or_role, user_or_role),
@@ -121,7 +122,12 @@ def resolve_user_credentials(user_or_role: str, db_name: str | None = None) -> t
                     row = cur.fetchone()
                     if row:
                         login_u = str(row["emp01_emp_no"])
-                        login_p = accounts.get(user_or_role) or accounts.get(login_u) or str(row["pwd"])
+                        raw_pwd = row.get("pwd")
+                        login_p = (
+                            accounts.get(user_or_role)
+                            or accounts.get(login_u)
+                            or (str(raw_pwd) if raw_pwd is not None else os.getenv("YUNHEE_TEST_ADMIN_PASS", config.TEST_ADMIN_PASS))
+                        )
                         p_id = int(row["emp01_person_id"])
                         c_id = int(row["emp01_company_id"]) if row.get("emp01_company_id") else 28000
                         org_id = 0

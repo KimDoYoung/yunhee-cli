@@ -150,18 +150,25 @@ TOBE 조회 API 응답과 AS-IS SQL 결과를 대조하여 행 수 및 그리드
 - `yunhee log tail`: 최근 전체 서버 로그 흐름을 trace 단위로 접어서 요약 출력 (`--since 10m` 지원)
 
 ### `yunhee screen-capture <screen_id> [login=<company>/<user>/<pw>]`
-Headless Chromium(Playwright)으로 TOBE 프론트엔드에 자동 로그인하고(겸직선택 `Emp04_Lookup_AddTitleList` 자동 탐색·통과 포함), 대상 화면을 열어 **초기 화면 → [조회] 클릭 → 첫 행 선택 → 서브 탭 전환 → 팝업/Lookup 모달 오픈** 순으로 캡처 이미지를 저장합니다.
+Headless Chromium(Playwright)으로 TOBE 프론트엔드에 자동 로그인하고(겸직선택 `Emp04_Lookup_AddTitleList` 자동 탐색·통과 포함), 대상 화면을 열어 조회 조건(`--range` / `--set`)을 적용한 뒤 **초기 화면 → [조회] 클릭 → 첫 행 선택 → 서브 탭 전환 → 팝업/Lookup 모달 오픈** 순으로 캡처 이미지와 **화면 품질 텍스트 신호(`report.json` 및 터미널 요약)**를 생성합니다.
 - **주요 옵션**:
   - `login=<company>/<user>/<pw>` 또는 `--login, -l`: 로그인 지정자 (예: `login=kfstest/104/1111`)
+  - `--range, -r <YYYY-MM-DD~YYYY-MM-DD>`: 조회 줄(SearchBar)의 모든 날짜 범위(시작일~종료일) 입력을 해당 범위로 채운 뒤 `[조회]` 클릭 (라벨명을 몰라도 일괄 캡처 가능)
+  - `--set, -s <라벨=값>`: 조회 줄(SearchBar) 안의 특정 라벨 입력 지정 (반복 가능, 텍스트·단일날짜·날짜범위·Select·체크박스 자동 판별, 중복 라벨은 `라벨#2`, `--range`와 함께 주면 `--set` 우선, 라벨 미발견 시 후보 라벨 목록 경고 후 계속 진행)
+  - `--modal-only`: 팝업/Lookup 캡처 시 전체 페이지 대신 모달 영역(`.ant-modal-content`)만 잘라 저장하여 이미지 토큰 크기 절감
+  - `--click-all`: 팝업 순회 시 기본 제외되는 위험/저장 버튼도 클릭 시도 (네트워크 CUD 차단 가드는 유지)
+  - `--viewport <크기>`: 뷰포트 크기 (`1920x1080`, `1440x810`, `1280x720`, 또는 프리셋 `720p`, `810p`, `1080p`)
   - `--url, -u`: 접속할 TOBE 기본 URL (기본: `http://localhost:8082/AssetERP`)
   - `--out, -o`: 캡처 루트 폴더 (기본: `.yunhee/screen-capture`, 하위에 `<화면번호_클래스명>/` 폴더 자동 생성)
   - `--title, -t`: 겸직선택 시 특정 부서/직책/사원ID 강제 지정 (미지정 시 대상 화면 권한 보유 겸직 자동 선택)
   - `--no-popups`: 팝업/Lookup 모달 순회를 생략하고 본 화면만 빠르게 캡처
+  - `--json`: 캡처 목록 및 품질 텍스트 신호(그리드 행수/빈 그리드/헤더 줄바꿈, 버튼 비활성, 가로 스크롤, 팝업 순회 미열림 사유, 콘솔/네트워크 에러, `anomalies`)를 JSON으로 출력
   - `--headed`: 브라우저 창을 화면에 표시 (디버깅용)
 - **예시**:
   ```bash
-  yunhee screen-capture 1048 login=kfstest/104/1111
-  yunhee screen-capture Fnd01_Tab_FundCode login=kfstest/104/1111 --url http://localhost:8082/AssetERP --out .yunhee/screen-capture
+  yunhee screen-capture 1131 --login kfstest/104/1111 --range 2025-01-01~2026-12-31 --modal-only
+  yunhee screen-capture 1131 --login kfstest/104/1111 --set 승인기간=2025-06-01~2025-07-31 --set 검색=신한
+  yunhee screen-capture Fnd01_Tab_FundCode login=kfstest/104/1111 --viewport 810p --json
   ```
 
 ---

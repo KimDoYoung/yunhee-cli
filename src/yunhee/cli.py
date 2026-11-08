@@ -2547,9 +2547,25 @@ def screen_capture_cmd(
         str | None,
         typer.Option("--title", "-t", help="겸직선택 시 특정 부서/직책/사원ID 지정 (미지정 시 화면 권한 보유 겸직 자동 선택)"),
     ] = None,
+    range_opt: Annotated[
+        str | None,
+        typer.Option("--range", "-r", help="조회 줄의 모든 날짜 범위(시작일~종료일) 입력값 지정 (예: 2025-01-01~2026-12-31)"),
+    ] = None,
+    set_opts: Annotated[
+        list[str] | None,
+        typer.Option("--set", "-s", help="조회 줄 특정 라벨 입력값 지정 (반복 가능, 예: --set 승인기간=2025-01-01~2025-12-31 --set 검색=삼성, 중복 라벨은 라벨#2)"),
+    ] = None,
     no_popups: Annotated[
         bool,
         typer.Option("--no-popups", help="팝업/Lookup 모달 클릭 순회를 생략하고 본 화면만 캡처"),
+    ] = False,
+    modal_only: Annotated[
+        bool,
+        typer.Option("--modal-only", help="팝업/Lookup 캡처 시 전체 화면 대신 모달 영역(.ant-modal-content)만 잘라서 저장"),
+    ] = False,
+    click_all: Annotated[
+        bool,
+        typer.Option("--click-all", help="팝업 순회 시 기본 제외되는 일반/위험 버튼도 클릭 시도 (네트워크 CUD 차단 가드는 유지)"),
     ] = False,
     headed: Annotated[
         bool,
@@ -2557,27 +2573,29 @@ def screen_capture_cmd(
     ] = False,
     viewport: Annotated[
         str,
-        typer.Option("--viewport", help="브라우저 뷰포트 크기 (예: 1920x1080)"),
+        typer.Option("--viewport", help="브라우저 뷰포트 크기 (예: 1920x1080, 1440x810, 1280x720, 720p, 810p, 1080p)"),
     ] = "1920x1080",
     as_json: Annotated[
         bool,
-        typer.Option("--json", help="캡처 결과 리포트를 JSON으로 출력"),
+        typer.Option("--json", help="캡처 결과 및 품질 신호 리포트를 JSON으로 출력"),
     ] = False,
 ) -> None:
-    """TOBE 화면 자동 로그인·겸직선택·오픈 및 조회/행선택/탭/팝업 순회 캡처"""
+    """TOBE 화면 자동 로그인·겸직선택·오픈 및 조회조건(--range/--set)·탭·팝업 순회 캡처와 품질 신호 리포트"""
     import json as json_mod
 
-    from yunhee.tools.screen_capture import capture_screen, parse_login_spec
+    from yunhee.tools.screen_capture import (
+        capture_screen,
+        parse_login_spec,
+        parse_viewport_spec,
+    )
 
     login_spec = parse_login_spec(login_arg=login, extra_args=extra_args)
 
-    vp_w, vp_h = 1920, 1080
-    if "x" in viewport.lower():
-        parts = viewport.lower().split("x", 1)
-        try:
-            vp_w, vp_h = int(parts[0].strip()), int(parts[1].strip())
-        except ValueError:
-            pass
+    try:
+        vp_w, vp_h = parse_viewport_spec(viewport)
+    except ValueError as exc:
+        typer.secho(f"오류: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
 
     res = capture_screen(
         screen_id=screen_id,
@@ -2586,6 +2604,10 @@ def screen_capture_cmd(
         out_dir=out,
         preferred_title=title,
         include_popups=not no_popups,
+        modal_only=modal_only,
+        click_all=click_all,
+        range_opt=range_opt,
+        set_opts=set_opts,
         headed=headed,
         viewport_width=vp_w,
         viewport_height=vp_h,
@@ -2609,6 +2631,74 @@ def screen_capture_cmd(
     )
     typer.echo(f"  • 오픈 방식: {data['open_method']} | 조회 행수: {data['grid_rows_after_search']}건")
     typer.echo(f"  • 저장 폴더: {data['output_dir']} (총 {len(data['captures'])}장, {data['elapsed_sec']}s)")
+
+    # 조회 조건 (--range / --set) 요약
+    sc = data.get("search_conditions") or {}
+    cond_parts: list[str] = []
+    if sc.get("range"):
+        r_info = sc["range"]
+        cond_parts.append(f"--range {r_info['requested']} ({r_info['status']})")
+    for s_item in sc.get("set") or []:
+        cond_parts.append(f"--set {s_item['label']}={s_item['value']} ({s_item['status']})")
+    if cond_parts:
+        typer.echo(f"  • 조회 조건: {' | '.join(cond_parts)}")
+
+    # 경고 (라벨 미발견 등)
+    for w in data.get("warnings") or []:
+        typer.secho(f"  ⚠ {w}", fg=typer.colors.YELLOW)
+
+    # 그리드별 품질 신호
+    grids = data.get("grids") or []
+    if grids:
+        typer.echo(f"  • 그리드({len(grids)}):")
+        for g in grids:
+            empty_mark = "빈 그리드(0건)" if g.get("empty") else f"{g.get('row_count', 0)}건"
+            hs_mark = "가로스크롤 O" if g.get("horizontal_scroll") else "가로스크롤 X"
+            wh_list = g.get("wrapped_headers") or []
+            wh_mark = f"헤더줄바꿈/잘림: {', '.join(wh_list)}" if wh_list else "헤더줄바꿈 없음"
+            typer.echo(f"    - Grid #{g['index']}: {empty_mark} | {hs_mark} | {wh_mark}")
+    else:
+        typer.echo("  • 그리드(0): 그리드 없음")
+
+    # 버튼 목록 및 비활성 여부
+    btns = data.get("buttons") or []
+    if btns:
+        btn_strs = [f"{b['label']}(비활성)" if b.get("disabled") else b["label"] for b in btns]
+        typer.echo(f"  • 화면 버튼: {', '.join(btn_strs)}")
+
+    # 가로 스크롤 여부
+    hs = data.get("horizontal_scroll") or {}
+    typer.echo(
+        f"  • 가로 스크롤: 화면={'발생' if hs.get('page') else '없음'} / 그리드={'발생' if hs.get('grids') else '없음'}"
+    )
+
+    # 팝업 순회 결과
+    pt = data.get("popup_traversal") or {}
+    if not no_popups and pt:
+        opened_m = pt.get("opened_modals") or []
+        not_opened_b = pt.get("not_opened_buttons") or []
+        skipped_d = pt.get("skipped_dangerous") or []
+        opened_str = (
+            ", ".join(f"[{m['trigger']}]→{m['modal_title']}" for m in opened_m)
+            if opened_m
+            else "없음"
+        )
+        not_opened_str = (
+            ", ".join(f"[{b['label']}]({b['reason']})" for b in not_opened_b)
+            if not_opened_b
+            else "없음"
+        )
+        typer.echo(f"  • 팝업 순회: 열림={opened_str} | 미열림={not_opened_str}")
+        if skipped_d:
+            typer.echo(f"    (안전 제외 버튼: {', '.join(skipped_d)})")
+
+    # 이상 신호 요약
+    anomalies = data.get("anomalies") or []
+    if anomalies:
+        typer.secho(f"  🔎 품질 이상 신호: {' / '.join(anomalies)}", fg=typer.colors.YELLOW, bold=True)
+    else:
+        typer.secho("  🔎 품질 이상 신호: 없음 (정상)", fg=typer.colors.GREEN)
+
     for c in data["captures"]:
         typer.secho(f"    ✔ {c['filename']:<32} — {c['description']}", fg=typer.colors.GREEN)
 
@@ -2620,6 +2710,7 @@ def screen_capture_cmd(
         typer.secho(f"  ✖ API Failures ({len(data['api_failures'])}):", fg=typer.colors.RED)
         for fail in data["api_failures"][:5]:
             typer.echo(f"    - {fail}")
+
 
 
 if __name__ == "__main__":

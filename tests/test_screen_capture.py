@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import pytest
+
 from yunhee.tools.screen_capture import (
     ScreenTarget,
     _build_flexlayout_storage_json,
     build_local_api_url,
     build_tenant_url,
     is_safe_popup_button,
+    normalize_label_text,
     parse_login_spec,
+    parse_range_spec,
+    parse_set_specs,
+    parse_viewport_spec,
 )
 
 
@@ -90,3 +96,58 @@ def test_build_flexlayout_storage_json():
     assert tabset["selected"] == 1
     assert len(tabset["children"]) == 2
     assert tabset["children"][1]["config"]["classNm"] == "Fnd01_Tab_FundSearch"
+
+
+def test_normalize_label_text():
+    assert normalize_label_text("  ▼ 신청내역 ") == "신청내역"
+    assert normalize_label_text("일자 :") == "일자"
+    assert normalize_label_text("*승인기간：") == "승인기간"
+
+
+def test_parse_range_spec():
+    assert parse_range_spec("2025-01-01~2026-12-31") == ("2025-01-01", "2026-12-31")
+    assert parse_range_spec("2025-01-01..2025-12-31") == ("2025-01-01", "2025-12-31")
+    assert parse_range_spec(None) is None
+    with pytest.raises(ValueError):
+        parse_range_spec("2025-01-01")
+
+
+def test_parse_set_specs():
+    specs = parse_set_specs(
+        [
+            "승인기간=2025-01-01~2025-12-31",
+            "구분#2=일반",
+            "검색=삼성",
+        ]
+    )
+    assert len(specs) == 3
+    assert specs[0] == {
+        "raw_key": "승인기간",
+        "label": "승인기간",
+        "occurrence": 1,
+        "value": "2025-01-01~2025-12-31",
+    }
+    assert specs[1] == {
+        "raw_key": "구분#2",
+        "label": "구분",
+        "occurrence": 2,
+        "value": "일반",
+    }
+    assert specs[2]["label"] == "검색"
+
+
+def test_parse_viewport_spec():
+    assert parse_viewport_spec("720p") == (1280, 720)
+    assert parse_viewport_spec("810p") == (1440, 810)
+    assert parse_viewport_spec("1080p") == (1920, 1080)
+    assert parse_viewport_spec("1440x810") == (1440, 810)
+    with pytest.raises(ValueError):
+        parse_viewport_spec("invalid")
+
+
+def test_is_safe_popup_button_click_all():
+    assert is_safe_popup_button("저장", click_all=False) is False
+    assert is_safe_popup_button("저장", click_all=True) is True
+    assert is_safe_popup_button("조회", click_all=True) is False
+    assert is_safe_popup_button("거래처 관리 바로가기", click_all=True) is False
+
