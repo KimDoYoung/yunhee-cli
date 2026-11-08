@@ -621,3 +621,9 @@ def test_modal_classify(tmp_path):
         r = analyze(f)
         assert r["sid"] == want, (name, r["sid"])
         assert r["declared"] == r["sid"] and not r["warning"]
+
+
+def test_scan_tab_files_excludes_modal(tmp_path):
+    (tmp_path / "A_Tab_X.tsx").write_text("x", encoding="utf-8")
+    (tmp_path / "Cmp10_Edit_Tab_MailBook.tsx").write_text("x", encoding="utf-8")
+    assert [f.name for f in scan_tab_files(tmp_path)] == ["A_Tab_X.tsx"]

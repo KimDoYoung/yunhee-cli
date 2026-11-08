@@ -761,7 +761,11 @@ def compare_pages(path_a: Path | str, path_b: Path | str) -> dict[str, Any]:
 
 def scan_tab_files(dir_path: Path | str) -> list[Path]:
     """디렉토리 내의 모든 *_Tab_* 화면 파일(.tsx, .java)을 재귀적으로 검색한다."""
-    return [f for f in scan_files(dir_path, (".tsx", ".java")) if "_Tab_" in f.name]
+    return [
+        f
+        for f in scan_files(dir_path, (".tsx", ".java"))
+        if "_Tab_" in f.name and not is_modal_file(f)  # 이름에 _Tab_이 든 모달(Cmp10_Edit_Tab_*)은 제외
+    ]
 
 
 def scan_files(dir_path: Path | str, exts: tuple[str, ...]) -> list[Path]:
