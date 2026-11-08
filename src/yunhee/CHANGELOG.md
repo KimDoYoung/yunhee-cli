@@ -2,11 +2,14 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.7.6] - 2026-11-08
+`page-style --all`(Tab 판별)에서 모달 파일 제외
+- 이름에 `_Tab_`이 든 모달(`Cmp10_Edit_Tab_MailBook` 등)이 Tab 판별에 MF로 섞이던 것을 제외한다.
+
 ## [0.7.5] - 2026-11-08
 `page-style` 모달 SID(MF·MG·MFG·MH) 판별 및 `--all --modal` 신설
 - **모달 판별**: `*_Edit_*`·`*_Lookup_*`·`*_Popup_*`(.tsx)는 Tab 규칙 대신 내용 구조로 판별한다 — HtmlView/HtmlEditor → `MH`, 그리드 + 폼(조회 줄 없음) → `MFG`, 그리드 → `MG`, 그 외 → `MF`. 파일 이름 접미로는 가르지 않는다(`docs/page-style.md` "모달 스타일").
 - **`yunhee page-style --all --modal [디렉터리]`**: `*_Tab_*` 대신 모달 파일 전체를 판별하고 SID별 분포를 낸다.
-- `--all`(Tab 판별)에서 모달 파일은 제외한다(이름에 `_Tab_`이 든 `Cmp10_Edit_Tab_MailBook` 등).
 - 유효 SID 목록에 `MF`·`MG`·`MFG`·`MH`를 항상 포함(별도 절의 표라서 `## 스타일 목록` 표 파싱에 안 잡힘).
 
 ## [0.7.4] - 2026-11-05
