@@ -21,6 +21,7 @@
 | **AS-IS ↔ TOBE 비교 / 갭(Gap) 및 미연결 자리(--stubs)** | `yunhee trace-pair`, `trace-diff`, `trace-gap [--stubs]` | [`trace.md`](file:///home/kdy987/work/yunhee-cli/docs/help/trace.md) |
 | **AS-IS SQL/CUD → TOBE 매퍼/DTO 코드 생성 (서비스명·DB 객체 검증)** | `yunhee port-sql`, `yunhee port-save` | [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
 | **화면 스타일 판별 / AS-IS 원본 변경(Drift)·신규 매퍼 검증** | `yunhee page-style`, `yunhee drift`, `yunhee sql-check [--new-since-index]`| [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
+| **TOBE 화면 자동 오픈 & 버튼/팝업 순회 캡처 검수** | `yunhee screen-capture <screen_id> login=<comp>/<id>/<pw>` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 
 ---
 
@@ -37,6 +38,7 @@
 - `api <method> <path> [--track <tables>]`: 자동 로그인 세션 기반으로 API를 호출하고 응답 요약(상태, 행 수, 키 목록) 및 `--track` 테이블 행 수/신규 PK 변화를 출력합니다.
 - `compare <method> <path> --sql <sql_id|dom.Class.method>`: TOBE 조회 API 응답과 AS-IS SQL 결과를 대조하여 행 수 및 컬럼 커버리지를 검증합니다.
 - `log <trace|req|errors|tail>`: 서버 로그에서 trace ID 상세(실행 SQL/파라미터), 최근 요청, 에러 묶음, 접은 흐름을 분석합니다.
+- `screen-capture <screen_id> [login=company/user/pw]`: TOBE 화면에 자동 로그인(겸직선택 자동 통과) 후 화면을 열고 초기·조회·행선택·내부탭·팝업/Lookup 모달을 순회 캡처하여 `--out/<화면폴더>/`에 저장합니다.
 - `config` / `value [KEY]`: Target/Source 경로, 브랜치 상태, DB 접속 정보 등 환경 설정을 조회합니다.
 
 ### 2. 정적 분석 전문 (`analysis.md`)

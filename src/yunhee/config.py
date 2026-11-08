@@ -230,6 +230,11 @@ LOG_TZ = _log_conf.get("tz") if "tz" in _log_conf else os.getenv("YUNHEE_LOG_TZ"
 LOG_CONTEXT = _log_conf.get("context") if "context" in _log_conf else os.getenv("YUNHEE_LOG_CONTEXT", "/AssetERP_1")
 LOG_TRACE_HEADER = _log_conf.get("trace_header") if "trace_header" in _log_conf else os.getenv("YUNHEE_LOG_TRACE_HEADER", "X-Trace-Id")
 
+# 화면 자동 캡처 (yunhee screen-capture) 기본 설정
+CAPTURE_BASE_URL = os.getenv("YUNHEE_CAPTURE_URL", "http://localhost:8082/AssetERP")
+CAPTURE_OUT_DIR = os.getenv("YUNHEE_CAPTURE_OUT_DIR", ".yunhee/screen-capture")
+
+
 
 def redact(url: str | None) -> str:
     """postgresql://user:password@host/db 형태에서 비밀번호를 가린다."""
@@ -558,6 +563,18 @@ CONFIG_ITEMS: list[ConfigItem] = [
         aliases=["LOG_TRACE_HEADER", "log-trace-header", "log_trace_header"],
         getter=lambda: LOG_TRACE_HEADER,
         description="트레이스 헤더명",
+    ),
+    ConfigItem(
+        key="YUNHEE_CAPTURE_URL",
+        aliases=["CAPTURE_URL", "capture-url", "capture_url"],
+        getter=lambda: CAPTURE_BASE_URL,
+        description="화면 캡처 기본 URL",
+    ),
+    ConfigItem(
+        key="YUNHEE_CAPTURE_OUT_DIR",
+        aliases=["CAPTURE_OUT_DIR", "capture-out-dir", "capture_out_dir"],
+        getter=lambda: CAPTURE_OUT_DIR,
+        description="화면 캡처 저장 디렉터리",
     ),
 ]
 

@@ -1870,7 +1870,7 @@ def page_style_cmd(
     )
 
     args = targets or []
-    scan_tab_files = scan_modal_files if modal else scan_tab_files  # noqa: F811
+    scan_tab_files = scan_modal_files if modal else scan_tab_files
 
     # 1. --compare 모드
     if compare:
@@ -2518,6 +2518,108 @@ def log_tail_cmd(
 
 
 register_trace_commands(app)
+
+
+@app.command(name="screen-capture")
+@app.command(name="capture", hidden=True)
+def screen_capture_cmd(
+    screen_id: Annotated[
+        str,
+        typer.Argument(help="화면번호(예: 1018, 1318) 또는 클래스명(예: Fnd01_Tab_FundSearch)"),
+    ],
+    extra_args: Annotated[
+        list[str] | None,
+        typer.Argument(help="login=company/user/pw 형식의 로그인 인자 (예: login=kfstest/104/1111)"),
+    ] = None,
+    login: Annotated[
+        str | None,
+        typer.Option("--login", "-l", help="로그인 정보 (예: kfstest/104/1111 또는 login=kfstest/104/1111)"),
+    ] = None,
+    url: Annotated[
+        str,
+        typer.Option("--url", "-u", help="접속할 TOBE 기본 URL (기본: http://localhost:8082/AssetERP)"),
+    ] = config.CAPTURE_BASE_URL,
+    out: Annotated[
+        str,
+        typer.Option("--out", "-o", help="캡처 저장 루트 폴더 (기본: .yunhee/screen-capture)"),
+    ] = config.CAPTURE_OUT_DIR,
+    title: Annotated[
+        str | None,
+        typer.Option("--title", "-t", help="겸직선택 시 특정 부서/직책/사원ID 지정 (미지정 시 화면 권한 보유 겸직 자동 선택)"),
+    ] = None,
+    no_popups: Annotated[
+        bool,
+        typer.Option("--no-popups", help="팝업/Lookup 모달 클릭 순회를 생략하고 본 화면만 캡처"),
+    ] = False,
+    headed: Annotated[
+        bool,
+        typer.Option("--headed", help="디버깅용 브라우저 창 표시 (기본: Headless)"),
+    ] = False,
+    viewport: Annotated[
+        str,
+        typer.Option("--viewport", help="브라우저 뷰포트 크기 (예: 1920x1080)"),
+    ] = "1920x1080",
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="캡처 결과 리포트를 JSON으로 출력"),
+    ] = False,
+) -> None:
+    """TOBE 화면 자동 로그인·겸직선택·오픈 및 조회/행선택/탭/팝업 순회 캡처"""
+    import json as json_mod
+
+    from yunhee.tools.screen_capture import capture_screen, parse_login_spec
+
+    login_spec = parse_login_spec(login_arg=login, extra_args=extra_args)
+
+    vp_w, vp_h = 1920, 1080
+    if "x" in viewport.lower():
+        parts = viewport.lower().split("x", 1)
+        try:
+            vp_w, vp_h = int(parts[0].strip()), int(parts[1].strip())
+        except ValueError:
+            pass
+
+    res = capture_screen(
+        screen_id=screen_id,
+        login_spec=login_spec,
+        base_url=url,
+        out_dir=out,
+        preferred_title=title,
+        include_popups=not no_popups,
+        headed=headed,
+        viewport_width=vp_w,
+        viewport_height=vp_h,
+    )
+
+    if not res.ok:
+        typer.secho(f"오류: {res.error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    data = res.data
+    if as_json:
+        typer.echo(json_mod.dumps(data, ensure_ascii=False, indent=2))
+        return
+
+    title_info = f" · 겸직={data['selected_title']}" if data.get("selected_title") else ""
+    typer.secho(
+        f"📸 Screen Capture: {data['screen_id']} "
+        f"(company={data['company']} · user={data['user']}{title_info})",
+        fg=typer.colors.CYAN,
+        bold=True,
+    )
+    typer.echo(f"  • 오픈 방식: {data['open_method']} | 조회 행수: {data['grid_rows_after_search']}건")
+    typer.echo(f"  • 저장 폴더: {data['output_dir']} (총 {len(data['captures'])}장, {data['elapsed_sec']}s)")
+    for c in data["captures"]:
+        typer.secho(f"    ✔ {c['filename']:<32} — {c['description']}", fg=typer.colors.GREEN)
+
+    if data.get("console_errors"):
+        typer.secho(f"  ⚠ Console Errors ({len(data['console_errors'])}):", fg=typer.colors.YELLOW)
+        for err in data["console_errors"][:5]:
+            typer.echo(f"    - {err}")
+    if data.get("api_failures"):
+        typer.secho(f"  ✖ API Failures ({len(data['api_failures'])}):", fg=typer.colors.RED)
+        for fail in data["api_failures"][:5]:
+            typer.echo(f"    - {fail}")
 
 
 if __name__ == "__main__":

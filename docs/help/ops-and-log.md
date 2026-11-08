@@ -149,6 +149,21 @@ TOBE 조회 API 응답과 AS-IS SQL 결과를 대조하여 행 수 및 그리드
 - `yunhee log errors`: 서버 로그의 WARN/ERROR 묶음 발생 빈도 및 스택 요약 (`--since 1h`, `--explain` 지원)
 - `yunhee log tail`: 최근 전체 서버 로그 흐름을 trace 단위로 접어서 요약 출력 (`--since 10m` 지원)
 
+### `yunhee screen-capture <screen_id> [login=<company>/<user>/<pw>]`
+Headless Chromium(Playwright)으로 TOBE 프론트엔드에 자동 로그인하고(겸직선택 `Emp04_Lookup_AddTitleList` 자동 탐색·통과 포함), 대상 화면을 열어 **초기 화면 → [조회] 클릭 → 첫 행 선택 → 서브 탭 전환 → 팝업/Lookup 모달 오픈** 순으로 캡처 이미지를 저장합니다.
+- **주요 옵션**:
+  - `login=<company>/<user>/<pw>` 또는 `--login, -l`: 로그인 지정자 (예: `login=kfstest/104/1111`)
+  - `--url, -u`: 접속할 TOBE 기본 URL (기본: `http://localhost:8082/AssetERP`)
+  - `--out, -o`: 캡처 루트 폴더 (기본: `.yunhee/screen-capture`, 하위에 `<화면번호_클래스명>/` 폴더 자동 생성)
+  - `--title, -t`: 겸직선택 시 특정 부서/직책/사원ID 강제 지정 (미지정 시 대상 화면 권한 보유 겸직 자동 선택)
+  - `--no-popups`: 팝업/Lookup 모달 순회를 생략하고 본 화면만 빠르게 캡처
+  - `--headed`: 브라우저 창을 화면에 표시 (디버깅용)
+- **예시**:
+  ```bash
+  yunhee screen-capture 1048 login=kfstest/104/1111
+  yunhee screen-capture Fnd01_Tab_FundCode login=kfstest/104/1111 --url http://localhost:8082/AssetERP --out .yunhee/screen-capture
+  ```
+
 ---
 
 ## 5. 환경 설정 및 유틸리티 (`config`, `value`, `changelog`, `init`, `intro`)
