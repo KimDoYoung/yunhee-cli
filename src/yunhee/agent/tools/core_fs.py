@@ -26,14 +26,27 @@ IGNORE_DIRS = {
 }
 
 
-def _safe_resolve(filename: str) -> Path:
-    """WORK_DIR을 벗어나는 상위 디렉터리 순회(탈출)를 차단하고 절대 경로를 반환."""
+def _safe_resolve(filename: str, allow_tobe_fallback: bool = True) -> Path:
+    """WORK_DIR(또는 TOBE_SRC_DIR)을 벗어나는 상위 디렉터리 순회(탈출)를 차단하고 절대 경로를 반환."""
     work_dir = Path(config.WORK_DIR).resolve()
     target = (work_dir / filename).resolve()
     try:
         target.relative_to(work_dir)
     except ValueError:
         raise PermissionError(f"작업 디렉터리({work_dir}) 외부의 파일({target})에는 접근할 수 없습니다.") from None
+
+    if not target.exists() and allow_tobe_fallback:
+        tobe_raw = getattr(config, "TOBE_SRC_DIR", None)
+        if tobe_raw:
+            tobe_dir = Path(tobe_raw).resolve()
+            if tobe_dir != work_dir:
+                cand = (tobe_dir / filename).resolve()
+                try:
+                    cand.relative_to(tobe_dir)
+                    if cand.exists():
+                        return cand
+                except ValueError:
+                    pass
     return target
 
 

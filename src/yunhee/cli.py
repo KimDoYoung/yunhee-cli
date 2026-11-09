@@ -172,6 +172,174 @@ def agent_cmd(
     _run_single_agent_query(prompt, model=model)
 
 
+@app.command(name="rag-index")
+def rag_index_cmd(
+    tobe: Annotated[
+        Path | None,
+        typer.Option("--tobe", help="TOBE 프로젝트 루트 경로 (생략 시 YUNHEE_TOBE_SRC_DIR 또는 WORK_DIR)"),
+    ] = None,
+    no_vector: Annotated[
+        bool,
+        typer.Option("--no-vector", help="ChromaDB 임베딩을 건너뛰고 카탈로그 스냅샷(.yunhee/tobe_catalog.json)과 docs/to-be/만 생성"),
+    ] = False,
+    reset: Annotated[
+        bool,
+        typer.Option("--reset", help="ChromaDB yunhee_tobe_kb 컬렉션과 스냅샷을 완전히 삭제한 뒤 처음부터 재학습"),
+    ] = False,
+    reset_all: Annotated[
+        bool,
+        typer.Option("--reset-all", help="수동 노하우 컬렉션(yunhee_knowledge)까지 포함해 모두 삭제 후 재학습"),
+    ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="결과를 JSON으로 출력"),
+    ] = False,
+):
+    """TOBE 프로젝트 전체(화면·메뉴·컴포넌트·그리드·모달·API·백엔드)를 스냅샷 및 ChromaDB에 증분 학습"""
+    import json as _json
+
+    from yunhee.tools.trace.tobe_rag import rag_index
+
+    res = rag_index(tobe=tobe, no_vector=no_vector, reset=reset, reset_all=reset_all)
+    if as_json:
+        print(_json.dumps(res, ensure_ascii=False, indent=2))
+        return
+
+    mode_str = "완전 초기화 후 재학습" if (reset or reset_all) else "증분 학습"
+    typer.secho(f"✔ TOBE RAG {mode_str} 완료 ({res['elapsed_sec']}s)", fg=typer.colors.GREEN, bold=True)
+    typer.echo(f"  • 대상 프로젝트 : {res['tobe_root']}")
+    typer.echo(f"  • 카탈로그 파일 : {res['snapshot_path']}")
+    typer.echo(f"  • 마크다운 문서 : {res['docs_dir']}")
+    typer.echo(f"  • 스캔 화면 수  : {res['screen_count']}개 (메뉴 매핑: {res['migrated_menu_count']}/{res['menu_count']}개 변환)")
+    if no_vector:
+        typer.echo("  • 벡터 임베딩   : 건너뜀 (--no-vector)")
+    elif res.get("vector_error"):
+        typer.secho(f"  ⚠ ChromaDB 임베딩 오류: {res['vector_error']}", fg=typer.colors.YELLOW)
+    else:
+        typer.echo(
+            f"  • ChromaDB 벡터 : 총 {res['vector_total']}건 "
+            f"(신규/변경 upsert: {res['upserted']}, 변경없음 skip: {res['skipped']}, 삭제: {res['deleted']})"
+        )
+
+
+@app.command(name="rag-reset")
+def rag_reset_cmd(
+    tobe: Annotated[
+        Path | None,
+        typer.Option("--tobe", help="TOBE 프로젝트 루트 경로"),
+    ] = None,
+    all_collections: Annotated[
+        bool,
+        typer.Option("--all", help="수동 노하우 컬렉션(yunhee_knowledge)까지 함께 삭제"),
+    ] = False,
+    no_reindex: Annotated[
+        bool,
+        typer.Option("--no-reindex", help="초기화(삭제)만 수행하고 재학습은 생략"),
+    ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="결과를 JSON으로 출력"),
+    ] = False,
+):
+    """TOBE RAG 학습 데이터(ChromaDB 벡터 컬렉션 및 스냅샷)를 완전히 초기화하고 처음부터 재학습"""
+    import json as _json
+
+    from yunhee.tools.trace.tobe_rag import rag_reset
+
+    res = rag_reset(tobe=tobe, reset_all=all_collections, reindex=not no_reindex)
+    if as_json:
+        print(_json.dumps(res, ensure_ascii=False, indent=2))
+        return
+
+    typer.secho("✔ TOBE RAG 초기화 완료", fg=typer.colors.GREEN, bold=True)
+    typer.echo(f"  • 대상 프로젝트: {res['tobe_root']}")
+    if not no_reindex:
+        typer.echo(
+            f"  • 재학습 결과  : 화면 {res['screen_count']}개, "
+            f"ChromaDB 벡터 {res['vector_total']}건 적재 ({res['elapsed_sec']}s)"
+        )
+
+
+@app.command(name="rag-status")
+def rag_status_cmd(
+    tobe: Annotated[
+        Path | None,
+        typer.Option("--tobe", help="TOBE 프로젝트 루트 경로"),
+    ] = None,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="결과를 JSON으로 출력"),
+    ] = False,
+):
+    """현재 TOBE RAG 학습 상태(스냅샷·ChromaDB 벡터 건수) 및 미반영 변경 파일(Stale) 점검"""
+    import json as _json
+
+    from yunhee.tools.trace.tobe_rag import rag_status
+
+    st = rag_status(tobe=tobe)
+    if as_json:
+        print(_json.dumps(st, ensure_ascii=False, indent=2))
+        return
+
+    typer.secho("📊 TOBE RAG 학습 상태", fg=typer.colors.CYAN, bold=True)
+    typer.echo(f"  • 대상 프로젝트 : {st['tobe_root']}")
+    typer.echo(f"  • 스냅샷 경로   : {st['snapshot_path']} ({'존재' if st['snapshot_exists'] else '없음 — yunhee rag-index 실행 필요'})")
+    if st["indexed_at"]:
+        typer.echo(f"  • 마지막 학습   : {st['indexed_at']}")
+    typer.echo(
+        f"  • 화면 카탈로그 : 인덱싱 {st['indexed_screen_count']}개 / 현재 디스크 TSX {st['disk_tsx_count']}개 "
+        f"(메뉴 변환: {st['migrated_menu_count']}/{st['menu_count']})"
+    )
+    if st["chroma_ok"]:
+        typer.echo(
+            f"  • ChromaDB 벡터 : TOBE 자동학습({st['tobe_vector_count']}건), 수동 노하우({st['manual_vector_count']}건)"
+        )
+    else:
+        typer.secho(f"  ⚠ ChromaDB 연결 실패: {st['chroma_error']}", fg=typer.colors.YELLOW)
+
+    if not st["snapshot_exists"]:
+        typer.secho("  👉 아직 학습된 스냅샷이 없습니다. 'yunhee rag-index'를 실행하세요.", fg=typer.colors.YELLOW)
+    elif st["stale_count"] > 0:
+        typer.secho(
+            f"  ⚠ 마지막 학습 이후 변경된 파일 {st['stale_count']}건 감지 "
+            f"(추가 {len(st['added_files'])}, 수정 {len(st['modified_files'])}, 삭제 {len(st['deleted_files'])}) "
+            "— 'yunhee rag-index'로 증분 갱신을 권장합니다.",
+            fg=typer.colors.YELLOW,
+        )
+    else:
+        typer.secho("  ✔ 모든 TOBE 화면 파일이 최신 학습 상태입니다.", fg=typer.colors.GREEN)
+
+
+@app.command(name="rag-search")
+def rag_search_cmd(
+    query: Annotated[
+        str,
+        typer.Argument(help="검색할 화면번호(예: 1002), 메뉴명, 컴포넌트명, 또는 자연어 질문"),
+    ],
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-n", help="최대 검색 결과 수"),
+    ] = 5,
+    tobe: Annotated[
+        Path | None,
+        typer.Option("--tobe", help="TOBE 프로젝트 루트 경로"),
+    ] = None,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="결과를 JSON으로 출력"),
+    ] = False,
+):
+    """학습된 TOBE 카탈로그(결정적 매칭) 및 ChromaDB 벡터에서 에이전트가 소환할 지식 카드 조회"""
+    import json as _json
+
+    from yunhee.tools.trace.tobe_rag import lookup_tobe, rag_search
+
+    if as_json:
+        print(_json.dumps(rag_search(query, limit=limit, tobe=tobe), ensure_ascii=False, indent=2))
+        return
+    print(lookup_tobe(query, tobe=tobe))
+
+
 @app.command()
 def vec(text: str):
     """bge-m3 임베딩 벡터 확인"""
@@ -2766,6 +2934,60 @@ def screen_capture_cmd(
         for fail in data["api_failures"][:5]:
             typer.echo(f"    - {fail}")
 
+
+@app.command(name="screen-desc")
+@app.command(name="scree-desc", hidden=True)
+def screen_desc_cmd(
+    targets: Annotated[
+        list[str],
+        typer.Argument(
+            help="조회할 화면번호 또는 화면 클래스명 (쉼표 ',', 공백 ' ' 혼합 구분 가능, 예: 1111,2222,3333, 4444)"
+        ),
+    ],
+    fmt: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            "-f",
+            help="출력 포맷 지정: md(기본) 또는 json",
+        ),
+    ] = "md",
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="JSON 포맷으로 출력 (--format=json 단축 옵션)"),
+    ] = False,
+    tobe: Annotated[
+        Path | None,
+        typer.Option("--tobe", help="TOBE 프로젝트 루트 경로 (기본: YUNHEE_TOBE_SRC_DIR)"),
+    ] = None,
+) -> None:
+    """화면번호(쉼표·공백 복수 지정 가능)와 관련된 모든 정보(메뉴명·파일명·팝업·하위컴포넌트·그리드·버튼·API·SQL·테이블·ASIS) 반환"""
+    from yunhee.tools.trace.screen_desc import (
+        describe_screens,
+        parse_screen_targets,
+        render_screen_desc_json,
+        render_screen_desc_md,
+    )
+
+    parsed = parse_screen_targets(targets)
+    if not parsed:
+        typer.secho("오류: 조회할 화면번호(예: 1002, 1029)를 1개 이상 지정하세요.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    norm_fmt = "json" if as_json else fmt.strip().lower()
+    if norm_fmt not in ("md", "markdown", "json"):
+        typer.secho(
+            f"오류: 지원하지 않는 --format 값입니다: '{fmt}' ('md' 또는 'json' 사용)",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    data = describe_screens(parsed, tobe=tobe)
+    if norm_fmt == "json":
+        typer.echo(render_screen_desc_json(data))
+    else:
+        typer.echo(render_screen_desc_md(data).rstrip())
 
 
 if __name__ == "__main__":

@@ -201,3 +201,82 @@ print(f"RESULT={c.col_type}:{c.field}:{c.label}:{c.width}")
     assert rescued[0][0] == "execute_python"
     assert 'gb.boolean("{c.field}"' in rescued[0][1]["code"]
 
+
+def test_tobe_rag_index_status_search_and_reset(world, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from yunhee.tools.trace import tobe_rag
+
+    monkeypatch.setattr(config, "TOBE_SRC_DIR", world.tobe)
+
+    # In-memory fake ChromaDB collection
+    store: dict[str, tuple[str, dict]] = {}
+    mock_col = MagicMock()
+
+    def _get(include=None):
+        return {
+            "ids": list(store.keys()),
+            "metadatas": [v[1] for v in store.values()],
+        }
+
+    def _upsert(ids, documents, metadatas):
+        for i, d, m in zip(ids, documents, metadatas):
+            store[i] = (d, m)
+
+    def _delete(ids):
+        for i in ids:
+            store.pop(i, None)
+
+    def _query(query_texts, n_results=3):
+        docs = [v[0] for v in list(store.values())[:n_results]]
+        metas = [v[1] for v in list(store.values())[:n_results]]
+        return {
+            "documents": [docs],
+            "distances": [[0.25 for _ in docs]],
+            "metadatas": [metas],
+        }
+
+    mock_col.get.side_effect = _get
+    mock_col.upsert.side_effect = _upsert
+    mock_col.delete.side_effect = _delete
+    mock_col.query.side_effect = _query
+    mock_col.count.side_effect = lambda: len(store)
+
+    monkeypatch.setattr(tobe_rag, "get_tobe_rag_collection", lambda: mock_col)
+    monkeypatch.setattr(tobe_rag, "get_collection", lambda name="": mock_col)
+    monkeypatch.setattr(tobe_rag, "delete_collection", lambda name: (store.clear() or True))
+
+    # 1. 최초 rag_index: 전체 화면이 upsert 되어야 함
+    res1 = tobe_rag.rag_index(tobe=world.tobe)
+    assert res1["ok"] is True
+    assert res1["screen_count"] >= 1
+    assert res1["upserted"] == res1["screen_count"]
+    assert res1["skipped"] == 0
+    assert (world.tobe / ".yunhee" / "tobe_catalog.json").is_file()
+    assert (world.tobe / "docs" / "to-be" / "menus.md").is_file()
+
+    # 2. 변경 없이 2번째 rag_index: 모든 화면이 skip 되어야 함
+    res2 = tobe_rag.rag_index(tobe=world.tobe)
+    assert res2["upserted"] == 0
+    assert res2["skipped"] == res2["screen_count"]
+
+    # 3. rag_status 확인 (최신 상태이므로 stale_count == 0)
+    st = tobe_rag.rag_status(tobe=world.tobe)
+    assert st["snapshot_exists"] is True
+    assert st["stale_count"] == 0
+
+    # 4. lookup_tobe 및 prefetch_tobe_rag 확인 ("1029 화면의 파일명은?")
+    looked = tobe_rag.lookup_tobe("1029", tobe=world.tobe)
+    assert "#1029" in looked
+    assert "Emp00_Tab_TransInfo.tsx" in looked
+
+    prefetched = tobe_rag.prefetch_tobe_rag("1029 화면의 파일명은?", enable_vector=False)
+    assert "#1029" in prefetched
+    assert "Emp00_Tab_TransInfo.tsx" in prefetched
+
+    # 5. rag_reset: 컬렉션 및 스냅샷 초기화 후 재적재 확인
+    res_reset = tobe_rag.rag_reset(tobe=world.tobe, reindex=True)
+    assert res_reset["reset_performed"] is True
+    assert res_reset["upserted"] == res1["screen_count"]
+
+

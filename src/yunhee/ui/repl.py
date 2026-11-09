@@ -63,6 +63,11 @@ HYBRID_COMMANDS = [
     "/api",
     "/events",
     "/analysis",
+    "/rag-index",
+    "/rag-reset",
+    "/rag-status",
+    "/rag-search",
+    "/screen-desc",
 ]
 
 ALL_AUTOCOMPLETE_COMMANDS = BUILTIN_COMMANDS + HYBRID_COMMANDS
@@ -89,6 +94,11 @@ def _help_text() -> str:
   [green]/out:pdf session[/green]        현재까지의 전체 대화 기록을 예쁜 PDF 대화록으로 발간
 
 [bold]하이브리드 CLI 명령어 (실행 결과를 현재 대화 맥락에 자동 주입)[/bold]
+  [cyan]/rag-index[/cyan]          TOBE 프로젝트 전체 RAG 증분 학습 (스냅샷 + ChromaDB)
+  [cyan]/rag-status[/cyan]         현재 TOBE RAG 학습 상태 및 미반영(Stale) 파일 점검
+  [cyan]/rag-search <질의>[/cyan]  학습된 TOBE 카탈로그 및 벡터에서 지식 카드 조회
+  [cyan]/rag-reset[/cyan]          TOBE RAG 컬렉션 및 스냅샷 완전 초기화 후 재학습
+  [cyan]/screen-desc <번호...>[/cyan] 화면번호(쉼표·공백 복수 지정) 관련 메뉴·파일·팝업·API·SQL·테이블 일괄 조회
   [cyan]/table <테이블명>[/cyan]   특정 테이블 스키마 DBML 즉시 조회
   [cyan]/outline <경로>[/cyan]     소스 파일 구조 및 메서드 목록 즉시 조회
   [cyan]/log errors[/cyan]          최근 서버 에러 로그 즉시 조회

@@ -176,7 +176,11 @@ Headless Chromium(Playwright)으로 TOBE 프론트엔드에 자동 로그인하�
 ## 5. 환경 설정 및 유틸리티 (`config`, `value`, `changelog`, `init`, `intro`)
 
 - `yunhee init`: 현재 작업 디렉터리를 yunhee 프로젝트로 등록 및 필수 폴더/파일(`.yunhee/project.json`, `mcp.json`, `memory.md`, `sessions/`, `runs/`, `.gitignore`) 초기화
-- `yunhee agent "<질문>"` (`yunhee ask -a "<질문>"`): 로컬 LLM(`qwen2.5-coder:14b`) 자율 에이전트 모드로 질의를 수행합니다. 모달 제목, 그리드 컬럼 조건(체크박스·글자수 등), 버튼, API 등 복합 조건에 맞는 화면을 찾을 때 에이전트가 스스로 Python 스크립트를 작성·실행(`execute_python` + `screen_catalog`)하여 **화면번호(`#번호`), 메뉴명, 파일 경로, 일치 상세**를 표로 출력합니다 (기본 타겟: TOBE).
+- `yunhee rag-index [--no-vector] [--reset] [--reset-all]`: TOBE 프로젝트 전체(화면·메뉴번호·컴포넌트·그리드·모달·API·백엔드)를 `.yunhee/tobe_catalog.json`, `docs/to-be/`, ChromaDB(`yunhee_tobe_kb`)에 증분 학습시킵니다. (`yunhee-cli` 폴더나 대상 프로젝트 폴더 어디서 실행해도 동일하게 `YUNHEE_TOBE_SRC_DIR` 기준으로 동작)
+- `yunhee rag-reset [--all] [--no-reindex]`: ChromaDB `yunhee_tobe_kb` 컬렉션과 카탈로그 스냅샷을 완전히 삭제한 뒤 처음부터 다시 학습합니다 (`--all` 지정 시 수동 노하우 컬렉션까지 초기화).
+- `yunhee rag-status [--json]`: 마지막 RAG 학습 시각, 인덱싱된 화면/ChromaDB 벡터 건수, 마지막 학습 이후 변경된 TOBE 파일(Stale) 건수를 확인합니다.
+- `yunhee rag-search "<질문>" [-n 5]`: 화면번호(예: `1002`), 메뉴명, 컴포넌트명 또는 자연어 질문에 대해 에이전트가 소환할 지식 카드(결정적 매칭 + ChromaDB 벡터 검색)를 조회합니다.
+- `yunhee agent "<질문>"` (`yunhee ask -a "<질문>"`): 로컬 LLM(`qwen2.5-coder:14b`) 자율 에이전트 모드로 질의를 수행합니다. 단건 질문(`"1002 화면의 파일명은?"`)은 사전 학습된 TOBE RAG 카드로 즉시 답변하며, 복합 조건 질문(모달 제목, 그리드 체크박스·글자수 등)은 에이전트가 Python 스크립트를 작성·실행(`execute_python` + `screen_catalog`)하여 **화면번호(`#번호`), 메뉴명, 파일 경로, 일치 상세**를 표로 출력합니다 (기본 타겟: TOBE).
 - `yunhee config`: 작업 디렉터리(Work Dir), TOBE/ASIS 소스 경로 및 브랜치 상태, DB 접속 정보 등 환경 설정 확인
 - `yunhee value [KEY]`: 단일 설정값 텍스트 출력 (`--list` 시 전체 목록, `tobe-src`, `asis-src`, `work-dir` 등 지원)
 - `yunhee intro`: yunhee 에이전트 자기소개 및 전문 영역 안내 (`자기소개?` 도 지원)

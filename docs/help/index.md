@@ -16,13 +16,14 @@
 | **API 스모크 테스트 / 서버 로그 / 쓰기 행 추적** | `yunhee api [--track <table>]`, `yunhee log <trace\|req\|errors\|tail>` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **AS-IS 화면 구조 / 폼 레이아웃 / 그리드 / 창 호출부** | `yunhee analysis <screen\|ui\|grid\|layout\|callers>` | [`analysis.md`](file:///home/kdy987/work/yunhee-cli/docs/help/analysis.md) |
 | **AS-IS 메서드 로직 / 실행 가능 SQL 전개 (서비스명 지원)** | `yunhee analysis <method\|sql\|model\|servlet>` | [`analysis.md`](file:///home/kdy987/work/yunhee-cli/docs/help/analysis.md) |
-| **업무 흐름 추적 (메뉴→화면→이벤트→RPC→SQL→DB)** | `yunhee trace-menu`, `trace-screen`, `trace-flow` | [`trace.md`](file:///home/kdy987/work/yunhee-cli/docs/help/trace.md) |
+| **업무 흐름 추적 (메뉴→화면→이벤트→RPC→SQL→DB)** | `yunhee screen-desc`, `yunhee trace-menu`, `trace-screen`, `trace-flow` | [`trace.md`](file:///home/kdy987/work/yunhee-cli/docs/help/trace.md) |
 | **테이블 CRUD 매트릭스 / 컬럼 상태 전이 로직** | `yunhee trace-table`, `trace-crud`, `trace-state` | [`trace.md`](file:///home/kdy987/work/yunhee-cli/docs/help/trace.md) |
 | **AS-IS ↔ TOBE 비교 / 갭(Gap) 및 미연결 자리(--stubs)** | `yunhee trace-pair`, `trace-diff`, `trace-gap [--stubs]` | [`trace.md`](file:///home/kdy987/work/yunhee-cli/docs/help/trace.md) |
 | **AS-IS SQL/CUD → TOBE 매퍼/DTO 코드 생성 (서비스명·DB 객체 검증)** | `yunhee port-sql`, `yunhee port-save` | [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
 | **화면 스타일 판별 / AS-IS 원본 변경(Drift)·신규 매퍼 검증** | `yunhee page-style`, `yunhee drift`, `yunhee sql-check [--new-since-index]`| [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
 | **TOBE 화면 자동 오픈 & 버튼/팝업 순회 캡처 검수** | `yunhee screen-capture <screen_id> login=<comp>/<id>/<pw>` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
-| **자연어 복합 조건(모달 제목·그리드 컬럼 조건 등) 자율 탐색** | `yunhee agent "<질문>"`, `yunhee ask -a "<질문>"` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
+| **TOBE 프로젝트 RAG 학습(카탈로그·ChromaDB) 및 상태 점검** | `yunhee rag-index`, `rag-reset`, `rag-status`, `rag-search` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
+| **자연어 화면/모달/그리드 조건 탐색 및 질의** | `yunhee agent "<질문>"`, `yunhee ask -a "<질문>"` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 
 ---
 
@@ -56,6 +57,7 @@
 - `analysis servlet <서블릿클래스>`: 서블릿 클래스 및 fileType 분기 처리 로직 분석
 
 ### 3. 업무 파악 및 종합 추적 (`trace.md`)
+- `screen-desc <targets...> [--format=md|json]`: 쉼표·공백으로 구분된 복수 화면번호(예: `1111,2222,3333, 4444`)의 메뉴명·파일명·사용 팝업·하위 컴포넌트·그리드·버튼·API·SQL·테이블·ASIS 정보를 일괄 반환
 - `trace-map`: 업무 영역별 화면 수, 테이블 수, 매핑 진행 상태 요약
 - `trace-menu [menu_path]`: AS-IS 메뉴 트리 구조 → 화면 클래스 → TOBE 화면/API 연계 경로 추적
 - `trace-screen <screen_id>`: 단일 화면의 종합 팩트시트(라벨, 그리드, 버튼, 이벤트, RPC, SQL, 테이블, DB함수) 추출

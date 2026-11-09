@@ -46,6 +46,10 @@ TOOL_ALIASES: dict[str, str] = {
     "execute_code": "execute_python",
     "run_code": "execute_python",
     "code_interpreter": "execute_python",
+    "lookup_screen": "lookup_tobe",
+    "find_screen": "lookup_tobe",
+    "search_tobe": "lookup_tobe",
+    "rag_search": "lookup_tobe",
 }
 
 

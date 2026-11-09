@@ -34,6 +34,7 @@ from yunhee.agent.tools.domain_helper import (
 )
 from yunhee.agent.tools.mcp_adapter import MCPManager
 from yunhee.agent.tools.screen_scout import export_spec_tool
+from yunhee.tools.trace.tobe_rag import lookup_tobe
 
 
 @dataclass
@@ -484,6 +485,23 @@ def create_default_registry(load_mcp: bool = True) -> ToolRegistry:
                 },
             },
             "required": ["table_name"],
+        },
+    )
+
+    # 16-1. lookup_tobe (TOBE 화면번호/메뉴명/컴포넌트/API/테이블 통합 조회)
+    reg.register(
+        name="lookup_tobe",
+        func=lookup_tobe,
+        description="TOBE 화면번호(예: '1002'), 메뉴명(예: '업무별 문서작성'), 컴포넌트명(예: 'Dcr01_Tab_DcrUser', 'Ics01_Edit_ClassTree'), API 경로('/api/v1/...'), 또는 DB 테이블명을 받아 프론트엔드 파일 경로, 하위 모달/컴포넌트, 그리드 컬럼, 버튼, 백엔드(Controller/Service/Mapper) 파일 경로를 즉시 반환합니다.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "조회할 화면번호(예: '1002'), 메뉴명, 컴포넌트명, API URL, 또는 테이블명",
+                },
+            },
+            "required": ["query"],
         },
     )
 

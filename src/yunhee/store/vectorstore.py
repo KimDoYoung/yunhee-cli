@@ -7,7 +7,7 @@ import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
 from yunhee.config import CHROMA_HOST, CHROMA_PORT
-from yunhee.ollama_client import embed
+from yunhee.ollama_client import embed, embed_batch
 
 DEFAULT_KEY_PREFIX = "YUNHEE"
 
@@ -18,7 +18,8 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
     def __init__(self) -> None:
         pass
 
-    def name(self) -> str:
+    @staticmethod
+    def name() -> str:
         return "ollama_bge_m3"
 
     def get_config(self) -> dict:
@@ -29,7 +30,10 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
         return OllamaEmbeddingFunction()
 
     def __call__(self, input: Documents) -> Embeddings:
-        return [embed(text) for text in input]
+        texts = list(input)
+        if len(texts) <= 1:
+            return [embed(t) for t in texts]
+        return embed_batch(texts)
 
 
 def generate_doc_id(prefix: str = DEFAULT_KEY_PREFIX) -> str:
@@ -39,12 +43,26 @@ def generate_doc_id(prefix: str = DEFAULT_KEY_PREFIX) -> str:
     return f"{prefix}_{timestamp}_{rand_suffix}"
 
 
+def get_chroma_client():
+    return chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+
+
 def get_collection(name: str = "yunhee"):
-    client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+    client = get_chroma_client()
     return client.get_or_create_collection(
         name=name,
         embedding_function=OllamaEmbeddingFunction(),
     )
+
+
+def delete_collection(name: str) -> bool:
+    """지정한 ChromaDB 컬렉션을 삭제합니다 (존재하지 않으면 False 반환)."""
+    client = get_chroma_client()
+    try:
+        client.delete_collection(name=name)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def add_texts(

@@ -362,7 +362,11 @@ def parse_tsx(text: str, file: str) -> TsxInfo:
         grid_cols=_extract_grid_cols(text),
         # 라벨은 <Button> 안의 글자와, 이벤트 주석 `[E4] retrieveButton[조회].Select`의 대괄호 라벨(SearchBar 등 안에 있는 버튼)
         buttons=list(dict.fromkeys(
-            [b.strip() for b in re.findall(r"<Button\b[^>]*>\s*([^<{][^<]*?)\s*</Button>", text)]
+            [
+                re.sub(r"^[\s\S]*\}>\s*", "", b).strip()
+                for b in re.findall(r"<Button\b(?:[^>=]|=>)*>\s*([^<{][^<]*?)\s*</Button>", text)
+                if re.sub(r"^[\s\S]*\}>\s*", "", b).strip()
+            ]
             + re.findall(r"\[E\d+\]\s*\w*[Bb]utton\w*\[([^\]]+)\]", text)
         )),
         impl_events=impl, skipped_events=skip,

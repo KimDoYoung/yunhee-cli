@@ -19,6 +19,7 @@ from yunhee.agent.memory import get_rules_prompt_section
 from yunhee.agent.parser import extract_tool_calls_from_text
 from yunhee.agent.registry import ToolRegistry, create_default_registry
 from yunhee.agent.session import SessionLogger
+from yunhee.tools.trace.tobe_rag import find_deterministic_matches, prefetch_tobe_rag
 
 
 @dataclass
@@ -178,10 +179,13 @@ DEFAULT_SYSTEM_PROMPT = """\
 당신은 범용 코딩 에이전트가 아니며, AssetERP 프레임워크를 GWT/GXT에서 Spring Boot/React로 전환하고, 테스트하고, 새로 생긴 프레임워크의 테스트 및 문서화 등에 특화되어 있습니다.
 작업 디렉터리 내의 파일들을 확인하고, 내용을 읽고, 수정하거나 명령어를 실행하여 사용자의 요청을 해결하세요.
 
-[사전 구축된 마이그레이션 색인 자료 우선 활용 (토큰 절약 핵심)]
-프로젝트에는 레거시 소스와 DB를 초압축 정적 색인해 둔 자료들이 이미 준비되어 있습니다:
-1. 메뉴 전체 매핑: `docs/as-is/menus.tsv` (전체 메뉴 경로, 메뉴 번호, 화면 클래스 매핑)
-2. 화면/UI/이벤트 색인: `docs/as-is/src/{domain}/{Screen}.md` (각 화면의 Grid Spec, 버튼 목록, E0~En 이벤트 핸들러, 호출 서비스/SQL)
+[사전 구축된 TOBE & AS-IS 학습 자료 우선 활용 (토큰 절약 핵심)]
+프로젝트에는 TOBE 및 AS-IS 소스와 DB를 초압축 색인해 둔 자료들이 이미 준비되어 있습니다:
+0. **TOBE RAG 자동 주입 및 `lookup_tobe` 도구**:
+   - 사용자 메시지 상단에 `[참고 가능한 TOBE 화면·API·백엔드 학습 지식 (TOBE RAG)]` 블록이 주입되어 있고, 그 안에 사용자가 질문한 화면번호(예: `#1002`), 파일 경로, 컴포넌트, API, 백엔드 정보가 이미 들어 있다면 **절대로 추가 도구를 호출하지 말고 즉시 해당 팩트를 바탕으로 답변**하세요.
+   - 만약 특정 화면번호(예: `1002`), 메뉴명(예: `업무별 문서작성`), 컴포넌트명, API URL, 테이블명을 단건으로 찾고 싶다면 `lookup_tobe(query="...")` 도구를 최우선 호출하세요.
+1. 메뉴 전체 매핑: `docs/to-be/menus.md` (TOBE 메뉴/파일 매핑) 및 `docs/as-is/menus.tsv` (원본 메뉴 매핑)
+2. 화면/UI/이벤트 색인: `docs/to-be/domains/{domain}.md` (TOBE 도메인별 화면 카드) 및 `docs/as-is/src/{domain}/{Screen}.md`
 3. DB 테이블/함수 분할 색인: `docs/as-is/db/tables/{domain}.md`, `docs/as-is/db/functions/{name}.md`
 4. DB 스키마 스냅샷: `.yunhee/*.json` (get_db_definition 또는 get_table_schema 도구로 즉시 조회)
 5. 전문 분석 CLI: 필요 시 `run_command`로 `yunhee table <패턴>`, `yunhee trace-menu <경로>`, `yunhee trace-screen <화면>`, `yunhee outline <경로>` 등을 호출하여 팩트를 수집하세요.
@@ -329,9 +333,23 @@ class AgentLoop:
         else:
             messages.append({"role": "system", "content": self.get_active_system_prompt()})
 
-        # L2 시맨틱 지식 사전 검색 (Prefetch RAG)
+        # L2 시맨틱 지식 + TOBE RAG 사전 검색 (Prefetch RAG)
+        is_live_ollama = isinstance(self._sync_client, _OllamaNativeClient)
+        det_matches = find_deterministic_matches(user_message, max_cards=4) if is_live_ollama else []
+        tobe_rag_ctx = (
+            prefetch_tobe_rag(user_message, enable_vector=is_live_ollama)
+            if is_live_ollama
+            else ""
+        )
         context_knowledge = prefetch_relevant_knowledge(user_message)
-        effective_message = f"{context_knowledge}{user_message}" if context_knowledge else user_message
+        combined_ctx = f"{tobe_rag_ctx}{context_knowledge}"
+        effective_message = f"{combined_ctx}{user_message}" if combined_ctx else user_message
+
+        # 화면번호(#1002)나 컴포넌트명이 결정적으로 매칭되었고 단순 정보 질문인 경우 첫 턴 도구 호출 생략
+        is_direct_fact_query = bool(det_matches) and not any(
+            kw in user_message
+            for kw in ("수정해", "고쳐", "작성해", "생성해", "실행해", "모달을 찾", "모달 찾", "컬럼 중", "체크박스")
+        )
 
         messages.append({"role": "user", "content": effective_message})
 
@@ -340,7 +358,7 @@ class AgentLoop:
 
         step = 0
         last_calls_signature: Any = None
-        has_stdout_result = False
+        has_stdout_result = is_direct_fact_query
 
         while step < self.max_steps:
             step += 1
@@ -494,9 +512,14 @@ class AgentLoop:
         else:
             messages.append({"role": "system", "content": self.get_active_system_prompt()})
 
-        # L2 시맨틱 지식 사전 검색 (Prefetch RAG)
+        # L2 시맨틱 지식 + TOBE RAG 사전 검색 (Prefetch RAG)
+        tobe_rag_ctx = prefetch_tobe_rag(
+            user_message,
+            enable_vector=isinstance(self._sync_client, _OllamaNativeClient),
+        )
         context_knowledge = prefetch_relevant_knowledge(user_message)
-        effective_message = f"{context_knowledge}{user_message}" if context_knowledge else user_message
+        combined_ctx = f"{tobe_rag_ctx}{context_knowledge}"
+        effective_message = f"{combined_ctx}{user_message}" if combined_ctx else user_message
 
         messages.append({"role": "user", "content": effective_message})
 

@@ -35,6 +35,20 @@
   yunhee trace-screen '#1029'
   ```
 
+### `yunhee screen-desc <targets...>`
+1개 이상의 화면번호(또는 화면 클래스명)를 쉼표(`,`)나 공백(` `)으로 구분해 전달하면, 해당 화면번호와 관련된 모든 정보(메뉴명·메뉴 경로·TOBE/ASIS 파일 경로·페이지 스타일·조회조건·그리드·버튼·**사용되는 모든 팝업/모달 창**·하위 탭페이지·호출 API·백엔드 파일·MyBatis SQL ID·참조 DB 테이블·AS-IS 레거시 요약)를 한 번에 반환합니다.
+- **인자**: 쉼표(`,`)·공백(` `) 혼합 구분된 화면번호들 (예: `1111,2222,3333, 4444`) 또는 화면 클래스명
+- **옵션**:
+  - `-f, --format <md|json>`: 출력 포맷 지정 (기본: `md`)
+  - `--json`: JSON 출력 단축 옵션 (`--format=json`과 동일)
+  - `--tobe <DIR>`: TOBE 프로젝트 루트 경로
+- **예시**:
+  ```bash
+  yunhee screen-desc 1002,1029, 1085
+  yunhee screen-desc 1002 1029 --format=json
+  yunhee screen-desc 1029 --format=md
+  ```
+
 ---
 
 ## 2. 데이터 중심 계층 (Data & State Lifecycle)

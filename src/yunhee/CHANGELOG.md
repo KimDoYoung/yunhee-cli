@@ -2,6 +2,24 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.8.2] - 2026-11-09
+복수 화면번호 종합 조회 명령어 `yunhee screen-desc` (`--format=md|json`) 신설
+- **`yunhee screen-desc` 명령어 및 REPL `/screen-desc` 추가 (`src/yunhee/tools/trace/screen_desc.py`, `src/yunhee/cli.py`, `src/yunhee/ui/repl.py`)**:
+  - `yunhee screen-desc 1111,2222,3333, 4444 [--format=md|json]`: 쉼표(`,`)와 공백(` `)이 혼합된 복수의 화면번호(또는 화면 클래스명)를 받아 메뉴명·메뉴 경로·프론트엔드 파일 경로·페이지 스타일·조회조건(`SearchBar`)·버튼·그리드 컬럼·**사용되는 모든 팝업/모달 창**·하위 탭페이지·백엔드 API·파일·MyBatis SQL ID·참조 DB 테이블·AS-IS 레거시 요약을 마크다운 또는 JSON으로 일괄 반환.
+  - 범용 공통 모달의 동적 타이틀 전파 시 무관한 호출부 리터럴 제외 및 화살표 함수(`onClick={() => ...}`) 버튼 라벨 정규화 개선.
+
+## [0.8.1] - 2026-11-09
+TOBE 프로젝트 에이전트 RAG 종합 학습 시스템(`rag-index`, `rag-reset`, `rag-status`, `rag-search`, `lookup_tobe`) 및 사용 가이드(`docs/yunhee-agent-사용법.md`) 신설
+- **TOBE 3계층 RAG 학습 및 `rag-*` CLI 명령어 4종 (`src/yunhee/tools/trace/tobe_rag.py`, `src/yunhee/cli.py`, `src/yunhee/ui/repl.py`)**:
+  - `yunhee rag-index` (`/rag-index`): TOBE 전체 화면·컴포넌트·메뉴번호·조회조건(`SearchBar`)·모달·그리드·버튼·호출 API·백엔드 파일·SQL ID·참조 테이블을 스캔하여 `.yunhee/tobe_catalog.json` 고속 스냅샷과 `docs/to-be/`(`menus.md`, `domains/*.md`)를 생성하고, ChromaDB `yunhee_tobe_kb` 컬렉션에 `bge-m3` 배치 임베딩으로 증분 학습(`upsert` 및 삭제 파일 자동 `delete`).
+  - `yunhee rag-reset` (`/rag-reset`): ChromaDB `yunhee_tobe_kb` 컬렉션과 스냅샷을 완전히 삭제한 뒤 처음부터 재학습 (`--all` 지정 시 수동 노하우 컬렉션까지 초기화).
+  - `yunhee rag-status` (`/rag-status`): 마지막 학습 시각, 인덱싱된 화면/벡터 건수, 마지막 학습 이후 변경된 TOBE 파일(Stale) 건수 점검.
+  - `yunhee rag-search <질의>` (`/rag-search <질의>`): 결정적 카탈로그 매칭 + ChromaDB 벡터 검색 결과 카드 조회.
+- **하이브리드 Prefetch RAG 및 `lookup_tobe` 에이전트 도구 (`src/yunhee/agent/loop.py`, `src/yunhee/agent/registry.py`)**:
+  - 질문에 화면번호(`1002` 등), 컴포넌트명, 메뉴명, API, 테이블명이 포함되면 1턴 시작 전 관련 TOBE 학습 카드를 프롬프트에 자동 주입하여 단건 질문에 0-스텝 즉시 응답.
+  - `.yunhee/tobe_catalog.json` 스냅샷 로드로 `execute_python`의 `iter_screens()` 실행 속도를 약 5.5초 → 0.25초로 단축.
+  - 에이전트 사용 설명서(`docs/yunhee-agent-사용법.md`) 및 설계 문서(`docs/tobe_agent_rag-설계.md`) 추가.
+
 ## [0.7.9] - 2026-11-09
 `screen_catalog` 동적 모달 타이틀 부모 화면 역추적(`titleName`·`title`·JSX) 및 `agent` 빈 출력 환각 방지 가드
 - **동적 모달 타이틀 호출부 역추적 (`src/yunhee/tools/trace/screen_catalog.py`)**:

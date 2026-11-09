@@ -65,10 +65,21 @@ def resolve_as_is_paths(
             final_index = cand_p
 
     if not final_index:
-        # 워크스페이스 내 docs/as-is/src 확인
+        # 워크스페이스 또는 TOBE_SRC_DIR 내 docs/as-is/src (_index.json 존재 여부 우선) 확인
         cand_work = config.WORK_DIR / "docs" / "as-is" / "src"
-        if cand_work.is_dir():
+        cand_tobe = (
+            Path(config.TOBE_SRC_DIR) / "docs" / "as-is" / "src"
+            if getattr(config, "TOBE_SRC_DIR", None)
+            else None
+        )
+        if (cand_work / "_index.json").is_file():
             final_index = cand_work
+        elif cand_tobe and (cand_tobe / "_index.json").is_file():
+            final_index = cand_tobe
+        elif cand_work.is_dir():
+            final_index = cand_work
+        elif cand_tobe and cand_tobe.is_dir():
+            final_index = cand_tobe
         else:
             cand = find_as_is_dir("src")
             if cand.is_dir():

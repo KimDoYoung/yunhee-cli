@@ -57,6 +57,28 @@ def embed(text: str, model: str = EMBED_MODEL) -> list[float]:
     return resp.json()["embeddings"][0]
 
 
+def embed_batch(texts: list[str], model: str = EMBED_MODEL, batch_size: int = 32) -> list[list[float]]:
+    """여러 텍스트를 배치 단위로 bge-m3 임베딩하여 벡터 리스트로 반환"""
+    if not texts:
+        return []
+    if len(texts) == 1:
+        return [embed(texts[0], model=model)]
+    results: list[list[float]] = []
+    for i in range(0, len(texts), batch_size):
+        chunk = texts[i : i + batch_size]
+        resp = httpx.post(
+            f"{OLLAMA_HOST}/api/embed",
+            json={
+                "model": model,
+                "input": chunk,
+            },
+            timeout=DEFAULT_TIMEOUT,
+        )
+        resp.raise_for_status()
+        results.extend(resp.json()["embeddings"])
+    return results
+
+
 def chat_stream(messages: list[dict], model: str = OLLAMA_MODEL) -> Iterator[str]:
     """Ollama에 멀티턴 대화를 보내고, 응답을 토큰(청크) 단위로 yield"""
     with httpx.stream(

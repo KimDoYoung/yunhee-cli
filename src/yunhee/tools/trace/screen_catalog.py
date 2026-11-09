@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections import deque
 from dataclasses import dataclass, field
@@ -46,6 +48,13 @@ class ModalInfo:
     title: str
     line: int
 
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": self.kind, "title": self.title, "line": self.line}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ModalInfo:
+        return cls(kind=d.get("kind", "Modal"), title=d.get("title", ""), line=int(d.get("line", 0)))
+
 
 @dataclass
 class ScreenRecord:
@@ -55,14 +64,82 @@ class ScreenRecord:
     menu_no: str = ""  # 예: '1001'
     menu_path: str = ""  # 예: '회계관리 > 기본정보 > 계정과목관리'
     menu_name: str = ""  # 말단 메뉴명 (예: '계정과목관리')
+    role: str = ""  # 'Tab', 'TabPage', 'Grid', 'Lookup', 'Edit', 'Popup', 'Move', 'Component'
+    page_style: str = ""  # 'SG', 'SGP', 'MF' 등 SID
     opening_tabs: list[str] = field(default_factory=list)  # 이 컴포넌트를 여는 상위 _Tab_ 화면들
+    child_components: list[str] = field(default_factory=list)  # 이 화면이 사용하는 하위 모달/그리드/컴포넌트들
+    search_fields: list[str] = field(default_factory=list)  # 조회바(SearchBar.Field) 라벨 목록
     modals: list[ModalInfo] = field(default_factory=list)
     grid_cols: list[GridCol] = field(default_factory=list)
     buttons: list[str] = field(default_factory=list)
     apis: list[str] = field(default_factory=list)  # ['GET /api/v1/...']
     backend_files: list[str] = field(default_factory=list)  # 연결된 Controller/Service/Mapper 파일들
     sql_ids: list[str] = field(default_factory=list)  # 연결된 MyBatis SQL ID 목록
-    text: str = field(default="", repr=False)
+    tables: list[str] = field(default_factory=list)  # 연결된 DB 테이블 목록
+    mtime: float = 0.0
+    content_hash: str = ""
+    _text: str = field(default="", repr=False)
+    _root_dir: str = field(default="", repr=False)
+
+    def __init__(
+        self,
+        name: str,
+        side: str,
+        file: str,
+        menu_no: str = "",
+        menu_path: str = "",
+        menu_name: str = "",
+        opening_tabs: list[str] | None = None,
+        modals: list[ModalInfo] | None = None,
+        grid_cols: list[GridCol] | None = None,
+        buttons: list[str] | None = None,
+        apis: list[str] | None = None,
+        backend_files: list[str] | None = None,
+        sql_ids: list[str] | None = None,
+        text: str = "",
+        role: str = "",
+        page_style: str = "",
+        child_components: list[str] | None = None,
+        search_fields: list[str] | None = None,
+        tables: list[str] | None = None,
+        mtime: float = 0.0,
+        content_hash: str = "",
+        root_dir: str = "",
+    ) -> None:
+        self.name = name
+        self.side = side
+        self.file = file
+        self.menu_no = menu_no
+        self.menu_path = menu_path
+        self.menu_name = menu_name
+        self.role = role or _infer_role(name)
+        self.page_style = page_style
+        self.opening_tabs = list(opening_tabs or [])
+        self.child_components = list(child_components or [])
+        self.search_fields = list(search_fields or [])
+        self.modals = list(modals or [])
+        self.grid_cols = list(grid_cols or [])
+        self.buttons = list(buttons or [])
+        self.apis = list(apis or [])
+        self.backend_files = list(backend_files or [])
+        self.sql_ids = list(sql_ids or [])
+        self.tables = list(tables or [])
+        self.mtime = mtime
+        self.content_hash = content_hash
+        self._text = text
+        self._root_dir = root_dir
+
+    @property
+    def text(self) -> str:
+        if not self._text and self._root_dir and self.file:
+            p = Path(self._root_dir) / self.file
+            if p.is_file():
+                self._text = p.read_text(encoding="utf-8", errors="replace")
+        return self._text
+
+    @text.setter
+    def text(self, val: str) -> None:
+        self._text = val
 
     @property
     def raw_text(self) -> str:
@@ -79,6 +156,138 @@ class ScreenRecord:
         if detail:
             return f"{no_str} | {menu_str} | {comp_str} | {self.file} | {detail}"
         return f"{no_str} | {menu_str} | {comp_str} | {self.file}"
+
+    def to_card_text(self) -> str:
+        """ChromaDB 시맨틱 임베딩 및 에이전트 Prefetch 주입용 요약 카드 텍스트."""
+        no_part = f"#{self.menu_no}" if self.menu_no else "메뉴번호 없음"
+        menu_part = self.menu_path or self.menu_name or "-"
+        style_part = f", 스타일: {self.page_style}" if self.page_style else ""
+        lines = [
+            f"[TOBE {self.role or '화면'} {no_part} | {menu_part} | {self.name}{style_part}]",
+            f"- 프론트엔드 파일: {self.file}",
+        ]
+        if self.opening_tabs and self.name not in self.opening_tabs:
+            lines.append(f"- 상위 오픈 탭 화면: {', '.join(self.opening_tabs)}")
+        if self.child_components:
+            lines.append(f"- 하위 연결 컴포넌트/모달: {', '.join(self.child_components)}")
+        if self.search_fields:
+            lines.append(f"- 조회 조건(SearchBar): {', '.join(self.search_fields)}")
+        if self.buttons:
+            lines.append(f"- 버튼 목록: {', '.join(self.buttons)}")
+        if self.modals:
+            m_strs = [f"{m.kind}({m.title})" for m in self.modals if not m.title.startswith("{")]
+            if m_strs:
+                lines.append(f"- 모달 창: {', '.join(dict.fromkeys(m_strs))}")
+        if self.grid_cols:
+            c_strs = [f"{c.label}({c.field}:{c.col_type})" for c in self.grid_cols[:20]]
+            lines.append(f"- 그리드 컬럼: {', '.join(c_strs)}")
+        if self.apis:
+            lines.append(f"- 호출 API: {', '.join(self.apis)}")
+        if self.backend_files:
+            lines.append(f"- 백엔드 파일: {', '.join(self.backend_files)}")
+        if self.sql_ids:
+            lines.append(f"- 매퍼 SQL ID: {', '.join(self.sql_ids)}")
+        if self.tables:
+            lines.append(f"- 참조 DB 테이블: {', '.join(self.tables)}")
+        return "\n".join(lines)
+
+    def compute_hash(self) -> str:
+        card = self.to_card_text()
+        self.content_hash = hashlib.sha256(card.encode("utf-8")).hexdigest()[:16]
+        return self.content_hash
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "side": self.side,
+            "file": self.file,
+            "menu_no": self.menu_no,
+            "menu_path": self.menu_path,
+            "menu_name": self.menu_name,
+            "role": self.role,
+            "page_style": self.page_style,
+            "opening_tabs": self.opening_tabs,
+            "child_components": self.child_components,
+            "search_fields": self.search_fields,
+            "modals": [m.to_dict() for m in self.modals],
+            "grid_cols": [
+                {"field": c.field, "label": c.label, "col_type": c.col_type, "width": c.width}
+                for c in self.grid_cols
+            ],
+            "buttons": self.buttons,
+            "apis": self.apis,
+            "backend_files": self.backend_files,
+            "sql_ids": self.sql_ids,
+            "tables": self.tables,
+            "mtime": self.mtime,
+            "content_hash": self.content_hash or self.compute_hash(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any], root_dir: str = "") -> ScreenRecord:
+        return cls(
+            name=d["name"],
+            side=d.get("side", "tobe"),
+            file=d.get("file", ""),
+            menu_no=d.get("menu_no", ""),
+            menu_path=d.get("menu_path", ""),
+            menu_name=d.get("menu_name", ""),
+            role=d.get("role", ""),
+            page_style=d.get("page_style", ""),
+            opening_tabs=d.get("opening_tabs", []),
+            child_components=d.get("child_components", []),
+            search_fields=d.get("search_fields", []),
+            modals=[ModalInfo.from_dict(m) for m in d.get("modals", [])],
+            grid_cols=[
+                GridCol(
+                    c["field"],
+                    c["label"],
+                    col_type=c.get("col_type", "text"),
+                    width=int(c.get("width", 0)),
+                )
+                for c in d.get("grid_cols", [])
+            ],
+            buttons=d.get("buttons", []),
+            apis=d.get("apis", []),
+            backend_files=d.get("backend_files", []),
+            sql_ids=d.get("sql_ids", []),
+            tables=d.get("tables", []),
+            mtime=float(d.get("mtime", 0.0)),
+            content_hash=d.get("content_hash", ""),
+            root_dir=root_dir,
+        )
+
+
+def _infer_role(name: str) -> str:
+    if "_Tab_" in name:
+        return "Tab"
+    if "_TabPage_" in name or "_Page_" in name:
+        return "TabPage"
+    if "_Grid_" in name:
+        return "Grid"
+    if "_Lookup_" in name:
+        return "Lookup"
+    if "_Edit_" in name:
+        return "Edit"
+    if "_Popup_" in name:
+        return "Popup"
+    if "_Move_" in name:
+        return "Move"
+    return "Component"
+
+
+def _extract_page_style(text: str) -> str:
+    m = re.search(r"스타일\s*:\s*([A-Z]{2,4})\b", text[:1500])
+    return m.group(1) if m else ""
+
+
+def _extract_search_fields(text: str) -> list[str]:
+    fields: list[str] = []
+    for m in re.finditer(r"<(?:SearchBar\.Field|SearchField)\b[^>]*?\blabel\s*=\s*(['\"])(.*?)\1", text):
+        lbl = m.group(2).strip()
+        if lbl and lbl not in fields:
+            fields.append(lbl)
+    return fields
 
 
 def _extract_jsx_tag_props(text: str, tag_start: int) -> str:
@@ -382,14 +591,19 @@ def _normalize_asis_col_type(raw_type: str) -> str:
     return raw_type[0].lower() + raw_type[1:] if raw_type else "text"
 
 
+_TABLE_NAME_RE = re.compile(r"\b(?:from|join|update|into)\s+([a-z]{2,5}\d{2}_[a-z0-9_]+)\b")
+
+
 def _connect_backend_info(
     api_calls: list[tuple[str, str]],
     idx: TobeIndex,
-) -> tuple[list[str], list[str], list[str]]:
-    """TSX의 api_calls로부터 (apis, backend_files, sql_ids)를 연결한다."""
+    xml_tables_cache: dict[str, list[str]] | None = None,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """TSX의 api_calls로부터 (apis, backend_files, sql_ids, tables)를 연결한다."""
     apis: list[str] = []
     be_files: list[str] = []
     sql_ids: list[str] = []
+    tables: list[str] = []
     for obj, fn_name in api_calls:
         fn = idx.api_fns.get((obj, fn_name))
         if not fn:
@@ -405,15 +619,35 @@ def _connect_backend_info(
                     be_files.append(idx.rel(svc.file))
             for st in idx.statements_of(ep):
                 sql_ids.append(st.key)
-                be_files.append(idx.rel(st.file))
+                rel_xml = idx.rel(st.file)
+                be_files.append(rel_xml)
+                if xml_tables_cache is not None:
+                    if st.file not in xml_tables_cache:
+                        xml_p = Path(st.file)
+                        if xml_p.is_file():
+                            raw_xml = xml_p.read_text(encoding="utf-8", errors="replace").lower()
+                            xml_tables_cache[st.file] = list(dict.fromkeys(_TABLE_NAME_RE.findall(raw_xml)))
+                        else:
+                            xml_tables_cache[st.file] = []
+                    tables.extend(xml_tables_cache[st.file])
     return (
         list(dict.fromkeys(apis)),
         list(dict.fromkeys(be_files)),
         list(dict.fromkeys(sql_ids)),
+        list(dict.fromkeys(tables)),
     )
 
 
 _GENERIC_CONFIRM_TITLES = {"확인", "삭제", "삭제확인", "취소", "복구", "배포", "업데이트 예정", "작성 Tip", "알림", "경고"}
+_NON_TITLE_CODE_RE = re.compile(
+    r"^(?:[A-Z]\d{2}|%|insert|edit|update|delete|view|[A-Za-z0-9]+_(?:Tab|TabPage|Grid|Lookup|Edit|Popup|Page|Move)_[A-Za-z0-9_]+)$"
+)
+
+
+def _is_valid_propagated_title(val: str) -> bool:
+    if not val or len(val) < 2 or val in _GENERIC_CONFIRM_TITLES:
+        return False
+    return not _NON_TITLE_CODE_RE.match(val)
 
 
 def _propagate_caller_modal_titles(
@@ -439,50 +673,120 @@ def _propagate_caller_modal_titles(
             # 1) <ChildComponent ... title="타이틀" />
             for m in re.finditer(rf"<{re.escape(rec.name)}\b[^>]*?\btitle\s*=\s*(['\"])([^'\"]+)\1", p_text):
                 t_val = m.group(2).strip()
-                if t_val and t_val not in existing_titles:
+                if _is_valid_propagated_title(t_val) and t_val not in existing_titles:
                     existing_titles.add(t_val)
                     ln = p_text.count("\n", 0, m.start()) + 1
                     rec.modals.append(ModalInfo(kind=base_kind, title=t_val, line=ln))
 
             # 동적 타이틀 모달인 경우 부모의 setEditTarget({ titleName: '법규분류 수정' }) 등 추출
-            if dyn_modals:
-                for m in re.finditer(r"\b(?:titleName|title|heading)\s*:\s*(['\"])([^'\"]+)\1", p_text):
+            # (범용 공통 모달이 수십 개 화면에서 import될 때 부모의 무관한 문자열이 섞이지 않도록 호출처 5개 이하인 전용 모달에 한정)
+            if dyn_modals and len(rev.get(rec.name, ())) <= 5:
+                for m in re.finditer(r"\b(?:titleName|modalTitle|popupTitle)\s*:\s*(['\"])([^'\"]+)\1", p_text):
                     t_val = m.group(2).strip()
-                    if t_val and t_val not in _GENERIC_CONFIRM_TITLES and t_val not in existing_titles:
+                    if _is_valid_propagated_title(t_val) and t_val not in existing_titles:
                         existing_titles.add(t_val)
                         ln = p_text.count("\n", 0, m.start()) + 1
                         rec.modals.append(ModalInfo(kind=base_kind, title=t_val, line=ln))
                 for m in re.finditer(r"\b(?:insert\w*|editData)\s*\([^)\n]*,\s*(['\"])([^'\"]+)\1", p_text):
                     t_val = m.group(2).strip()
-                    if t_val and t_val not in ("insert", "edit", "update") and t_val not in existing_titles:
+                    if _is_valid_propagated_title(t_val) and t_val not in existing_titles:
                         existing_titles.add(t_val)
                         ln = p_text.count("\n", 0, m.start()) + 1
                         rec.modals.append(ModalInfo(kind=base_kind, title=t_val, line=ln))
+
+
+def get_catalog_snapshot_path(layout: TobeLayout | None = None) -> Path:
+    """TOBE 카탈로그 스냅샷(.yunhee/tobe_catalog.json) 경로를 반환한다."""
+    lay = layout or find_layout()
+    return lay.root / ".yunhee" / "tobe_catalog.json"
+
+
+def _collect_tobe_tsx_files(layout: TobeLayout) -> list[Path]:
+    target_dirs = [layout.pages_dir, layout.frontend / "components" / "lookup"]
+    tsx_files: list[Path] = []
+    seen_paths: set[Path] = set()
+    for d in target_dirs:
+        if d.is_dir():
+            for p in sorted(d.rglob("*.tsx")):
+                if p not in seen_paths:
+                    seen_paths.add(p)
+                    tsx_files.append(p)
+    return tsx_files
+
+
+def _try_load_fresh_snapshot(layout: TobeLayout) -> list[ScreenRecord] | None:
+    """스냅샷이 존재하고 모든 TSX 파일의 mtime 및 개수가 일치하면 즉시(0.01초) 로드한다."""
+    snap_path = get_catalog_snapshot_path(layout)
+    if not snap_path.is_file():
+        return None
+    try:
+        data = json.loads(snap_path.read_text(encoding="utf-8"))
+        raw_screens = data.get("screens", [])
+        if not raw_screens:
+            return None
+        tsx_files = _collect_tobe_tsx_files(layout)
+        if len(tsx_files) != len(raw_screens):
+            return None
+        by_stem = {item["name"]: item for item in raw_screens}
+        for p in tsx_files:
+            item = by_stem.get(p.stem)
+            if not item:
+                return None
+            if abs(p.stat().st_mtime - float(item.get("mtime", 0.0))) > 0.01:
+                return None
+        root_str = str(layout.root)
+        return [ScreenRecord.from_dict(item, root_dir=root_str) for item in raw_screens]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _populate_children_and_hashes(records: list[ScreenRecord], file_texts: dict[str, str]) -> None:
+    """상위 탭 ↔ 하위 컴포넌트 양방향 연결 및 content_hash 계산."""
+    by_name = {r.name: r for r in records if r.side == "tobe"}
+    for r in records:
+        if r.side != "tobe":
+            continue
+        # 1) 직접 import한 내부 컴포넌트
+        text = file_texts.get(r.name, "")
+        children: list[str] = list(r.child_components)
+        for m in _IMPORT_RE.finditer(text):
+            target = Path(m.group(2)).stem
+            if target in by_name and target != r.name and target not in children:
+                children.append(target)
+        r.child_components = children
+        # 2) opening_tabs 역방향 등록
+        for tab_name in r.opening_tabs:
+            if tab_name != r.name and tab_name in by_name:
+                tab_rec = by_name[tab_name]
+                if r.name not in tab_rec.child_components:
+                    tab_rec.child_components.append(r.name)
+    for r in records:
+        if r.side == "tobe":
+            r.compute_hash()
 
 
 @lru_cache(maxsize=4)
 def _cached_catalog(side: str, tobe_root_str: str, src_index_str: str) -> list[ScreenRecord]:
     tobe_path = Path(tobe_root_str) if tobe_root_str else None
     src_index_path = Path(src_index_str) if src_index_str else None
-    ctx = load_context(side, src_index=src_index_path)
     layout = find_layout(tobe_path)
+
+    # TOBE 단독 조회 시 신선한 스냅샷이 있으면 즉시 반환 (~0.01s)
+    if side == "tobe" and layout.usable:
+        snap_records = _try_load_fresh_snapshot(layout)
+        if snap_records is not None:
+            return snap_records
+
+    ctx = load_context(side, src_index=src_index_path)
     menu_lookup = _load_full_menu_map(ctx, layout)
     records: list[ScreenRecord] = []
 
     if side in ("tobe", "both") and layout.usable:
         idx = build_index(str(layout.root))
         reg_tabs, file_texts, _file_paths, rev = _build_reverse_imports(layout.frontend)
-
-        # pages/** 및 components/lookup/** 아래의 TSX 파일들을 대상으로 수집
-        target_dirs = [layout.pages_dir, layout.frontend / "components" / "lookup"]
-        tsx_files: list[Path] = []
-        seen_paths: set[Path] = set()
-        for d in target_dirs:
-            if d.is_dir():
-                for p in sorted(d.rglob("*.tsx")):
-                    if p not in seen_paths:
-                        seen_paths.add(p)
-                        tsx_files.append(p)
+        tsx_files = _collect_tobe_tsx_files(layout)
+        xml_tables_cache: dict[str, list[str]] = {}
+        root_str = str(layout.root)
 
         for p in tsx_files:
             stem = p.stem
@@ -493,7 +797,11 @@ def _cached_catalog(side: str, tobe_root_str: str, src_index_str: str) -> list[S
             menu_no, menu_path, menu_name = _pick_full_menu(primary_tab or stem, menu_lookup, file_texts)
             if not menu_no and info.header_menu_nos:
                 menu_no = info.header_menu_nos[0]
-            apis, be_files, sql_ids = _connect_backend_info(info.api_calls, idx)
+            apis, be_files, sql_ids, tables = _connect_backend_info(info.api_calls, idx, xml_tables_cache)
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                mtime = 0.0
             records.append(
                 ScreenRecord(
                     name=stem,
@@ -502,17 +810,24 @@ def _cached_catalog(side: str, tobe_root_str: str, src_index_str: str) -> list[S
                     menu_no=menu_no,
                     menu_path=menu_path,
                     menu_name=menu_name,
+                    role=_infer_role(stem),
+                    page_style=_extract_page_style(text),
                     opening_tabs=tabs,
+                    search_fields=_extract_search_fields(text),
                     modals=extract_modals_from_tsx(text),
                     grid_cols=info.grid_cols,
                     buttons=info.buttons,
                     apis=apis,
                     backend_files=be_files,
                     sql_ids=sql_ids,
+                    tables=tables,
+                    mtime=mtime,
                     text=text,
+                    root_dir=root_str,
                 )
             )
         _propagate_caller_modal_titles(records, file_texts, rev)
+        _populate_children_and_hashes(records, file_texts)
 
     if side in ("asis", "both") and ctx.src_index and ctx.src_index.is_dir():
         for md_path in sorted(ctx.src_index.glob("*/*/*.md")):
