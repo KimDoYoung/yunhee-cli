@@ -111,10 +111,65 @@ def init_cmd():
         typer.echo(f"    - .gitignore: {pdir / '.gitignore'}")
 
 
+def _run_single_agent_query(prompt: str, model: str = OLLAMA_MODEL) -> None:
+    """단발성 자율 에이전트(AgentLoop) 질의 실행."""
+    from rich.console import Console
+    from rich.markdown import Markdown
+
+    from yunhee.agent import AgentLoop
+    from yunhee.ui.components import format_tool_call_status, format_tool_result_preview
+
+    console = Console()
+    loop = AgentLoop(model=model)
+
+    with console.status(
+        "[bold cyan]yunhee 에이전트가 생각 중입니다...[/bold cyan]",
+        spinner="dots",
+    ) as status:
+
+        def on_tool_call(name: str, args: dict) -> None:
+            status.update(format_tool_call_status(name, args))
+
+        def on_tool_result(name: str, result: str) -> None:
+            status.update("[bold cyan]도구 결과 분석 및 답변 정리 중...[/bold cyan]")
+            console.print(format_tool_result_preview(name, result))
+
+        response, _ = loop.run(
+            prompt,
+            on_tool_call=on_tool_call,
+            on_tool_result=on_tool_result,
+        )
+
+    console.print("\n[bold green]yunhee>[/bold green]")
+    console.print(Markdown(response))
+
+
 @app.command()
-def ask(prompt: str, model: str = OLLAMA_MODEL):
-    """로컬 LLM(qwen2.5-coder) 단발 질의"""
+def ask(
+    prompt: str,
+    model: str = OLLAMA_MODEL,
+    agent: Annotated[
+        bool,
+        typer.Option("--agent", "-a", help="도구 호출(execute_python 등)을 포함한 에이전트 모드로 실행"),
+    ] = False,
+):
+    """로컬 LLM(qwen2.5-coder) 단발 질의 (--agent/-a 지정 시 도구 사용 자율 에이전트 모드)"""
+    if agent:
+        _run_single_agent_query(prompt, model=model)
+        return
     print(chat(prompt, model=model))
+
+
+@app.command(name="agent")
+def agent_cmd(
+    prompt: Annotated[
+        str,
+        typer.Argument(help="에이전트에게 요청할 자연어 질문 (예: \"제목이 '계정과목'인 모달 찾아줘\")"),
+    ],
+    model: str = OLLAMA_MODEL,
+):
+    """로컬 LLM 자율 에이전트 단발 실행 (Python 스크립트 생성·실행 및 도구 활용)"""
+    _run_single_agent_query(prompt, model=model)
 
 
 @app.command()

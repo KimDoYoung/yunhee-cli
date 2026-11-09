@@ -176,6 +176,7 @@ Headless Chromium(Playwright)으로 TOBE 프론트엔드에 자동 로그인하�
 ## 5. 환경 설정 및 유틸리티 (`config`, `value`, `changelog`, `init`, `intro`)
 
 - `yunhee init`: 현재 작업 디렉터리를 yunhee 프로젝트로 등록 및 필수 폴더/파일(`.yunhee/project.json`, `mcp.json`, `memory.md`, `sessions/`, `runs/`, `.gitignore`) 초기화
+- `yunhee agent "<질문>"` (`yunhee ask -a "<질문>"`): 로컬 LLM(`qwen2.5-coder:14b`) 자율 에이전트 모드로 질의를 수행합니다. 모달 제목, 그리드 컬럼 조건(체크박스·글자수 등), 버튼, API 등 복합 조건에 맞는 화면을 찾을 때 에이전트가 스스로 Python 스크립트를 작성·실행(`execute_python` + `screen_catalog`)하여 **화면번호(`#번호`), 메뉴명, 파일 경로, 일치 상세**를 표로 출력합니다 (기본 타겟: TOBE).
 - `yunhee config`: 작업 디렉터리(Work Dir), TOBE/ASIS 소스 경로 및 브랜치 상태, DB 접속 정보 등 환경 설정 확인
 - `yunhee value [KEY]`: 단일 설정값 텍스트 출력 (`--list` 시 전체 목록, `tobe-src`, `asis-src`, `work-dir` 등 지원)
 - `yunhee intro`: yunhee 에이전트 자기소개 및 전문 영역 안내 (`자기소개?` 도 지원)

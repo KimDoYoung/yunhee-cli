@@ -22,6 +22,7 @@
 | **AS-IS SQL/CUD → TOBE 매퍼/DTO 코드 생성 (서비스명·DB 객체 검증)** | `yunhee port-sql`, `yunhee port-save` | [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
 | **화면 스타일 판별 / AS-IS 원본 변경(Drift)·신규 매퍼 검증** | `yunhee page-style`, `yunhee drift`, `yunhee sql-check [--new-since-index]`| [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
 | **TOBE 화면 자동 오픈 & 버튼/팝업 순회 캡처 검수** | `yunhee screen-capture <screen_id> login=<comp>/<id>/<pw>` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
+| **자연어 복합 조건(모달 제목·그리드 컬럼 조건 등) 자율 탐색** | `yunhee agent "<질문>"`, `yunhee ask -a "<질문>"` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 
 ---
 

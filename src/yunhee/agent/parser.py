@@ -39,6 +39,13 @@ TOOL_ALIASES: dict[str, str] = {
     "errors": "read_recent_errors",
     "get_errors": "read_recent_errors",
     "recent_errors": "read_recent_errors",
+    "python": "execute_python",
+    "py": "execute_python",
+    "run_python": "execute_python",
+    "exec_python": "execute_python",
+    "execute_code": "execute_python",
+    "run_code": "execute_python",
+    "code_interpreter": "execute_python",
 }
 
 
@@ -140,6 +147,8 @@ def _normalize_call_item(item: Any) -> tuple[str, dict] | None:
                 raw_args = {"filename": raw_args}
             elif normalized_name == "run_command":
                 raw_args = {"command": raw_args}
+            elif normalized_name == "execute_python":
+                raw_args = {"code": raw_args}
             else:
                 raw_args = {}
 
@@ -147,7 +156,11 @@ def _normalize_call_item(item: Any) -> tuple[str, dict] | None:
     if isinstance(raw_args, list):
         args = _extract_args_from_list(normalized_name, raw_args)
     elif isinstance(raw_args, dict):
-        args = raw_args
+        args = dict(raw_args)
+        if normalized_name == "execute_python" and "code" not in args:
+            alt_code = args.pop("script", None) or args.pop("python", None) or args.pop("command", None)
+            if alt_code:
+                args["code"] = alt_code
     else:
         args = {}
 
@@ -264,5 +277,18 @@ def extract_tool_calls_from_text(text: str) -> list[tuple[str, dict]]:
             start_idx = end_pos
         else:
             start_idx = pos + 1
+
+    if calls:
+        return calls
+
+    # 5. execute_python 코드 내 이스케이프되지 않은 큰따옴표(")로 인해 JSON 파싱이 실패한 경우 구출
+    m_py = re.search(
+        r'"name"\s*:\s*"(execute_python|execute_code|run_python|exec_python|python)"[\s\S]*?"code"\s*:\s*"([\s\S]+?)"\s*(?:,\s*"(?:description|timeout_seconds)"\s*:|\}\s*\})',
+        text,
+    )
+    if m_py:
+        raw_code = m_py.group(2)
+        rescued_code = raw_code.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+        return [("execute_python", {"code": rescued_code})]
 
     return calls

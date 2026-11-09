@@ -289,6 +289,26 @@ def parse_mapper_xml(text: str, file: str) -> tuple[list[MapperStatement], str, 
 # --- TSX -------------------------------------------------------------------------
 
 
+from typing import Self
+
+
+class GridCol(tuple):
+    """(field, label) 2-튜플 하위 호환 + col_type, field, label, width 속성 보존."""
+
+    col_type: str
+    field: str
+    label: str
+    width: int
+
+    def __new__(cls, field: str, label: str, col_type: str = "text", width: int = 0) -> Self:
+        obj = super().__new__(cls, (field, label))
+        obj.col_type = col_type
+        obj.field = field
+        obj.label = label
+        obj.width = width
+        return obj
+
+
 @dataclass
 class TsxInfo:
     name: str
@@ -296,13 +316,25 @@ class TsxInfo:
     header_menu_nos: list[str]
     as_is_file: str  # 헤더의 `AS-IS: myApp/client/vi/emp/X.java`
     api_calls: list[tuple[str, str]]  # (xxxApi, fn)
-    grid_cols: list[tuple[str, str]]  # (field, label)
+    grid_cols: list[GridCol]  # (field, label) 튜플 호환 + .col_type, .width
     buttons: list[str]
     impl_events: set[str]
     skipped_events: set[str]
 
 
-_GB = re.compile(r"\bgb\.\w+\(\s*'([^']+)'\s*,\s*[^,]+,\s*'([^']*)'")
+_GB = re.compile(r"\b\w*gb\.(\w+)\(\s*(['\"])([^'\"]+)\2\s*,\s*([^,]+?)\s*,\s*(['\"])(.*?)\5")
+
+
+def _extract_grid_cols(text: str) -> list[GridCol]:
+    cols: list[GridCol] = []
+    for m in _GB.finditer(text):
+        col_type = m.group(1)
+        field_name = m.group(3)
+        w_str = m.group(4).strip()
+        width = int(w_str) if w_str.isdigit() else 0
+        label = m.group(6)
+        cols.append(GridCol(field_name, label, col_type=col_type, width=width))
+    return cols
 
 
 def event_ids(text: str) -> tuple[set[str], set[str]]:
@@ -327,7 +359,7 @@ def parse_tsx(text: str, file: str) -> TsxInfo:
     return TsxInfo(
         name=Path(file).stem, file=file, header_menu_nos=menu, as_is_file=as_is,
         api_calls=list(dict.fromkeys(re.findall(r"\b(\w+Api)\s*\.\s*(\w+)\s*\(", text))),
-        grid_cols=_GB.findall(text),
+        grid_cols=_extract_grid_cols(text),
         # 라벨은 <Button> 안의 글자와, 이벤트 주석 `[E4] retrieveButton[조회].Select`의 대괄호 라벨(SearchBar 등 안에 있는 버튼)
         buttons=list(dict.fromkeys(
             [b.strip() for b in re.findall(r"<Button\b[^>]*>\s*([^<{][^<]*?)\s*</Button>", text)]

@@ -2,6 +2,25 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.7.9] - 2026-11-09
+`screen_catalog` 동적 모달 타이틀 부모 화면 역추적(`titleName`·`title`·JSX) 및 `agent` 빈 출력 환각 방지 가드
+- **동적 모달 타이틀 호출부 역추적 (`src/yunhee/tools/trace/screen_catalog.py`)**:
+  - `<EditModal title={target?.titleName}>`, `<LookupModal title={title}>` 등 모달 타이틀이 동적 변수로 선언된 경우, 역방향 import 그래프를 통해 부모 화면이 전달하는 `titleName: '...'` / `title: '...'` / `insert*`·`editData` 인자(예: `Ics01_Tab_ClassTree` → `Ics01_Edit_ClassTree`의 `'법규분류 수정'`, `'하위분류 등록'`, `'루트등록'`) 및 상단 JSDoc 설명을 `s.modals`에 자동 연결.
+  - `title={<b style={{...}}>점검방법</b>}` 형태의 중첩 중괄호·JSX 태그 내부 타이틀 추출 및 삼항 연산자 비교 리터럴(`=== 'edit'`) 제외 처리.
+- **`agent` 루프 빈 출력(`출력 없음`) 환각 방지 (`src/yunhee/agent/loop.py`)**:
+  - `execute_python` 실행 결과가 `(출력 없음)`일 때 로컬 LLM이 가짜 `[execute_python 결과]`나 존재하지 않는 화면번호·파일 경로를 생성하지 못하도록 후속 안내 프롬프트 가드 강화.
+
+## [0.7.8] - 2026-11-09
+`yunhee agent` 자연어 화면/모달/그리드 조건 탐색(`execute_python` 및 `screen_catalog`) 신설
+- **통합 화면 카탈로그 (`src/yunhee/tools/trace/screen_catalog.py`) 및 `GridCol` 확장 (`src/yunhee/tools/trace/tobe.py`)**:
+  - `iter_screens(side="tobe")`를 통해 TOBE(기본값) 및 AS-IS 화면의 프론트엔드(`modals`, `grid_cols`, `buttons`, `raw_text`)와 백엔드(`apis`, `sql_ids`, `backend_files`) 정보를 `ScreenRecord`로 통합 제공.
+  - `GridCol`을 `(field, label)` 2-튜플 하위 호환 서브클래스로 확장하여 `.col_type`, `.field`, `.label`, `.width` 속성과 `tgb.*`(`TreeGridBuilder`) 파싱을 지원.
+  - 팝업/모달(`Lookup`, `Modal`, `Edit`) 파일을 역방향 import 그래프로 추적하여 자신을 여는 상위 `_Tab_` 화면 및 메뉴 번호(`#번호`, 메뉴 경로)를 자동 매핑.
+- **에이전트 Python 코드 생성·실행 도구 (`execute_python`) 및 `yunhee agent` CLI 명령어**:
+  - 로컬 LLM(`qwen2.5-coder:14b`)이 자연어 조건을 Python 스크립트로 작성·실행(`execute_python`)하여 `[화면번호(#), 메뉴명, 컴포넌트명, 파일 경로, 일치 상세]` 마크다운 표로 응답.
+  - Ollama 네이티브 `/api/chat` 래퍼 적용으로 다중 도구 등록 시에도 `num_ctx=16384` 보장.
+  - 단발성 에이전트 실행 명령어 `yunhee agent "<질문>"` 및 `yunhee ask --agent` (`-a`) 추가.
+
 ## [0.7.7] - 2026-11-08
 수정사항 049 완료: `screen-capture` 조회 조건(`--range`·`--set`) 지정, `--modal-only`/`--click-all`, 화면 품질 텍스트 신호 리포트 추가
 - **`--range <YYYY-MM-DD~YYYY-MM-DD>` 옵션 (수정사항 049 §1)**:

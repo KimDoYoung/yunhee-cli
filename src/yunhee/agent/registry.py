@@ -14,7 +14,7 @@ from yunhee.agent.knowledge import (
     search_knowledge,
 )
 from yunhee.agent.memory import save_rule
-from yunhee.agent.tools.core_exec import run_command
+from yunhee.agent.tools.core_exec import execute_python, run_command
 from yunhee.agent.tools.core_fs import (
     edit_file,
     find_files,
@@ -67,10 +67,16 @@ class ToolRegistry:
         )
 
     def get(self, name: str) -> ToolDefinition | None:
-        return self._tools.get(name)
+        from yunhee.agent.parser import TOOL_ALIASES
+
+        resolved = TOOL_ALIASES.get(name.lower(), name) if name not in self._tools else name
+        return self._tools.get(resolved)
 
     def has_tool(self, name: str) -> bool:
-        return name in self._tools
+        from yunhee.agent.parser import TOOL_ALIASES
+
+        resolved = TOOL_ALIASES.get(name.lower(), name) if name not in self._tools else name
+        return resolved in self._tools
 
     def get_schemas(self) -> list[dict[str, Any]]:
         """OpenAI API 규격의 tools 파라미터 리스트 반환."""
@@ -90,10 +96,13 @@ class ToolRegistry:
 
     def dispatch(self, name: str, arguments: dict[str, Any]) -> str:
         """도구 이름과 인자를 받아 실제 함수를 실행하고 문자열 결과를 반환."""
-        if name not in self._tools:
+        from yunhee.agent.parser import TOOL_ALIASES
+
+        resolved = TOOL_ALIASES.get(name.lower(), name) if name not in self._tools else name
+        if resolved not in self._tools:
             return f"error: 알 수 없는 도구입니다: '{name}'"
 
-        tool_def = self._tools[name]
+        tool_def = self._tools[resolved]
         try:
             # 인자 매핑 및 호출
             result = tool_def.func(**arguments)
@@ -217,6 +226,31 @@ def create_default_registry(load_mcp: bool = True) -> ToolRegistry:
                 },
             },
             "required": ["command"],
+        },
+    )
+
+    # 5-1. execute_python
+    reg.register(
+        name="execute_python",
+        func=execute_python,
+        description="Python 3 스크립트 코드를 즉석에서 실행하고 print() 표준 출력(STDOUT) 및 에러(STDERR)를 반환합니다. 모달 제목, 그리드 컬럼 조건(체크박스/글자수 등), 버튼, API 등 복합 조건에 맞는 화면/컴포넌트를 찾을 때 최우선으로 사용하세요.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "실행할 완전한 Python 3 소스 코드 (결과는 반드시 print()로 출력)",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "스크립트가 수행하는 작업의 한 줄 설명",
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "최대 대기 시간(초, 기본 30초)",
+                },
+            },
+            "required": ["code"],
         },
     )
 

@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
-from openai import AsyncOpenAI, OpenAI
+import httpx
+from openai import AsyncOpenAI
 
 from yunhee import config
 from yunhee.agent.knowledge import prefetch_relevant_knowledge
@@ -17,6 +19,159 @@ from yunhee.agent.memory import get_rules_prompt_section
 from yunhee.agent.parser import extract_tool_calls_from_text
 from yunhee.agent.registry import ToolRegistry, create_default_registry
 from yunhee.agent.session import SessionLogger
+
+
+@dataclass
+class _NativeFunctionCall:
+    name: str
+    arguments: str
+
+
+@dataclass
+class _NativeToolCall:
+    id: str
+    function: _NativeFunctionCall
+    type: str = "function"
+
+
+@dataclass
+class _NativeChatMessage:
+    role: str = "assistant"
+    content: str | None = ""
+    tool_calls: list[_NativeToolCall] = field(default_factory=list)
+
+
+@dataclass
+class _NativeChoice:
+    message: _NativeChatMessage
+
+
+@dataclass
+class _NativeChatResponse:
+    choices: list[_NativeChoice]
+
+
+def _serialize_message_for_ollama(msg: Any) -> dict[str, Any]:
+    """OpenAI 메시지 객체 또는 dict를 Ollama /api/chat 포맷으로 변환한다."""
+    if isinstance(msg, dict):
+        out: dict[str, Any] = {
+            "role": msg.get("role", "user"),
+            "content": msg.get("content") or "",
+        }
+        if msg.get("tool_calls"):
+            tcs = []
+            for tc in msg["tool_calls"]:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", None)
+                if fn:
+                    fname = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", "")
+                    fargs = fn.get("arguments") if isinstance(fn, dict) else getattr(fn, "arguments", {})
+                    if isinstance(fargs, str):
+                        try:
+                            fargs = json.loads(fargs)
+                        except Exception:  # noqa: BLE001
+                            fargs = {}
+                    tcs.append({"function": {"name": fname, "arguments": fargs or {}}})
+            if tcs:
+                out["tool_calls"] = tcs
+        return out
+
+    # _NativeChatMessage 또는 OpenAI ChatCompletionMessage 객체인 경우
+    role = getattr(msg, "role", "assistant")
+    content = getattr(msg, "content", "") or ""
+    out = {"role": role, "content": content}
+    raw_tcs = getattr(msg, "tool_calls", None) or []
+    if raw_tcs:
+        tcs = []
+        for tc in raw_tcs:
+            fn = getattr(tc, "function", None)
+            if fn:
+                fargs = getattr(fn, "arguments", "{}")
+                if isinstance(fargs, str):
+                    try:
+                        fargs = json.loads(fargs)
+                    except Exception:  # noqa: BLE001
+                        fargs = {}
+                tcs.append({"function": {"name": getattr(fn, "name", ""), "arguments": fargs or {}}})
+        if tcs:
+            out["tool_calls"] = tcs
+    return out
+
+
+class _OllamaCompletionsEndpoint:
+    """Ollama /api/chat 엔드포인트를 호출하여 num_ctx가 잘리지 않도록 보장하는 래퍼."""
+
+    def __init__(self, base_host: str, timeout: float = 120.0) -> None:
+        self.base_host = base_host.rstrip("/")
+        self.timeout = timeout
+
+    def create(
+        self,
+        model: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.0,
+        extra_body: dict[str, Any] | None = None,
+    ) -> _NativeChatResponse:
+        opts = {"num_ctx": config.NUM_CTX, "temperature": temperature}
+        if extra_body and isinstance(extra_body.get("options"), dict):
+            opts.update(extra_body["options"])
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [_serialize_message_for_ollama(m) for m in messages],
+            "stream": False,
+            "options": opts,
+        }
+        if tools:
+            payload["tools"] = tools
+
+        resp = httpx.post(
+            f"{self.base_host}/api/chat",
+            json=payload,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        raw_msg = data.get("message", {})
+        content = raw_msg.get("content") or ""
+        raw_tcs = raw_msg.get("tool_calls") or []
+
+        parsed_tcs: list[_NativeToolCall] = []
+        for i, tc in enumerate(raw_tcs):
+            fn = tc.get("function", {})
+            fname = fn.get("name", "")
+            fargs = fn.get("arguments", {})
+            fargs_str = fargs if isinstance(fargs, str) else json.dumps(fargs, ensure_ascii=False)
+            parsed_tcs.append(
+                _NativeToolCall(
+                    id=tc.get("id") or f"call_{i + 1}",
+                    function=_NativeFunctionCall(name=fname, arguments=fargs_str),
+                )
+            )
+
+        return _NativeChatResponse(
+            choices=[
+                _NativeChoice(
+                    message=_NativeChatMessage(
+                        role=raw_msg.get("role", "assistant"),
+                        content=content,
+                        tool_calls=parsed_tcs,
+                    )
+                )
+            ]
+        )
+
+
+class _OllamaChatNamespace:
+    def __init__(self, base_host: str, timeout: float = 120.0) -> None:
+        self.completions = _OllamaCompletionsEndpoint(base_host, timeout=timeout)
+
+
+class _OllamaNativeClient:
+    """OpenAI SDK의 client.chat.completions.create 인터페이스를 유지하면서 /api/chat을 사용하는 클라이언트."""
+
+    def __init__(self, base_host: str, timeout: float = 120.0) -> None:
+        self.chat = _OllamaChatNamespace(base_host, timeout=timeout)
 
 DEFAULT_SYSTEM_PROMPT = """\
 당신은 "절약정신이 투철한 한국여자이고 이름은 'yunhee'"인 전문 마이그레이션 에이전트입니다.
@@ -39,12 +194,36 @@ DEFAULT_SYSTEM_PROMPT = """\
 3. [도구 활용]: 등록된 전문 도구들을 능동적으로 호출하세요:
    - 파일/코드 탐색: list_files, read_file, write_file, edit_file, find_files, grep_search
    - 데이터베이스: run_sql (PostgreSQL asseterpdb 데이터베이스 안전 조회), get_db_definition (테이블 DDL, 스토어드 함수/프로시저 소스 본체, 뷰 정의 조회). 사용자가 테이블 DDL이나 DB 함수(예: `act02_journal_backup`, `f_...` 등)의 소스코드/본체를 요청하면 파일 시스템에서 찾지 말고 반드시 `get_db_definition(name="...")` 도구를 호출하세요. AssetERP의 테이블 컬럼명은 테이블 접두사 규칙(예: `sys01_company_nm`, `sys01_biz_no` 등)을 갖습니다. 테이블명이 부분 이름(예: `sys01`)으로 주어지더라도 `get_db_definition`이 자동으로 접두사 매칭하여 해당 테이블을 찾아줍니다.
-   - 실행: run_command (빌드, 테스트 등 일반 셸 명령 및 yunhee CLI 실행)
+   - 실행: execute_python (파이썬 스크립트 즉석 작성·실행), run_command (빌드, 테스트 등 일반 셸 명령 및 yunhee CLI 실행)
    - 장기 기억: save_rule(프로젝트 헌법/규칙 저장), save_knowledge(해결 노하우/특이사항 저장), search_knowledge(과거 노하우 벡터 검색)
    - 환경/로그: lookup_config(작업경로/DB/설정 확인), read_recent_errors(최근 서버 에러 확인)
    - 산출물 발간: export_spec (화면 마이그레이션 기술 명세서 마크다운 및 Gotenberg PDF 발간)
-4. [도구 이름 및 인자 규격]: 반드시 등록된 정확한 도구 이름을 호출하세요. arguments는 반드시 올바른 JSON 키-값 객체 형태여야 합니다.
-5. [루프 방지]: 동일한 인자로 동일한 도구를 무의미하게 반복 호출하지 마세요.
+4. [조건부 화면/모달/그리드/컴포넌트 탐색 지침 (execute_python 최우선 활용)]:
+   - 사용자가 특정 조건(예: "제목이 '계정과목'인 모달 찾아줘", "그리드 컬럼 중 체크박스이면서 제목이 한글 3글자인 화면 찾아줘", "특정 버튼이나 API를 호출하는 화면 찾아줘" 등)에 해당하는 화면을 찾아달라고 요청하면:
+     1) 별도로 'AS-IS'나 '원본'을 언급하지 않으면 **기본 대상은 항상 TOBE (`side="tobe"`)**입니다.
+     2) 사용자가 frontend/backend를 구분하지 않아도 `iter_screens()`는 프론트엔드(모달, 그리드 컬럼, 버튼, TSX 본문)와 백엔드(API URL, SQL ID, 백엔드 파일) 및 상위 `_Tab_` 메뉴 번호를 모두 담고 있습니다.
+     3) 존재하지 않는 임의 함수(예: `yunhee.find_modal_by_title` 등)를 지어내지 말고, 반드시 `execute_python` 도구로 `from yunhee.tools.trace.screen_catalog import iter_screens`를 사용하는 아래 실행 코드를 작성하세요:
+     - 예시 A (모달 제목 검색):
+```python
+from yunhee.tools.trace.screen_catalog import iter_screens
+for s in iter_screens():
+    for m in s.modals:
+        if '계정과목' in m.title:
+            print(s.format_hit(f'{m.kind}: {m.title} (L{m.line})'))
+```
+     - 예시 B (그리드 컬럼 타입 및 한글 글자수/정규식 조건 검색 — 한글은 반드시 `[가-힣]` 정규식을 사용하세요):
+```python
+import re
+from yunhee.tools.trace.screen_catalog import iter_screens
+for s in iter_screens():
+    for c in s.grid_cols:
+        if c.col_type in ('boolean', 'booleanYn2') and re.fullmatch(r'[가-힣]{3}', c.label):
+            print(s.format_hit(f'gb.{c.col_type}({c.field}, {c.width}, {c.label})'))
+```
+     4) 사용자가 "파일명, 메뉴명, 화면번호를 알려줘"라고 명시하지 않더라도, 화면 검색 결과는 **항상 `[화면번호(#), 메뉴명(경로), 화면/컴포넌트명, 파일 경로, 일치 상세]` 컬럼을 갖춘 마크다운 표**로 빠짐없이 정리하여 답변하세요.
+     5) **환각 절대 금지**: 도구 실행 결과가 `(출력 없음)`일 때 절대로 가짜 `[execute_python 결과]:` 블록이나 존재하지 않는 화면번호(`#123` 등)·가짜 파일 경로(`src/law/...` 등)를 지어내지 마세요.
+5. [도구 이름 및 인자 규격]: 반드시 등록된 정확한 도구 이름을 호출하세요. arguments는 반드시 올바른 JSON 키-값 객체 형태여야 합니다.
+6. [루프 방지]: 동일한 인자로 동일한 도구를 무의미하게 반복 호출하지 마세요.
 """
 
 
@@ -84,13 +263,50 @@ class AgentLoop:
         else:
             self.session_logger = None
 
-        # OpenAI 클라이언트 초기화 (타임아웃 및 일시적 연결 실패 대비 2회 재시도)
+        # 클라이언트 초기화 (/api/chat 네이티브 래퍼로 num_ctx 16384 보장)
         self._async_client = AsyncOpenAI(base_url=self.v1_url, api_key="ollama", max_retries=2, timeout=60.0)
-        self._sync_client = OpenAI(base_url=self.v1_url, api_key="ollama", max_retries=2, timeout=60.0)
+        self._sync_client: Any = _OllamaNativeClient(str(url), timeout=120.0)
 
     def get_active_system_prompt(self) -> str:
         """기본 시스템 프롬프트에 동적 L1 규칙을 주입한 최종 프롬프트 반환."""
         return build_system_prompt(self.system_prompt)
+
+    @staticmethod
+    def _tool_followup_hint(result: str) -> str:
+        if "[Exit Code: 1" in result or result.startswith("error:") or "Traceback (most recent call last)" in result:
+            return "[안내]: 도구 실행 중 에러가 발생했습니다. 에러 원인을 파악하여 올바른 함수(`from yunhee.tools.trace.screen_catalog import iter_screens` 등)나 인자로 수정한 뒤 도구를 다시 호출하세요."
+        if "(출력 없음" in result:
+            return (
+                "[안내]: 스크립트 실행 결과 일치하는 출력이 없습니다(출력 없음). "
+                "절대로 가짜 `[execute_python 결과]`나 존재하지 않는 화면번호(#123 등)·파일 경로를 지어내어(환각) 표를 만들지 마세요! "
+                "조건을 완화하거나 `s.text` 본문 검색으로 넓혀 다시 실행하려면 반드시 JSON 도구 호출만 출력하고, "
+                "더 이상 찾을 수 없으면 '조건에 일치하는 화면을 찾지 못했습니다.'라고만 답변하세요."
+            )
+        if "[Exit Code: 0" in result and "STDOUT:" in result:
+            return "[안내]: 도구 실행이 성공하여 위와 같이 STDOUT 결과가 확보되었습니다. 절대로 도구를 다시 호출하지 마시고(JSON 출력 금지), 즉시 위 STDOUT의 모든 행을 '| 화면번호(#) | 메뉴명 | 컴포넌트명 | 파일 경로 | 일치 상세 |' 형식의 마크다운 표로 변환하여 최종 답변만 작성하세요."
+        return "[안내]: 사용자가 조회를 요청한 정보라면 위 도구 결과의 상세 내용(화면번호 #, 메뉴명, 컴포넌트명, 파일 경로, 일치 내역 등)을 생략하지 말고 사용자 최종 답변 본문에 마크다운 표로 직접 정리하여 보여주세요."
+
+    def _finalize_without_tools(self, messages: list[dict[str, Any]]) -> str:
+        """도구 반복 호출 감지 시 tools=None으로 최종 요약 답변을 강제 생성합니다."""
+        final_messages = list(messages) + [
+            {
+                "role": "user",
+                "content": (
+                    "이미 도구 실행 결과가 위에 모두 주어졌습니다. "
+                    "더 이상 도구(JSON)를 호출하지 말고, 위 실행 결과(STDOUT 등)의 모든 항목을 "
+                    "'| 화면번호(#) | 메뉴명 | 컴포넌트명 | 파일 경로 | 일치 상세 |' 형식의 마크다운 표로 정리하여 한국어로 답변하세요."
+                ),
+            }
+        ]
+        resp = self._sync_client.chat.completions.create(
+            model=self.model,
+            messages=final_messages,
+            tools=None,
+            temperature=0.0,
+            extra_body={"options": {"num_ctx": config.NUM_CTX}},
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        return content or "동일한 작업이 반복 감지되어 작업을 종료합니다."
 
     def run(
         self,
@@ -124,15 +340,17 @@ class AgentLoop:
 
         step = 0
         last_calls_signature: Any = None
+        has_stdout_result = False
 
         while step < self.max_steps:
             step += 1
 
             # OpenAI Completion API 호출 (Ollama num_ctx 보장)
+            active_tools = None if has_stdout_result else (schemas if schemas else None)
             response = self._sync_client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                tools=schemas if schemas else None,
+                tools=active_tools,
                 temperature=0.0,
                 extra_body={"options": {"num_ctx": config.NUM_CTX}},
             )
@@ -146,6 +364,11 @@ class AgentLoop:
                     (c.function.name, c.function.arguments) for c in message.tool_calls
                 )
                 if current_sig == last_calls_signature:
+                    if has_stdout_result:
+                        final_md = self._finalize_without_tools(messages)
+                        if self.session_logger:
+                            self.session_logger.log_assistant_message(final_md)
+                        return final_md, messages
                     # 동일 호출 무한루프 가드
                     msg = "동일한 작업이 반복 감지되어 작업을 종료합니다."
                     if self.session_logger:
@@ -169,6 +392,8 @@ class AgentLoop:
                         self.session_logger.log_tool_call(fn_name, args)
 
                     result = self.registry.dispatch(fn_name, args)
+                    if "[Exit Code: 0" in result and "STDOUT:\n(출력 없음)" not in result:
+                        has_stdout_result = True
 
                     if on_tool_result:
                         on_tool_result(fn_name, result)
@@ -179,7 +404,7 @@ class AgentLoop:
                         {
                             "role": "tool",
                             "tool_call_id": call.id,
-                            "content": f"{result}\n\n[안내]: 사용자가 조회를 요청한 정보라면 위 도구 결과의 상세 내용(목록/코드/로그 등)을 생략하지 말고 사용자 최종 답변 본문에 마크다운으로 직접 나열하여 보여주세요.",
+                            "content": f"{result}\n\n{self._tool_followup_hint(result)}",
                         }
                     )
                 continue
@@ -198,13 +423,23 @@ class AgentLoop:
                     (name, json.dumps(args, sort_keys=True)) for name, args in valid_calls
                 )
                 if current_sig == last_calls_signature:
+                    if has_stdout_result:
+                        final_md = self._finalize_without_tools(messages)
+                        if self.session_logger:
+                            self.session_logger.log_assistant_message(final_md)
+                        return final_md, messages
                     msg = "동일한 작업이 반복 감지되어 작업을 종료합니다."
                     if self.session_logger:
                         self.session_logger.log_assistant_message(msg)
                     return msg, messages
                 last_calls_signature = current_sig
 
-                messages.append({"role": "assistant", "content": content})
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": f"도구({', '.join(n for n, _ in valid_calls)})를 실행하여 조건에 맞는 항목을 조회합니다.",
+                    }
+                )
                 feedbacks = []
 
                 for fn_name, fn_args in valid_calls:
@@ -214,6 +449,8 @@ class AgentLoop:
                         self.session_logger.log_tool_call(fn_name, fn_args)
 
                     res = self.registry.dispatch(fn_name, fn_args)
+                    if "[Exit Code: 0" in res and "STDOUT:\n(출력 없음)" not in res:
+                        has_stdout_result = True
 
                     if on_tool_result:
                         on_tool_result(fn_name, res)
@@ -223,10 +460,8 @@ class AgentLoop:
                     feedbacks.append(f"[{fn_name} 결과]:\n{res}")
 
                 # Fallback 피드백을 사용자 메시지로 주입
-                feedback_content = (
-                    "\n\n".join(feedbacks)
-                    + "\n\n[안내]: 사용자가 조회를 요청한 정보라면 위 결과의 상세 내용을 생략하지 말고 최종 답변 본문에 직접 마크다운으로 나열하여 보여주세요."
-                )
+                joined_fb = "\n\n".join(feedbacks)
+                feedback_content = f"{joined_fb}\n\n{self._tool_followup_hint(joined_fb)}"
                 messages.append({"role": "user", "content": feedback_content})
                 continue
 
