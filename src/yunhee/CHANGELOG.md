@@ -2,7 +2,23 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
-## [0.8.5] - 2026-11-10
+## [0.8.6] - 2026-11-10
+수정사항 053 반영: `run` 시험 요약 개선, `trace-crud` `INSERT…SELECT` 대상 R 오탐 해소 및 근거(`--why`), `compare` 파라미터 자동 상속·`--no-grid`, 메뉴 없는 클래스 역추적(`analysis ui`, `drift`), 호출자 탐색(`grep -l`, `analysis callers --server`)
+- **`run "gradle test …"` 복수 테스트 클래스 합산 및 상세 분석 (`src/yunhee/tools/runner.py`, `src/yunhee/context/run_analyzer.py`, `src/yunhee/tools/analysis/run.py`)**:
+  - `re.findall` 기반 복수 `--tests` 패턴 필터링을 지원하여 여러 테스트 클래스를 동시에 실행했을 때 마지막 클래스만 세던 문제를 해결하고 전체 합산(`tests 14 ... · 클래스 3`) 표기.
+  - `yunhee analysis run last --tests`에서 실패한 테스트의 `클래스.메서드`명과 `failure message` 첫 줄, 프로젝트 스택(`kr.co.kfs...` 등) 한 줄을 함께 출력하여 로그를 수동으로 열어보지 않고도 원인을 즉시 파악 가능.
+- **`trace-crud` `INSERT … SELECT` 대상 테이블 쓰기 전용 판정 및 근거(`--why`) (`src/yunhee/tools/sql_parse.py`, `src/yunhee/tools/trace/crud.py`, `src/yunhee/tools/trace/__init__.py`)**:
+  - `<choose>` 분기에서 문법 에러로 정규식 fallback 발생 시 `INTO` 뒤의 대상 테이블을 R(읽기)로 오탐하여 `RW`로 집계되던 버그 수정 (대상 테이블은 줄바꿈과 무관하게 `W`(C)만 할당).
+  - `--why <테이블>` 옵션 신설: 지정한 테이블의 C/R/U/D 출처 SQL ID, 서비스 키, UDM, 서블릿 근거를 상세 출력하고 JSON 출력에 `sources` 맵 제공.
+- **`compare` 파라미터 자동 상속 및 자동 그리드 대조 억제 (`src/yunhee/tools/comparator.py`, `src/yunhee/cli.py`)**:
+  - `--param`에 명시하지 않은 API 요청 파라미터(`-p`)를 동일 이름의 SQL 파라미터로 자동 상속하며 `SQL params:` 줄에 `(← -p)` 표기.
+  - `--no-grid` 옵션 추가 및 `--grid` 미지정 시 해당 SQL이 `GridRetrieveData` 등 그리드 조회용 SQL이 아닌 단일 집계/요약 조회일 경우 그리드 열 대조를 자동 생략(`grid: -`).
+- **메뉴가 없는 클래스(편집 폼·탭 페이지) 역추적 (`src/yunhee/tools/analysis/ui.py`, `src/yunhee/tools/as_is/drift.py`)**:
+  - 색인 화면 문서(`screens/*.md`)가 없는 하위 클래스(예: `Emp20_Edit_Leave`, `Sys01_TabPage_Info04`)를 전달했을 때 이를 연결 클래스로 가진 부모 화면을 찾아 `--class`로 자동 처리 (`analysis ui`).
+  - `drift` 실행 시 해당 클래스 파일의 변경사항만 한정하여 drift를 계산.
+- **호출자 탐색 편의 개선 (`src/yunhee/tools/outliner.py`, `src/yunhee/tools/analysis/callers.py`, `src/yunhee/cli.py`)**:
+  - `yunhee grep -l` (`--files-with-matches`): 일치 내용 대신 일치하는 파일 경로 목록만 한 줄에 하나씩 출력.
+  - `yunhee analysis callers <클래스[.메서드]> [--server]`: AS-IS 서버 소스 및 일반 클래스/메서드 참조 위치(파일:줄, 감싼 메서드)를 역추적하여 테이블 출력.
 API 객체 내 위임 함수 추적, AS-IS 서블릿(FileDelete/FileUpload) 테이블 작업 반영 및 실행 속도 획기적 단축
 - **API 객체 함수 위임 체인 추적 (`src/yunhee/tools/trace/tobe.py`)**:
   - `parse_api_ts`에서 함수 본문 내 `apiClient`뿐만 아니라 `fileApi.xxx` / `this.xxx` 등 객체 내 다른 함수 위임 호출을 수집하고, `build_index`에서 엔드포인트/AS-IS 키를 자동 전파.

@@ -311,6 +311,8 @@ def find_screen_grid_info(
 
     calling_class = None
     matched_screen = None
+    is_grid_retrieve = False
+    sql_sid = sql_ref.split(".")[-1]
     for sf in all_screens:
         try:
             text = sf.read_text(encoding="utf-8", errors="replace")
@@ -320,20 +322,43 @@ def find_screen_grid_info(
             continue
         matched_screen = sf
         for line in text.splitlines():
-            if sql_ref in line and "|" in line:
-                parts = [p.strip() for p in line.split("|")]
-                if len(parts) >= 3:
-                    m_call = re.search(r"\b([A-Z]\w+)(?::\d+|\.\w+)?\b", parts[2])
+            if sql_ref in line:
+                if "GridRetrieveData" in line or "GridBuilder" in line:
+                    is_grid_retrieve = True
+                if "|" in line:
+                    parts = [p.strip() for p in line.split("|")]
+                    if len(parts) >= 3:
+                        if "GridRetrieveData" in parts[1] or "GridRetrieveData" in parts[2] or "grid" in parts[2].lower():
+                            is_grid_retrieve = True
+                        m_call = re.search(r"\b([A-Z]\w+)(?::\d+|\.\w+)?\b", parts[2])
+                        if m_call and m_call.group(1) not in ("ServiceRequest", "ServiceResult", "SqlSession"):
+                            calling_class = m_call.group(1)
+                            break
+                else:
+                    m_call = re.search(r"\b([A-Z]\w+)(?::\d+|\.\w+)\b", line)
                     if m_call and m_call.group(1) not in ("ServiceRequest", "ServiceResult", "SqlSession"):
                         calling_class = m_call.group(1)
                         break
-            elif sql_ref in line:
-                m_call = re.search(r"\b([A-Z]\w+)(?::\d+|\.\w+)\b", line)
-                if m_call and m_call.group(1) not in ("ServiceRequest", "ServiceResult", "SqlSession"):
-                    calling_class = m_call.group(1)
-                    break
         if calling_class:
             break
+
+    # 색인 문서에서 GridRetrieveData를 확인하지 못한 경우 소스 확인
+    if not is_grid_retrieve and matched_screen:
+        for r in roots:
+            for jf in r.glob(f"**/{matched_screen.stem}.java"):
+                try:
+                    jtext = jf.read_text(encoding="utf-8", errors="replace")
+                    if "GridRetrieveData" in jtext and sql_sid in jtext:
+                        is_grid_retrieve = True
+                        break
+                except OSError:
+                    pass
+            if is_grid_retrieve:
+                break
+
+    # --grid를 직접 주지 않았는데 그리드 조회 SQL이 아니면 그리드 대조 생략
+    if not grid_class and not is_grid_retrieve:
+        return {"cols": set(), "label": "", "not_found": False, "skip": True}
 
     screens_to_try = []
     if calling_class and matched_screen:
@@ -502,6 +527,7 @@ def compare_api_sql(
     db_name: str = "asseterpdb",
     src_root: Path | None = None,
     grid: str | None = None,
+    no_grid: bool = False,
     as_user: str = "admin",
     sql_total_ref: str | None = None,
     from_log: bool = False,
@@ -524,6 +550,13 @@ def compare_api_sql(
     if not api_params:
         api_params = {}
     sql_params = dict(sql_params) if sql_params else {}
+
+    # --param에 없는 파라미터는 동일한 이름의 -p 값으로 자동 보충
+    from_api_params: set[str] = set()
+    for k, v in api_params.items():
+        if k not in sql_params and v is not None:
+            sql_params[k] = str(v)
+            from_api_params.add(k)
 
     if "." not in sql_ref:
         return ToolResult(ok=False, error=f"올바른 형식(namespace.sqlId)으로 입력해 주세요: {sql_ref}")
@@ -700,7 +733,11 @@ def compare_api_sql(
 
     sql_params_line = ""
     if sql_params or branch_log or missing:
-        p_str = ", ".join(f"{k}={v}" for k, v in sql_params.items()) if sql_params else "(없음)"
+        p_items = []
+        for k, v in sql_params.items():
+            tag = " (← -p)" if k in from_api_params else ""
+            p_items.append(f"{k}={v}{tag}")
+        p_str = ", ".join(p_items) if p_items else "(없음)"
         b_str = f" (branch: {', '.join(branch_log)})" if branch_log else ""
         m_str = f" (-- 필요: {', '.join(missing)})" if missing else ""
         sql_params_line = f"SQL params: {p_str}{b_str}{m_str}"
@@ -882,7 +919,29 @@ def compare_api_sql(
     tbl_prefix = (tbl_pfx_m.group(1) + "_") if tbl_pfx_m else ""
 
     # Grid Spec 컬럼 우선 매핑, 없으면 SQL 컬럼 사용
-    grid_info = find_screen_grid_info(sql_ref, src_root, grid_class=grid, api_fields=api_fields, src_index=src_index)
+    grid_info = find_screen_grid_info(sql_ref, src_root, grid_class=grid, api_fields=api_fields, src_index=src_index) if not no_grid else {}
+    if no_grid or grid_info.get("skip"):
+        summary_line = f"{count_part}  grid: -"
+        if sql_params_line:
+            summary_line += f"\n{sql_params_line}"
+        if used_params_msg:
+            summary_line += f"\n{used_params_msg.strip()}"
+        return ToolResult(
+            ok=True,
+            data={
+                "summary": summary_line,
+                "api_rows": api_row_count,
+                "sql_rows": sql_row_count,
+                "rows_match": rows_match,
+                "cols_covered": True,
+                "api_fields": sorted(api_fields),
+                "expected_fields": [],
+                "missing_fields": [],
+                "rendered_sql": sql,
+                "trace_id": (api_res.data or {}).get("trace_id"),
+                "user_info": user_info,
+            },
+        )
     if grid_info.get("not_found"):
         search_dir = grid_info.get("search_dir", "")
         search_suffix = f" (탐색 폴더: {search_dir})" if search_dir else ""

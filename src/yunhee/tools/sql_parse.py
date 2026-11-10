@@ -19,6 +19,10 @@ from yunhee.tools.base import ToolResult
 
 Schema = dict[str, list[str]]  # 테이블명(소문자) → 컬럼명 목록 (스냅샷에서 만든다)
 
+_FALLBACK_READ_RE = re.compile(r"\b(?:from|join)\s+([a-z_][a-z0-9_]*)", re.IGNORECASE)
+_FALLBACK_WRITE_INTO_RE = re.compile(r"\binto\s+([a-z_][a-z0-9_]*)", re.IGNORECASE)
+_FALLBACK_WRITE_UPDATE_RE = re.compile(r"\bupdate\s+([a-z_][a-z0-9_]*)", re.IGNORECASE)
+_FALLBACK_WRITE_DELETE_RE = re.compile(r"\bdelete\s+from\s+([a-z_][a-z0-9_]*)", re.IGNORECASE)
 _FALLBACK_TABLE_RE = re.compile(r"\b(?:from|join|into|update)\s+([a-z_][a-z0-9_]*)", re.IGNORECASE)
 _FALLBACK_CTE_RE = re.compile(r"\b([a-z_][a-z0-9_]*)\s*(?:\([^()]*\)\s*)?as\s*\(", re.IGNORECASE)  # name AS ( 또는 name(cols) AS (
 _SQL_NOISE = {"select", "set", "values", "where", "lateral", "only", "unnest", "generate_series"}
@@ -318,10 +322,31 @@ def _collect_insert_assignments(root: ast.InsertStmt, result: ParsedSql) -> None
 def _fallback(sql: str, error: str) -> ParsedSql:
     """AST 파싱이 실패했을 때의 정규식 추정. 호출한 쪽이 fallback 표시를 그대로 노출해야 한다."""
     ctes = [c.lower() for c in _FALLBACK_CTE_RE.findall(sql)]
-    names = {m.lower() for m in _FALLBACK_TABLE_RE.findall(sql)} - set(ctes) - _SQL_NOISE
+    cte_set = set(ctes)
+
+    read_names = {m.lower() for m in _FALLBACK_READ_RE.findall(sql)} - cte_set - _SQL_NOISE
+    into_names = {m.lower() for m in _FALLBACK_WRITE_INTO_RE.findall(sql)} - cte_set - _SQL_NOISE
+    update_names = {m.lower() for m in _FALLBACK_WRITE_UPDATE_RE.findall(sql)} - cte_set - _SQL_NOISE
+    delete_names = {m.lower() for m in _FALLBACK_WRITE_DELETE_RE.findall(sql)} - cte_set - _SQL_NOISE
+    written = into_names | update_names | delete_names
+    read_names -= delete_names
+
+    all_names = read_names | written
     result = ParsedSql(fallback=True, error=error)
     result.ctes = list(dict.fromkeys(ctes))
-    result.tables = {n: "R" for n in sorted(names)}
+    result.tables = {}
+    for n in sorted(all_names):
+        flag = ("R" if n in read_names else "") + ("W" if n in written else "")
+        result.tables[n] = flag or "R"
+
+    writes = []
+    for n in into_names:
+        writes.append(("INSERT", n))
+    for n in update_names:
+        writes.append(("UPDATE", n))
+    for n in delete_names:
+        writes.append(("DELETE", n))
+    result.writes = writes
     result.unresolved.append(f"파싱 실패, 정규식 추정: {error}")
     return result
 
@@ -332,7 +357,11 @@ MAX_BRANCH_VARIANTS = 8
 def _merge(base: ParsedSql, other: ParsedSql) -> None:
     """다른 분기 변형에서만 나온 테이블·CTE·함수·컬럼·변경 작업을 base에 합친다."""
     for name, flag in other.tables.items():
-        base.tables[name] = "".join(sorted(set(base.tables.get(name, "") + flag), key="RW".index))
+        if other.fallback and not base.fallback:
+            if name not in base.tables:
+                base.tables[name] = flag
+        else:
+            base.tables[name] = "".join(sorted(set(base.tables.get(name, "") + flag), key="RW".index))
     for attr in ("ctes", "functions", "table_functions", "writes", "cases"):
         have = getattr(base, attr)
         have += [x for x in getattr(other, attr) if x not in have]

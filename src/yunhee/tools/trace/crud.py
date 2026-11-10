@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 from yunhee.tools.sql_parse import ParsedSql
 from yunhee.tools.trace.flow import _DYNAMIC
@@ -50,22 +51,37 @@ _SERVLET_FILE_DELETE = re.compile(r'\bFileDelete(?:\?|["\'])')
 _SERVLET_FILE_UPLOAD = re.compile(r'\bFileUpload(?:\?|["\'])')
 
 
-def asis_matrix(
+def asis_matrix_with_sources(
     doc: ScreenDoc,
     ops_by_sql: dict[str, dict[str, set[str]]],
     udm: dict[str, dict[str, set[str]]] | None = None,
     src_root: Path | str | None = None,
-) -> dict[str, set[str]]:
-    """한 ASIS 화면(하위 클래스의 서비스 포함)의 {테이블: 작업}. SQL로 닿는 작업에 동적 쓰기(UpdateDataModel)와 서블릿(FileDelete/FileUpload)을 더한다."""
+) -> tuple[dict[str, set[str]], dict[str, dict[str, list[str]]]]:
+    """한 ASIS 화면의 {테이블: 작업} 및 각 작업의 근거(SQL/UDM/Servlet 출처)."""
     m: dict[str, set[str]] = defaultdict(set)
+    srcs: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
     for svc in doc.services:
         for sql_id in svc.sql_ids:
             for table, ops in ops_by_sql.get(sql_id, {}).items():
                 m[table] |= ops
+                for op in ops:
+                    entry = f"{sql_id} ({svc.key})"
+                    if entry not in srcs[table][op]:
+                        srcs[table][op].append(entry)
         for table, ops in (udm or {}).get(svc.key, {}).items():
             m[table] |= ops
+            for op in ops:
+                entry = f"UpdateDataModel ({svc.key})"
+                if entry not in srcs[table][op]:
+                    srcs[table][op].append(entry)
         if not svc.sql_ids and not (udm or {}).get(svc.key) and (dyn := _DYNAMIC.search(svc.note)):
-            m[dyn.group(1)] |= {"D"} if "DELETE" in dyn.group(2) else {"C", "U"}  # 색인 없이 화면 문서의 설명만 있는 경우
+            op_set = {"D"} if "DELETE" in dyn.group(2) else {"C", "U"}
+            tbl = dyn.group(1).lower()
+            m[tbl] |= op_set
+            for op in op_set:
+                entry = f"Dynamic note ({svc.note})"
+                if entry not in srcs[tbl][op]:
+                    srcs[tbl][op].append(entry)
 
     has_file_delete = any("FileDelete" in s for s in doc.servlets)
     has_file_upload = any("FileUpload" in s for s in doc.servlets)
@@ -102,10 +118,24 @@ def asis_matrix(
 
     if has_file_delete:
         m["sys10_file"] |= {"D", "R"}
+        srcs["sys10_file"]["D"].append("FileDelete servlet")
+        srcs["sys10_file"]["R"].append("FileDelete servlet")
     if has_file_upload:
         m["sys10_file"] |= {"C"}
+        srcs["sys10_file"]["C"].append("FileUpload servlet")
 
-    return dict(m)
+    return dict(m), {k: dict(v) for k, v in srcs.items()}
+
+
+def asis_matrix(
+    doc: ScreenDoc,
+    ops_by_sql: dict[str, dict[str, set[str]]],
+    udm: dict[str, dict[str, set[str]]] | None = None,
+    src_root: Path | str | None = None,
+) -> dict[str, set[str]]:
+    """한 ASIS 화면(하위 클래스의 서비스 포함)의 {테이블: 작업}. SQL로 닿는 작업에 동적 쓰기(UpdateDataModel)와 서블릿(FileDelete/FileUpload)을 더한다."""
+    mat, _ = asis_matrix_with_sources(doc, ops_by_sql, udm, src_root)
+    return mat
 
 
 def udm_c_only_tables(doc: ScreenDoc, a_mat: dict[str, set[str]], ops_by_sql: dict[str, dict[str, set[str]]]) -> set[str]:
@@ -114,9 +144,12 @@ def udm_c_only_tables(doc: ScreenDoc, a_mat: dict[str, set[str]], ops_by_sql: di
     return {t for t, ops in a_mat.items() if "C" in ops and t not in sql_c}
 
 
-def tobe_matrix(names: list[str], idx: TobeIndex, ops_by_stmt: dict[str, dict[str, set[str]]]) -> dict[str, set[str]]:
-    """ASIS 화면과 같은 이름의 TOBE TSX들이 api → 엔드포인트 → 서비스 → mapper 문장으로 닿는 {테이블: 작업}."""
+def tobe_matrix_with_sources(
+    names: list[str], idx: TobeIndex, ops_by_stmt: dict[str, dict[str, set[str]]]
+) -> tuple[dict[str, set[str]], dict[str, dict[str, list[str]]]]:
+    """ASIS 화면과 같은 이름의 TOBE TSX들이 닿는 {테이블: 작업} 및 근거."""
     m: dict[str, set[str]] = defaultdict(set)
+    srcs: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
     for name in names:
         tsx = idx.tsx.get(name)
         if tsx is None:
@@ -131,7 +164,17 @@ def tobe_matrix(names: list[str], idx: TobeIndex, ops_by_stmt: dict[str, dict[st
                 for st in idx.statements_of(ep):
                     for table, ops in ops_by_stmt.get(st.key, {}).items():
                         m[table] |= ops
-    return dict(m)
+                        for op in ops:
+                            entry = f"{st.key} ({obj}.{fn_name})"
+                            if entry not in srcs[table][op]:
+                                srcs[table][op].append(entry)
+    return dict(m), {k: dict(v) for k, v in srcs.items()}
+
+
+def tobe_matrix(names: list[str], idx: TobeIndex, ops_by_stmt: dict[str, dict[str, set[str]]]) -> dict[str, set[str]]:
+    """ASIS 화면과 같은 이름의 TOBE TSX들이 api → 엔드포인트 → 서비스 → mapper 문장으로 닿는 {테이블: 작업}."""
+    mat, _ = tobe_matrix_with_sources(names, idx, ops_by_stmt)
+    return mat
 
 
 def _other_tobe_screens(
@@ -214,13 +257,18 @@ def _domain_docs(ctx: TraceContext, domain: str | None) -> list[tuple[str, str, 
 
 
 def trace_crud(
-    ctx: TraceContext, tobe: Path | None = None, domain: str | None = None, screen: str | None = None, table: str | None = None
+    ctx: TraceContext,
+    tobe: Path | None = None,
+    domain: str | None = None,
+    screen: str | None = None,
+    table: str | None = None,
+    why: str | None = None,
 ) -> TraceResult:
     res = TraceResult(
         command="trace-crud",
         description="CRUD 매트릭스 (화면 × 테이블 × C/R/U/D, ASIS와 TOBE)",
         side=ctx.side,
-        params={"domain": domain, "screen": screen, "table": table},
+        params={"domain": domain, "screen": screen, "table": table, "why": why},
     )
     res.unresolved += ctx.unresolved
     if sum(x is not None for x in (domain, screen, table)) > 1:
@@ -238,6 +286,11 @@ def trace_crud(
     if idx is None:
         res.unresolved.append(f"TOBE 소스를 찾지 못해 ASIS만 낸다 ({layout.root}) — --tobe로 지정")
 
+    why_tbl = (why or table or "").strip().lower()
+
+    def tobe_for_with_src(name: str, doc: ScreenDoc) -> tuple[dict[str, set[str]], dict[str, dict[str, list[str]]]]:
+        return tobe_matrix_with_sources([name, *[c for c in doc.ui if c != name]], idx, t_ops) if idx else ({}, {})
+
     def tobe_for(name: str, doc: ScreenDoc) -> dict[str, set[str]]:
         return tobe_matrix([name, *[c for c in doc.ui if c != name]], idx, t_ops) if idx else {}
 
@@ -245,6 +298,7 @@ def trace_crud(
         screen_items = [s.strip() for s in screen.split(",") if s.strip()]
         resolved_names = []
         all_domain_docs = _domain_docs(ctx, None)
+        all_sources: dict[str, dict[str, Any]] = {"asis": {}, "tobe": {}}
         for s_item in screen_items:
             name = resolve_screen(s_item, ctx)
             resolved_names.append(name)
@@ -253,18 +307,47 @@ def trace_crud(
                 res.unresolved.append(f"ASIS 색인 문서를 찾지 못함: {name}.md")
                 continue
             screen_names = [name, *[c for c in doc.ui if c != name]]
-            a, t = asis_matrix(doc, a_ops, udm, src_root=ctx.src_root), tobe_for(name, doc)
+            a, a_src = asis_matrix_with_sources(doc, a_ops, udm, src_root=ctx.src_root)
+            t, t_src = tobe_for_with_src(name, doc)
+            all_sources["asis"].update(a_src)
+            all_sources["tobe"].update(t_src)
+
             udm_c = udm_c_only_tables(doc, a, a_ops)
             other_tobe = _other_tobe_screens(doc, set(screen_names), idx, t_ops)
             res.facts.append(f"화면 {name}: 테이블 {len(set(a) | set(t))}개 (ASIS {len(a)} / TOBE {len(t)})\n" + "\n".join(_compare(a, t, other_tobe=other_tobe, udm_c_only=udm_c)))
+
+            if why_tbl:
+                evidence_lines = [f"테이블 {why_tbl}의 CRUD 근거:"]
+                found_any = False
+                for op in ORDER:
+                    s_asis = a_src.get(why_tbl, {}).get(op, [])
+                    if s_asis:
+                        found_any = True
+                        evidence_lines.append(f"  AS-IS {op}: " + ", ".join(s_asis))
+                    s_tobe = t_src.get(why_tbl, {}).get(op, [])
+                    if s_tobe:
+                        found_any = True
+                        evidence_lines.append(f"  TOBE  {op}: " + ", ".join(s_tobe))
+                if not found_any:
+                    evidence_lines.append("  (이 화면에서 해당 테이블의 사용 근거를 찾지 못함)")
+                res.evidence.extend(evidence_lines)
+
         res.params["resolved"] = ", ".join(resolved_names)
+        res.params["sources"] = all_sources
     elif table:
         tbl = table.lower()
         rows = []
+        table_sources: dict[str, dict[str, Any]] = {"asis": {}, "tobe": {}}
         for _, name, doc in _domain_docs(ctx, None):
             if f"`{tbl}`" not in " ".join(f"`{x}`" for x in doc.tables) and not any(tbl in (s.note or "") for s in doc.services):
                 continue
-            a, t = asis_matrix(doc, a_ops, udm, src_root=ctx.src_root), tobe_for(name, doc)
+            a, a_src = asis_matrix_with_sources(doc, a_ops, udm, src_root=ctx.src_root)
+            t, t_src = tobe_for_with_src(name, doc)
+            if tbl in a_src:
+                table_sources["asis"][name] = a_src[tbl]
+            if tbl in t_src:
+                table_sources["tobe"][name] = t_src[tbl]
+
             udm_c = udm_c_only_tables(doc, a, a_ops)
             if tbl in a or tbl in t:
                 sa, st = a.get(tbl, set()), t.get(tbl, set())
@@ -276,6 +359,7 @@ def trace_crud(
                 warn = f"  ⚠ TOBE에 {_fmt(lost)} 없음" if lost and idx else ""
                 rows.append(f"  {name}: ASIS {_fmt(sa) or '-'} / TOBE {_fmt(st) or '-'}{warn}{c_note}")
         res.facts.append(f"테이블 {tbl}을(를) 쓰는 화면 {len(rows)}개\n" + ("\n".join(rows) if rows else "  (없음 — 화면 서비스에서 이 테이블에 닿는 SQL이 없음)"))
+        res.params["sources"] = table_sources
     else:
         docs = _domain_docs(ctx, domain)
         if not docs:

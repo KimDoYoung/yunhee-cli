@@ -225,6 +225,23 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
         matched_files = list(src_index.glob(f"**/components/{target_name}.md"))
     if not matched_files:
         matched_files = [f for f in src_index.glob("**/components/*.md") if f.stem.lower() == target_name.lower()]
+
+    found_as_linked_class: str | None = None
+    if not matched_files:
+        # 화면 파일이 없으면 그 클래스를 연결 클래스로 가진 부모 화면을 찾아 --class로 처리
+        for f in sorted(list(src_index.glob("**/screens/*.md")) + list(src_index.glob("**/components/*.md"))):
+            try:
+                content = f.read_text(encoding="utf-8", errors="replace")
+                if (
+                    re.search(rf"^###\s+{re.escape(target_name)}(?:\.java)?\b", content, re.MULTILINE)
+                    or re.search(rf"\b{re.escape(target_name)}\b", content)
+                ):
+                    matched_files = [f]
+                    found_as_linked_class = target_name
+                    break
+            except OSError:
+                pass
+
     if not matched_files:
         raise ValueError(f"색인 화면 파일을 찾을 수 없습니다: {target_name}.md")
 
@@ -247,6 +264,11 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             classes.append({"name": c_name, "text": text[start_p:end_p]})
     else:
         classes.append({"name": screen_file.stem, "text": text})
+
+    if found_as_linked_class:
+        filtered_c = [c for c in classes if c["name"].lower() == found_as_linked_class.lower()]
+        if filtered_c:
+            classes = filtered_c
 
     unreachable_opt = str(opts.get("unreachable") or "count").lower()
     want_layout = bool(opts.get("layout", False))

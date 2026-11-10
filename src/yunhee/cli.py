@@ -913,6 +913,7 @@ def grep_cmd(
     max_matches: Annotated[int, typer.Option("--max", "-m", help="최대 일치 건수 (기본 20)")] = 20,
     fixed_strings: Annotated[bool, typer.Option("-F", "--fixed-strings", help="정규식 대신 고정 문자열 검색")] = False,
     ignore_case: Annotated[bool, typer.Option("-i", "--ignore-case", help="대소문자 무시")] = False,
+    files_with_matches: Annotated[bool, typer.Option("-l", "--files-with-matches", help="일치 내용 대신 일치 파일 목록만 출력")] = False,
 ):
     """문맥 출력 전용 안전 grep (출력 상한 80줄, 파일:줄: 내용 형식)"""
     from yunhee.tools.outliner import grep_files
@@ -926,6 +927,7 @@ def grep_cmd(
         max_matches=max_matches,
         fixed_strings=fixed_strings,
         ignore_case=ignore_case,
+        files_with_matches=files_with_matches,
     )
     if not res.ok:
         typer.echo(f"오류: {res.error}", err=True)
@@ -1290,6 +1292,7 @@ def compare_cmd(
     src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
     src_index: Annotated[Path | None, typer.Option("--src-index", help="AS-IS 색인 폴더 경로 (기본: docs/as-is/src)")] = None,
     grid: Annotated[str | None, typer.Option("--grid", help="대조할 화면/그리드 클래스 (예: Sys05_Page_UserRole)")] = None,
+    no_grid: Annotated[bool, typer.Option("--no-grid", help="그리드 컬럼 대조를 수행하지 않고 건수만 비교")] = False,
     as_user: Annotated[str, typer.Option("--as", "-u", help="로그인 계정/역할 (사원 ID, 로그인 ID, admin)")] = "admin",
     sql_total: Annotated[str | None, typer.Option("--total-sql", "--sql-total", help="페이징 총건수 검증용 AS-IS SQL ID (예: apr40_download_history.selectByTextPagingTotal)")] = None,
     from_log: Annotated[bool, typer.Option("--from-log", help="최근 로그 trace에서 매퍼 파라미터를 읽어 기본값으로 사용")] = False,
@@ -1349,6 +1352,7 @@ def compare_cmd(
         src_root=src,
         src_index=src_index,
         grid=grid,
+        no_grid=no_grid,
         as_user=as_user,
         sql_total_ref=sql_total,
         from_log=from_log,

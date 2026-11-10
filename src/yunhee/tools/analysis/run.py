@@ -84,6 +84,8 @@ def _parse_tests(work_dir: Path, log_text: str) -> dict[str, Any]:
         failures = 0
         skipped = 0
         failed_classes = []
+        failed_details = []
+        classes_seen = set()
 
         for xf in xml_files:
             try:
@@ -95,14 +97,37 @@ def _parse_tests(work_dir: Path, log_text: str) -> dict[str, Any]:
                 total += t
                 failures += f
                 skipped += s
+                cls_name = root.attrib.get("name", xf.stem)
+                classes_seen.add(cls_name)
                 if f > 0:
-                    cls_name = root.attrib.get("name", xf.stem)
+                    cls_simple = cls_name.split(".")[-1]
                     failed_cases = []
                     for tc in root.findall("testcase"):
-                        fail_node = tc.find("failure") or tc.find("error")
+                        fail_node = tc.find("failure")
+                        if fail_node is None:
+                            fail_node = tc.find("error")
                         if fail_node is not None:
                             case_name = tc.attrib.get("name", "unknown")
-                            failed_cases.append(f"{cls_name} > {case_name}")
+                            msg_raw = fail_node.attrib.get("message", "")
+                            msg_line = msg_raw.splitlines()[0][:300].strip() if msg_raw else ""
+                            stack_text = fail_node.text or ""
+
+                            at_line = ""
+                            m_kfs = re.search(r"^\s*at\s+(kr\.co\.kfs\..*)$", stack_text, re.MULTILINE)
+                            if m_kfs:
+                                at_line = m_kfs.group(1).strip()
+                            else:
+                                m_any_at = re.search(r"^\s*at\s+(.*)$", stack_text, re.MULTILINE)
+                                if m_any_at:
+                                    at_line = m_any_at.group(1).strip()
+
+                            failed_details.append({
+                                "class": cls_simple,
+                                "method": case_name,
+                                "message": msg_line,
+                                "stack": at_line,
+                            })
+                            failed_cases.append(f"{cls_simple}.{case_name}")
                     if failed_cases:
                         failed_classes.extend(failed_cases)
                     else:
@@ -115,7 +140,9 @@ def _parse_tests(work_dir: Path, log_text: str) -> dict[str, Any]:
             "total": total,
             "failures": failures,
             "skipped": skipped,
+            "classes": len(classes_seen),
             "failed_cases": failed_classes,
+            "failed_details": failed_details,
         }
 
     # 2. 로그 정규식 탐색
@@ -193,7 +220,21 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
             return json.dumps(test_info, ensure_ascii=False, indent=2)
 
         lines = [f"전체 {tot} · 실패 {fail} · 건너뜀 {skip}"]
-        if failed_cases:
+        cls_cnt = test_info.get("classes", 0)
+        if cls_cnt > 1:
+            lines[0] += f" · 클래스 {cls_cnt}"
+
+        failed_details = test_info.get("failed_details", [])
+        if failed_details:
+            lines.append("실패한 테스트:")
+            for fd in failed_details:
+                cls_m = f"{fd['class']}.{fd['method']}"
+                lines.append(f"  ❌ {cls_m}")
+                if fd.get("message"):
+                    lines.append(f"     {fd['message']}")
+                if fd.get("stack"):
+                    lines.append(f"     at {fd['stack']}")
+        elif failed_cases:
             lines.append("실패한 테스트:")
             for fc in failed_cases:
                 lines.append(f"  ❌ {fc}")

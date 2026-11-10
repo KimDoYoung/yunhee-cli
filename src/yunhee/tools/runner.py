@@ -50,11 +50,15 @@ def extract_test_results(
         xml_files = list(base_dir.glob("**/target/surefire-reports/*.xml"))
 
     # --tests 패턴 필터링
-    m_tests = re.search(r"--tests\s+['\"]?(\S+)", command)
-    if m_tests:
-        t_pat = m_tests.group(1).rstrip("'\"").split(".")[-1].replace("*", "")
-        if t_pat:
-            xml_files = [xf for xf in xml_files if t_pat in xf.name]
+    test_patterns = re.findall(r"--tests\s+['\"]?([^'\"\s]+)", command)
+    if test_patterns:
+        cleaned_patterns = []
+        for p in test_patterns:
+            pat = p.rstrip("'\"").split(".")[-1].replace("*", "")
+            if pat:
+                cleaned_patterns.append(pat)
+        if cleaned_patterns:
+            xml_files = [xf for xf in xml_files if any(cp in xf.name for cp in cleaned_patterns)]
 
     # 시작 시각 필터링
     if start_time is not None:
@@ -74,6 +78,7 @@ def extract_test_results(
         skipped = 0
         failed_cases: list[str] = []
         failed_details: list[dict[str, str]] = []
+        classes_seen: set[str] = set()
 
         for xf in xml_files:
             try:
@@ -85,8 +90,9 @@ def extract_test_results(
                 total += t
                 failures += f
                 skipped += s
+                cls_name = root.attrib.get("name", xf.stem)
+                classes_seen.add(cls_name)
                 if f > 0:
-                    cls_name = root.attrib.get("name", xf.stem)
                     cls_simple = cls_name.split(".")[-1]
                     for tc in root.findall("testcase"):
                         fail_node = tc.find("failure")
@@ -121,6 +127,7 @@ def extract_test_results(
             "total": total,
             "failures": failures,
             "skipped": skipped,
+            "classes": len(classes_seen),
             "failed_cases": failed_cases,
             "failed_details": failed_details,
         }

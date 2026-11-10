@@ -19,12 +19,13 @@ from yunhee.tools.as_is.src_indexer import (
 )
 
 NAME = "callers"
-DESCRIPTION = "클래스(조회·편집 팝업 등)를 여는 호출부·메서드·리터럴 인자·메뉴 역추적 및 TOBE 대조"
-TARGET_HELP = "<클래스명>"
+DESCRIPTION = "클래스(조회·편집 팝업 등) 또는 서버 클래스/메서드를 부르는 호출부·메서드·메뉴 역추적 및 TOBE 대조"
+TARGET_HELP = "<클래스명[.메서드]>"
 FORMATS = ("md", "json")
 EXAMPLES = [
     "yunhee analysis callers Crm09_Lookup_SelectSingle",
-    "yunhee analysis callers Tdm00_Lookup_RelateAppr",
+    "yunhee analysis callers SendSMSAPI --server",
+    "yunhee analysis callers Sys01_Company.selectById --server",
     "yunhee analysis callers Crm09_Lookup_SelectSingle --tobe frontend/src",
 ]
 
@@ -194,139 +195,208 @@ def _scan_tobe_callers(target_cls: str, tobe_arg: str | None) -> dict[str, list[
 
 
 def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
-    """AS-IS에서 target 클래스를 생성·호출하는 모든 지점을 수집한다."""
-    target_cls = target.strip().removesuffix(".java").removesuffix(".tsx")
-    if not target_cls:
-        raise ValueError("대상 클래스명을 입력해 주세요. 예: yunhee analysis callers Crm09_Lookup_SelectSingle")
+    """AS-IS에서 target 클래스 또는 메서드를 호출/참조하는 모든 지점을 수집한다."""
+    target_raw = target.strip().removesuffix(".java").removesuffix(".tsx")
+    if not target_raw:
+        raise ValueError("대상 클래스 또는 메서드명을 입력해 주세요. 예: yunhee analysis callers Crm09_Lookup_SelectSingle")
+
+    if "." in target_raw:
+        target_cls, target_meth = target_raw.split(".", 1)
+    else:
+        target_cls, target_meth = target_raw, None
 
     src_root, src_index = resolve_as_is_paths(src=opts.get("src"), src_index=opts.get("src_index"))
     if not src_root or not src_root.is_dir():
         raise ValueError("AS-IS 소스 디렉터리를 찾을 수 없습니다. --src 옵션을 지정하세요.")
 
     app = find_app(src_root) or src_root
-    client_dir = app / "client"
-    search_dir = client_dir if client_dir.is_dir() else app
+    is_server = bool(opts.get("server", False))
+
+    if is_server:
+        server_dir = app / "server"
+        search_dir = server_dir if server_dir.is_dir() else app
+    else:
+        client_dir = app / "client"
+        search_dir = client_dir if client_dir.is_dir() else app
 
     screen_menus, class_to_screens = _load_menu_map(src_index)
     tobe_map = _scan_tobe_callers(target_cls, opts.get("tobe"))
 
-    new_re = re.compile(
-        rf"(?:(?:final[ \t]+)?(?:[\w<>?,]+[ \t]+)?(\w+)[ \t]*=[ \t]*)?new[ \t]+{re.escape(target_cls)}\s*(?:<[^>]*>)?\s*\("
-    )
-
     rows: list[dict[str, Any]] = []
-    for java_file in sorted(search_dir.rglob("*.java")):
-        if java_file.stem == target_cls or "target" in java_file.parts:
-            continue
-        try:
-            raw = java_file.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        if target_cls not in raw:
-            continue
 
-        no_comment, bare = strip_java(raw)
-        methods = find_methods(bare)
-        rel_path = java_file.relative_to(app) if java_file.is_relative_to(app) else java_file.name
+    # 1. 클라이언트 팝업 new 패턴 시도 (서버 옵션이 없고 target_meth가 없을 때)
+    if not is_server and not target_meth:
+        new_re = re.compile(
+            rf"(?:(?:final[ \t]+)?(?:[\w<>?,]+[ \t]+)?(\w+)[ \t]*=[ \t]*)?new[ \t]+{re.escape(target_cls)}\s*(?:<[^>]*>)?\s*\("
+        )
 
-        for m_new in new_re.finditer(no_comment):
-            var_name = m_new.group(1)
-            new_pos = m_new.start()
-            new_line = line_of(no_comment, new_pos)
-            close_paren = paren_end(no_comment, m_new.end() - 1)
-            ctor_args_raw = no_comment[m_new.end() : close_paren]
-            ctor_lits = _extract_literals(split_args(ctor_args_raw))
+        for java_file in sorted(search_dir.rglob("*.java")):
+            if java_file.stem == target_cls or "target" in java_file.parts:
+                continue
+            try:
+                raw = java_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if target_cls not in raw:
+                continue
 
-            # 감싼 메서드 찾기
-            enclosing_meth = "<field>"
-            scope_end = len(no_comment)
-            for m_name, _npos, b_start, b_end, _is_pub, _params in methods:
-                if b_start <= new_pos <= b_end:
-                    enclosing_meth = m_name
-                    scope_end = b_end
-                    break
+            no_comment, bare = strip_java(raw)
+            methods = find_methods(bare)
+            rel_path = java_file.relative_to(app) if java_file.is_relative_to(app) else java_file.name
 
-            called_methods: list[str] = []
-            call_lines: list[int] = []
-            literals: list[str] = list(ctor_lits)
+            for m_new in new_re.finditer(no_comment):
+                var_name = m_new.group(1)
+                new_pos = m_new.start()
+                new_line = line_of(no_comment, new_pos)
+                close_paren = paren_end(no_comment, m_new.end() - 1)
+                ctor_args_raw = no_comment[m_new.end() : close_paren]
+                ctor_lits = _extract_literals(split_args(ctor_args_raw))
 
-            # 1) 체이닝 호출 확인: new TargetCls(...).open(...)
-            after_ctor = no_comment[close_paren + 1 : min(len(no_comment), close_paren + 80)]
-            m_chain = re.match(r"\s*\.\s*(\w+)\s*\(", after_ctor)
-            if m_chain:
-                cm_name = m_chain.group(1)
-                c_open = close_paren + 1 + m_chain.end() - 1
-                c_close = paren_end(no_comment, c_open)
-                c_args = split_args(no_comment[c_open + 1 : c_close])
-                called_methods.append(cm_name)
-                call_lines.append(line_of(no_comment, c_open))
-                for lit in _extract_literals(c_args):
-                    if lit not in literals:
-                        literals.append(lit)
-            elif var_name:
-                # 2) 변수 호출 추적: 메서드 범위(또는 필드면 클래스 전체)에서 var_name.xxx(...) 탐색
-                search_start = close_paren + 1 if enclosing_meth != "<field>" else 0
-                search_end = scope_end if enclosing_meth != "<field>" else len(no_comment)
-                scope_slice = no_comment[search_start:search_end]
-                var_call_re = re.compile(rf"\b{re.escape(var_name)}\s*\.\s*(\w+)\s*\(")
-                raw_calls: list[tuple[str, int, list[str]]] = []
-                for mc in var_call_re.finditer(scope_slice):
-                    cm_name = mc.group(1)
-                    abs_open = search_start + mc.end() - 1
-                    abs_close = paren_end(no_comment, abs_open)
-                    c_args = split_args(no_comment[abs_open + 1 : abs_close])
-                    c_line = line_of(no_comment, search_start + mc.start())
-                    raw_calls.append((cm_name, c_line, _extract_literals(c_args)))
+                # 감싼 메서드 찾기
+                enclosing_meth = "<field>"
+                scope_end = len(no_comment)
+                for m_name, _npos, b_start, b_end, _is_pub, _params in methods:
+                    if b_start <= new_pos <= b_end:
+                        enclosing_meth = m_name
+                        scope_end = b_end
+                        break
 
-                # 주요 액션 메서드가 있으면 그것들을 우선, 없으면 전체 호출 메서드
-                action_calls = [rc for rc in raw_calls if rc[0] in ACTION_METHODS]
-                chosen_calls = action_calls if action_calls else raw_calls
-                for cm_name, c_line, c_lits in chosen_calls:
-                    if cm_name not in called_methods:
-                        called_methods.append(cm_name)
-                    call_lines.append(c_line)
-                    for lit in c_lits:
+                called_methods: list[str] = []
+                call_lines: list[int] = []
+                literals: list[str] = list(ctor_lits)
+
+                # 체이닝 호출 확인: new TargetCls(...).open(...)
+                after_ctor = no_comment[close_paren + 1 : min(len(no_comment), close_paren + 80)]
+                m_chain = re.match(r"\s*\.\s*(\w+)\s*\(", after_ctor)
+                if m_chain:
+                    cm_name = m_chain.group(1)
+                    c_open = close_paren + 1 + m_chain.end() - 1
+                    c_close = paren_end(no_comment, c_open)
+                    c_args = split_args(no_comment[c_open + 1 : c_close])
+                    called_methods.append(cm_name)
+                    call_lines.append(line_of(no_comment, c_open))
+                    for lit in _extract_literals(c_args):
                         if lit not in literals:
                             literals.append(lit)
+                elif var_name:
+                    search_start = close_paren + 1 if enclosing_meth != "<field>" else 0
+                    search_end = scope_end if enclosing_meth != "<field>" else len(no_comment)
+                    scope_slice = no_comment[search_start:search_end]
+                    var_call_re = re.compile(rf"\b{re.escape(var_name)}\s*\.\s*(\w+)\s*\(")
+                    raw_calls: list[tuple[str, int, list[str]]] = []
+                    for mc in var_call_re.finditer(scope_slice):
+                        cm_name = mc.group(1)
+                        abs_open = search_start + mc.end() - 1
+                        abs_close = paren_end(no_comment, abs_open)
+                        c_args = split_args(no_comment[abs_open + 1 : abs_close])
+                        c_line = line_of(no_comment, search_start + mc.start())
+                        raw_calls.append((cm_name, c_line, _extract_literals(c_args)))
 
-            # 표시할 줄 번호 결정: new 바로 다음 줄에서 단일 호출이 일어나면 호출 줄(예: 209), 멀거나 복수면 new_line
-            display_line = new_line
-            if len(call_lines) == 1 and 0 <= (call_lines[0] - new_line) <= 1:
-                display_line = call_lines[0]
+                    action_calls = [rc for rc in raw_calls if rc[0] in ACTION_METHODS]
+                    chosen_calls = action_calls if action_calls else raw_calls
+                    for cm_name, c_line, c_lits in chosen_calls:
+                        if cm_name not in called_methods:
+                            called_methods.append(cm_name)
+                        call_lines.append(c_line)
+                        for lit in c_lits:
+                            if lit not in literals:
+                                literals.append(lit)
 
-            meth_str = "/".join(called_methods) if called_methods else "<init>"
-            lit_str = ", ".join(literals) if literals else "-"
-            menu_str = _format_menu_for_class(java_file.stem, screen_menus, class_to_screens)
+                display_line = new_line
+                if len(call_lines) == 1 and 0 <= (call_lines[0] - new_line) <= 1:
+                    display_line = call_lines[0]
 
-            tobe_entries = tobe_map.get(java_file.stem, [])
-            tobe_str = ""
-            if opts.get("tobe"):
-                if tobe_entries:
-                    parts_t = []
-                    for te in tobe_entries:
-                        p_info = f" ({te['props']})" if te.get("props") else ""
-                        parts_t.append(f"`{te['stem']}.tsx:{te['line']}`{p_info}")
-                    tobe_str = ", ".join(parts_t)
-                else:
-                    tobe_str = "❌ 미연결"
+                meth_str = "/".join(called_methods) if called_methods else "<init>"
+                lit_str = ", ".join(literals) if literals else "-"
+                menu_str = _format_menu_for_class(java_file.stem, screen_menus, class_to_screens)
 
-            rows.append({
-                "caller_class": java_file.stem,
-                "file": f"{java_file.name}:{display_line}",
-                "rel_file": f"{rel_path}:{display_line}",
-                "new_line": new_line,
-                "call_lines": call_lines,
-                "called_method": meth_str,
-                "literals": lit_str,
-                "enclosing_method": enclosing_meth,
-                "menu": menu_str,
-                "tobe": tobe_str,
-            })
+                tobe_entries = tobe_map.get(java_file.stem, [])
+                tobe_str = ""
+                if opts.get("tobe"):
+                    if tobe_entries:
+                        parts_t = []
+                        for te in tobe_entries:
+                            p_info = f" ({te['props']})" if te.get("props") else ""
+                            parts_t.append(f"`{te['stem']}.tsx:{te['line']}`{p_info}")
+                        tobe_str = ", ".join(parts_t)
+                    else:
+                        tobe_str = "❌ 미연결"
+
+                rows.append({
+                    "caller_class": java_file.stem,
+                    "file": f"{java_file.name}:{display_line}",
+                    "rel_file": f"{rel_path}:{display_line}",
+                    "new_line": new_line,
+                    "call_lines": call_lines,
+                    "called_method": meth_str,
+                    "literals": lit_str,
+                    "enclosing_method": enclosing_meth,
+                    "menu": menu_str,
+                    "tobe": tobe_str,
+                })
+
+    # 2. 서버 모드이거나 target_meth가 있거나 new 호출을 찾지 못한 경우 일반 참조 검색
+    if not rows or is_server or target_meth:
+        scan_dir = search_dir if (is_server or target_meth) else app
+        ref_re_str = rf"\b{re.escape(target_cls)}\b"
+        if target_meth:
+            ref_re_str = rf"(?:\b{re.escape(target_cls)}\s*\.\s*{re.escape(target_meth)}\b|\b{re.escape(target_meth)}\s*\()"
+        ref_re = re.compile(ref_re_str)
+
+        seen_positions: set[tuple[str, int]] = set()
+        for java_file in sorted(scan_dir.rglob("*.java")):
+            if java_file.stem == target_cls or "target" in java_file.parts:
+                continue
+            try:
+                raw = java_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if target_cls not in raw and (target_meth is None or target_meth not in raw):
+                continue
+
+            no_comment, bare = strip_java(raw)
+            methods = find_methods(bare)
+            rel_path = java_file.relative_to(app) if java_file.is_relative_to(app) else java_file.name
+
+            for m_ref in ref_re.finditer(no_comment):
+                ref_pos = m_ref.start()
+                ref_line = line_of(no_comment, ref_pos)
+                pos_key = (java_file.stem, ref_line)
+                if pos_key in seen_positions:
+                    continue
+                seen_positions.add(pos_key)
+
+                enclosing_meth = "<field>"
+                for m_name, _npos, b_start, b_end, _is_pub, _params in methods:
+                    if b_start <= ref_pos <= b_end:
+                        enclosing_meth = m_name
+                        break
+
+                called_m = target_meth or target_cls
+                line_content = no_comment.splitlines()[ref_line - 1].strip() if 0 <= ref_line - 1 < len(no_comment.splitlines()) else ""
+                m_call = re.search(rf"\b{re.escape(target_cls)}\s*\.\s*(\w+)\s*\(", line_content)
+                if m_call:
+                    called_m = m_call.group(1)
+
+                menu_str = _format_menu_for_class(java_file.stem, screen_menus, class_to_screens)
+                rows.append({
+                    "caller_class": java_file.stem,
+                    "file": f"{java_file.name}:{ref_line}",
+                    "rel_file": f"{rel_path}:{ref_line}",
+                    "new_line": ref_line,
+                    "call_lines": [ref_line],
+                    "called_method": called_m,
+                    "literals": "-",
+                    "enclosing_method": enclosing_meth,
+                    "menu": menu_str,
+                    "tobe": "",
+                })
 
     return {
-        "target": target_cls,
+        "target": target_raw,
         "rows": rows,
         "has_tobe": bool(opts.get("tobe")),
+        "is_server": is_server,
     }
 
 

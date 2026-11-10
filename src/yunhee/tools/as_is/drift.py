@@ -1373,7 +1373,47 @@ def run_drift(
                         matched = k
                         break
             if matched not in indexed_screens and matched not in baseline_data:
-                return 2, f"오류: 화면 '{arg}'을(를) 색인에서 찾을 수 없습니다.", warnings
+                # 053 §4: 화면 파일이 없으면 그 클래스를 연결 클래스로 가진 부모 화면을 찾아 처리
+                parent_screen = None
+                parent_info = None
+                for s_name, s_info in indexed_screens.items():
+                    s_files = s_info.get("source_files") or {}
+                    if any(Path(f).stem.lower() == arg.lower() for f in s_files):
+                        parent_screen = s_name
+                        parent_info = s_info
+                        break
+                    if s_info.get("md_file"):
+                        try:
+                            md_txt = s_info["md_file"].read_text(encoding="utf-8", errors="replace")
+                            if re.search(rf"\b{re.escape(arg)}\b", md_txt):
+                                parent_screen = s_name
+                                parent_info = s_info
+                                break
+                        except OSError:
+                            pass
+                if parent_screen and parent_info:
+                    matched = arg
+                    matched_file_paths = [f for f in (parent_info.get("source_files") or {}) if Path(f).stem.lower() == arg.lower()]
+                    if not matched_file_paths:
+                        c_matches = list(eff_src.rglob(f"{arg}.java"))
+                        if c_matches:
+                            try:
+                                matched_file_paths = [str(c_matches[0].relative_to(eff_src))]
+                            except ValueError:
+                                matched_file_paths = [str(c_matches[0])]
+                    indexed_screens[matched] = {
+                        "name": matched,
+                        "kind": "component",
+                        "md_file": parent_info.get("md_file"),
+                        "has_frontmatter": parent_info.get("has_frontmatter"),
+                        "source_commit": parent_info.get("source_commit"),
+                        "indexed_at": parent_info.get("indexed_at"),
+                        "source_files": {f: (parent_info.get("source_files") or {}).get(f, "") for f in matched_file_paths} if isinstance(parent_info.get("source_files"), dict) else matched_file_paths,
+                        "shared_links": [],
+                        "parent_screen": parent_screen,
+                    }
+                else:
+                    return 2, f"오류: 화면 '{arg}'을(를) 색인에서 찾을 수 없습니다.", warnings
             target_names.append(matched)
     elif all_screens:
         target_names = sorted(only_screen_units.keys())

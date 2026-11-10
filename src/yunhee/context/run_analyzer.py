@@ -40,7 +40,9 @@ def summarize_run(
     if exit_code == 0:
         test_suffix = ""
         if test_info:
-            test_suffix = f" · tests {test_info['total']} (fail {test_info['failures']}, skip {test_info['skipped']})"
+            cls_cnt = test_info.get("classes", 0)
+            cls_part = f" · 클래스 {cls_cnt}" if cls_cnt > 1 else ""
+            test_suffix = f" · tests {test_info['total']} (fail {test_info['failures']}, skip {test_info['skipped']}){cls_part}"
         return f"✅ Execution Succeeded in {duration_sec}: `{command}` (log: {log_path}){test_suffix}"
 
     # 2. 실패 케이스 (exit_code != 0)
@@ -63,7 +65,9 @@ def summarize_run(
         f"- **Log File**: `{log_path}`",
     ])
     if test_info:
-        lines.append(f"- **Tests**: 전체 {test_info['total']} · 실패 {test_info['failures']} · 건너뜀 {test_info['skipped']}")
+        cls_cnt = test_info.get("classes", 0)
+        cls_part = f" · 클래스 {cls_cnt}" if cls_cnt > 1 else ""
+        lines.append(f"- **Tests**: 전체 {test_info['total']} · 실패 {test_info['failures']} · 건너뜀 {test_info['skipped']}{cls_part}")
 
     stderr_lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
     if stderr_lines:

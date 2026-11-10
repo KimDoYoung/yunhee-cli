@@ -938,6 +938,7 @@ def grep_files(
     fixed_strings: bool = False,
     ignore_case: bool = False,
     max_lines: int = GREP_MAX_LINES,
+    files_with_matches: bool = False,
 ) -> ToolResult:
     """지정된 파일/폴더에서 패턴을 검색하고 문맥 줄과 함께 상한(기본 80줄) 내에서 반환한다."""
     import os
@@ -982,6 +983,7 @@ def grep_files(
                         target_files.append((fpath, disp))
 
     output_lines: list[str] = []
+    matched_files_list: list[str] = []
     total_matches = 0
     shown_matches = 0
     truncated_by_cap = False
@@ -1000,6 +1002,9 @@ def grep_files(
             continue
 
         total_matches += len(match_indices)
+        if files_with_matches:
+            matched_files_list.append(disp)
+            continue
         if truncated_by_cap or shown_matches >= eff_max_matches:
             continue
 
@@ -1029,6 +1034,13 @@ def grep_files(
 
             if truncated_by_cap:
                 break
+
+    if files_with_matches:
+        return ToolResult(
+            ok=True,
+            data="\n".join(matched_files_list),
+            truncated=False,
+        )
 
     omitted_matches = max(0, total_matches - shown_matches)
     if truncated_by_cap and omitted_matches == 0 and total_matches > 0:

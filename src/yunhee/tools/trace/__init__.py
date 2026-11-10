@@ -191,6 +191,7 @@ def register_trace_commands(app: typer.Typer) -> None:
         domain: Annotated[str | None, typer.Option("--domain", "-d", help="업무 영역 (예: emp)")] = None,
         screen: Annotated[str | None, typer.Option("--screen", "-s", help="화면 클래스명·메뉴 번호")] = None,
         table: Annotated[str | None, typer.Option("--table", "-t", help="테이블 (이 테이블을 쓰는 모든 화면)")] = None,
+        why: Annotated[str | None, typer.Option("--why", help="지정한 테이블의 C/R/U/D 출처 SQL/서비스 근거 표시")] = None,
         tobe: TobeOption = None,
         side: SideOption = "both",
         format: FormatOption = "md",
@@ -201,7 +202,7 @@ def register_trace_commands(app: typer.Typer) -> None:
         """CRUD 매트릭스 (화면 × 테이블 × C/R/U/D, ASIS와 TOBE 나란히). 범위를 안 주면 영역별 요약"""
         from yunhee.tools.trace.crud import trace_crud
 
-        _emit(lambda ctx: trace_crud(ctx, tobe, domain, screen, table), side, format, max, src, src_index)
+        _emit(lambda ctx: trace_crud(ctx, tobe, domain, screen, table, why=why), side, format, max, src, src_index)
 
     @app.command(name="trace-flow")
     def trace_flow_cmd(
