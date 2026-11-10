@@ -55,7 +55,7 @@ uv run yunhee log req GET /api/v1/emp/others          # 접근 로그에서 최�
 uv run yunhee log errors                              # WARN/ERROR 묶음 요약
 uv run yunhee log tail                                # 최근 전체 로그 흐름을 trace 단위로 접어서 요약
 uv run yunhee screen-capture 1029 login=kfstest/104/1111 # TOBE 화면 자동 로그인·겸직선택·오픈 및 조회/행선택/탭/팝업 순회 캡처 (--url, --out 지원)
-uv run yunhee screen-desc 1002,1029, 1085 --format=md # 쉼표·공백 복수 화면번호의 메뉴명·파일명·사용 팝업·하위 컴포넌트·그리드·버튼·API·SQL·테이블·ASIS 종합 조회 (--format=json,md)
+uv run yunhee screen-desc 1002,1029, 1085 --format=md # 쉼표·공백 복수 화면번호의 메뉴명·파일명·사용 팝업·하위 컴포넌트·그리드·버튼·API·SQL·테이블·ASIS 종합 조회 (--format=json,md, --summary, --section 지원)
 
 uv run tools/parse_mapper.py     # ASIS mapper XML → sqlite mapper_index 빌드 (prepare grounding 검증용)
 
@@ -112,8 +112,8 @@ uv tool install --force --reinstall . # yunhee 안정 버전을 전역 PATH에 �
   - `run` (`exec`): 외부 명령어 실행, 로그 격리 저장(`.yunhee/runs/<run_id>.log`) 및 성공 시 1줄 / 실패 시 Qwen 14B 에러 압축 리포트.
   - `last-run` / `runs`: 직전 실행 요약 확인 및 실행 이력 목록 테이블 표시.
   - `outline`: 소스 파일/디렉터리의 클래스·메서드 시그니처와 줄 번호를 LLM 없이 정적 파싱하여 추출.
-  - `api`: 테스트 계정 자동 로그인 세션 기반 API 스모크 테스트 (행수/필드 요약 반환).
-  - `sql`: 안전한 PostgreSQL 쿼리 실행 (기본 read-only, `--rollback` 트랜잭션 격리, `\gset` 변수 바인딩, DDL/COMMIT 차단).
+  - `api`: 테스트 계정 자동 로그인 세션 기반 API 스모크 테스트 (행수/필드 요약 반환, `-c` 회사 지정 시 기본 테넌트 동기화, `--fresh` 세션 갱신, `--fields`, `--where`, `--count-by` 응답 필터 지원).
+  - `sql`: 안전한 PostgreSQL 쿼리 실행 (기본 read-only, `--rollback` 트랜잭션 격리, `\gset` 변수 바인딩, DDL/COMMIT 차단, 열 오류 시 비슷한 열 자동 추천).
   - `events`: AS-IS GXT 화면 파일의 이벤트, 메서드 테이블, Grid Spec(TOBE 스타일), 사용된 버튼 목록 추출.
   - `port-sql`: AS-IS MyBatis XML SQL을 TOBE XML 조각 및 Java Record DTO로 결정적 변환.
   - `port-save`: AS-IS 테이블 스키마 및 UpdateDataModel 기반 명시적 CUD SQL과 채번/사이드이펙트 생성.

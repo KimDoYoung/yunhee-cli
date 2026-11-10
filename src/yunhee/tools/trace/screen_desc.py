@@ -158,6 +158,14 @@ def _format_component_brief(rec: ScreenRecord) -> dict[str, Any]:
         {"field": c.field, "label": c.label, "col_type": c.col_type, "width": c.width}
         for c in rec.grid_cols
     ]
+    txt = rec.text
+    has_grid = bool(
+        rec.grid_cols
+        or rec.role == "Grid"
+        or re.search(r"<(?:SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid|BaseGrid|TreeGrid)\b", txt)
+        or re.search(r"\bcolumnDefs\b", txt)
+    )
+    grid_count = len(re.findall(r"<(?:SingleGrid|MultiGrid|CellEditGrid|ModalEditGrid|BaseGrid|TreeGrid)\b", txt))
     return {
         "name": rec.name,
         "role": rec.role,
@@ -167,6 +175,8 @@ def _format_component_brief(rec: ScreenRecord) -> dict[str, Any]:
         "search_fields": rec.search_fields,
         "buttons": _clean_buttons(rec.buttons),
         "grid_cols": grid_list,
+        "has_grid": has_grid,
+        "grid_count": grid_count,
         "apis": rec.apis,
         "backend_files": rec.backend_files,
         "sql_ids": rec.sql_ids,
@@ -180,7 +190,10 @@ def _build_asis_info(
 ) -> dict[str, Any] | None:
     if not screen_name or not ctx.has_index:
         return None
-    resolved = resolve_screen(screen_name, ctx)
+    try:
+        resolved = resolve_screen(screen_name, ctx)
+    except Exception:  # noqa: BLE001
+        resolved = screen_name
     doc_path = find_class_doc(ctx, resolved)
     if doc_path is None and resolved != screen_name:
         doc_path = find_class_doc(ctx, screen_name)
@@ -429,17 +442,101 @@ def describe_screens(
     }
 
 
+def _shorten_sql_id(sid: str) -> str:
+    m = re.search(r"([A-Za-z0-9_]+Mapper\.[A-Za-z0-9_]+)$", sid)
+    if m:
+        return m.group(1)
+    parts = sid.split(".")
+    if len(parts) >= 2:
+        return f"{parts[-2]}.{parts[-1]}"
+    return sid
+
+
+def _format_backend_files(files: list[str], summary: bool = False) -> list[str]:
+    if not files:
+        return ["- **백엔드 파일**: 없음"]
+
+    by_domain: dict[str, list[str]] = {}
+    for f in files:
+        p = Path(f)
+        name = p.name
+        parts = p.parts
+        dom = "common"
+        if "biz" in parts:
+            idx = parts.index("biz")
+            if idx + 1 < len(parts):
+                dom = parts[idx + 1]
+        elif "mapper" in parts:
+            dom = "mapper"
+        elif len(parts) >= 2:
+            dom = parts[-2]
+        by_domain.setdefault(dom, []).append(name)
+
+    lines = [f"- **백엔드 파일 ({len(files)}개)**:"]
+    for dom, dom_files in sorted(by_domain.items()):
+        uniq = list(dict.fromkeys(dom_files))
+        if summary and len(uniq) > 5:
+            f_str = ", ".join(f"`{x}`" for x in uniq[:5]) + f" 외 {len(uniq) - 5}개"
+        else:
+            f_str = ", ".join(f"`{x}`" for x in uniq)
+        lines.append(f"  - `{dom}` ({len(uniq)}개): {f_str}")
+    return lines
+
+
+def _format_grid_cols_count(comp: dict[str, Any]) -> str:
+    cols = comp.get("grid_cols") or []
+    has_grid = comp.get("has_grid", False)
+    grid_count = comp.get("grid_count", 0)
+    if cols:
+        if grid_count > 1:
+            return f"{len(cols)} ({grid_count}개)"
+        return str(len(cols))
+    if has_grid:
+        return "?"
+    return "0"
+
+
 def render_screen_desc_json(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
-def render_screen_desc_md(data: dict[str, Any]) -> str:
+def render_screen_desc_md(
+    data: dict[str, Any],
+    summary: bool = False,
+    section: str | None = None,
+) -> str:
     screens = data.get("screens") or []
     if not screens:
         return "조회할 화면번호가 지정되지 않았습니다."
 
+    sec_filter: set[str] | None = None
+    if section:
+        raw_secs = [s.strip().lower() for s in re.split(r"[\s,]+", section.strip()) if s.strip()]
+        if raw_secs:
+            sec_filter = set()
+            for s in raw_secs:
+                if s in ("tobe", "front", "fe"):
+                    sec_filter.add("tobe")
+                elif s in ("popup", "popups", "modal", "modals"):
+                    sec_filter.add("popup")
+                elif s in ("tabs", "tab", "sub", "subs"):
+                    sec_filter.add("tabs")
+                elif s in ("backend", "be", "api", "sql", "tables", "table"):
+                    sec_filter.add("backend")
+                elif s in ("asis", "legacy"):
+                    sec_filter.add("asis")
+                elif s in ("events", "event"):
+                    sec_filter.add("events")
+
+    def show_sec(name: str) -> bool:
+        if sec_filter is None:
+            return True
+        if name == "asis" and "events" in sec_filter:
+            return True
+        return name in sec_filter
+
     out: list[str] = []
-    if len(screens) > 1:
+    if len(screens) > 1 and sec_filter is None:
         out.append(f"# 화면 상세 정보 요약 ({data.get('found_count', 0)}/{len(screens)}건)")
         out.append("")
         out.append("| 화면번호 | 메뉴 경로 | 상태 | TOBE 화면명 | 프론트엔드 파일 | 스타일 | 팝업 수 | 하위컴포넌트 수 | 테이블 수 |")
@@ -497,32 +594,53 @@ def render_screen_desc_md(data: dict[str, Any]) -> str:
                 f"`#{rm['no']}` {rm['path']} ({'사용' if rm['active'] else '미사용'})"
                 for rm in m["related_menus"]
             ]
-            out.append(f"- **동일 화면 연결 메뉴({len(rel_strs)})**: {', '.join(rel_strs)}")
+            if summary and len(rel_strs) > 3:
+                rel_disp = ", ".join(rel_strs[:3]) + f" 외 {len(rel_strs) - 3}건"
+            else:
+                rel_disp = ", ".join(rel_strs)
+            out.append(f"- **동일 화면 연결 메뉴({len(rel_strs)})**: {rel_disp}")
 
-        if tb:
+        if tb and show_sec("tobe"):
             out.append("")
             out.append("### 2. TOBE 프론트엔드 화면 구성")
             out.append(f"- **메인 파일**: `{tb.get('main_file') or '-'}`")
             out.append(f"- **역할 / 페이지 스타일(SID)**: `{tb.get('role') or '-'}` / `{tb.get('page_style') or '-'}`")
             if tb.get("header_comments"):
                 out.append("- **화면 머리 주석 요약**:")
-                for hc in tb["header_comments"]:
+                h_comments = tb["header_comments"]
+                if summary and len(h_comments) > 3:
+                    h_comments = h_comments[:3] + [f"… 외 {len(h_comments) - 3}줄 생략 (--summary)"]
+                for hc in h_comments:
                     out.append(f"  - {hc}")
             if tb.get("search_fields"):
-                out.append(f"- **조회 조건 (`SearchBar` 라벨 {len(tb['search_fields'])}개)**: {', '.join(tb['search_fields'])}")
+                s_fields = tb["search_fields"]
+                if summary and len(s_fields) > 6:
+                    s_fields_str = ", ".join(s_fields[:6]) + f" 외 {len(s_fields) - 6}개"
+                else:
+                    s_fields_str = ", ".join(s_fields)
+                out.append(f"- **조회 조건 (`SearchBar` 라벨 {len(tb['search_fields'])}개)**: {s_fields_str}")
             else:
                 out.append("- **조회 조건 (`SearchBar`)**: 없음")
             if tb.get("buttons"):
-                out.append(f"- **메인 화면 버튼 ({len(tb['buttons'])}개)**: {', '.join(tb['buttons'])}")
+                btns = tb["buttons"]
+                if summary and len(btns) > 6:
+                    btns_str = ", ".join(btns[:6]) + f" 외 {len(btns) - 6}개"
+                else:
+                    btns_str = ", ".join(btns)
+                out.append(f"- **메인 화면 버튼 ({len(tb['buttons'])}개)**: {btns_str}")
             else:
                 out.append("- **메인 화면 버튼**: 없음")
 
             main_cols = tb.get("grid_cols") or []
             if main_cols:
-                col_strs = [f"`{c['label']}`(`{c['field']}`:{c['col_type']})" for c in main_cols]
-                out.append(f"- **메인 그리드 컬럼 ({len(main_cols)}개)**: {', '.join(col_strs)}")
+                if summary and len(main_cols) > 8:
+                    col_strs = [f"`{c['label']}`(`{c['field']}`:{c['col_type']})" for c in main_cols[:8]]
+                    out.append(f"- **메인 그리드 컬럼 ({len(main_cols)}개)**: {', '.join(col_strs)} 외 {len(main_cols) - 8}개")
+                else:
+                    col_strs = [f"`{c['label']}`(`{c['field']}`:{c['col_type']})" for c in main_cols]
+                    out.append(f"- **메인 그리드 컬럼 ({len(main_cols)}개)**: {', '.join(col_strs)}")
 
-            # 사용되는 팝업/모달 상세
+        if tb and show_sec("popup"):
             popups = tb.get("popups") or []
             all_modals = tb.get("all_modals") or []
             out.append("")
@@ -532,90 +650,139 @@ def render_screen_desc_md(data: dict[str, Any]) -> str:
             else:
                 if all_modals:
                     out.append("- **모달 타이틀 요약**:")
-                    for md in all_modals:
+                    modal_items = all_modals[:5] if summary and len(all_modals) > 5 else all_modals
+                    for md in modal_items:
                         out.append(
                             f"  - `{md['kind']}` **\"{md['title']}\"** — `{md['component']}` (`{md['file']}`:L{md['line']})"
                         )
+                    if summary and len(all_modals) > 5:
+                        out.append(f"  - … 외 {len(all_modals) - 5}건 모달 타이틀 생략 (--summary)")
                 if popups:
                     out.append("")
                     out.append("| 팝업 컴포넌트명 | 구분 | 모달 타이틀 | 파일 경로 | 내부 버튼 | 그리드 컬럼 수 | 호출 API |")
                     out.append("| :--- | :--- | :--- | :--- | :--- | ---: | :--- |")
-                    for p in popups:
+                    popup_items = popups[:5] if summary and len(popups) > 5 else popups
+                    for p in popup_items:
                         m_titles = ", ".join(f"{m['kind']}({m['title']})" for m in p.get("modals", [])) or "-"
-                        p_btns = ", ".join(p.get("buttons", [])[:8]) or "-"
-                        p_cols = len(p.get("grid_cols", []))
-                        p_apis = ", ".join(p.get("apis", [])[:4]) or "-"
+                        p_btns = ", ".join(p.get("buttons", [])[:6]) or "-"
+                        p_cols_str = _format_grid_cols_count(p)
+                        p_apis = ", ".join(p.get("apis", [])[:3]) or "-"
                         out.append(
-                            f"| `{p['name']}` | {p['role']} | {m_titles} | `{p['file']}` | {p_btns} | {p_cols} | {p_apis} |"
+                            f"| `{p['name']}` | {p['role']} | {m_titles} | `{p['file']}` | {p_btns} | {p_cols_str} | {p_apis} |"
                         )
+                    if summary and len(popups) > 5:
+                        out.append(f"\n- … 외 {len(popups) - 5}개 팝업 컴포넌트 생략 (--summary)")
 
-            # 하위 탭페이지 / 그리드 / 부품 컴포넌트
+        if tb and show_sec("tabs"):
             sub_comps = tb.get("sub_components") or []
             if sub_comps:
                 out.append("")
                 out.append(f"### 4. 하위 탭페이지·그리드·연결 컴포넌트 ({len(sub_comps)}개)")
                 out.append("| 컴포넌트명 | 구분 | 파일 경로 | 버튼 | 그리드 컬럼 수 | 모달 타이틀 |")
                 out.append("| :--- | :--- | :--- | :--- | ---: | :--- |")
-                for sc in sub_comps:
-                    sc_btns = ", ".join(sc.get("buttons", [])[:8]) or "-"
-                    sc_cols = len(sc.get("grid_cols", []))
+                sub_items = sub_comps[:6] if summary and len(sub_comps) > 6 else sub_comps
+                for sc in sub_items:
+                    sc_btns = ", ".join(sc.get("buttons", [])[:6]) or "-"
+                    sc_cols_str = _format_grid_cols_count(sc)
                     sc_modals = ", ".join(f"{m['kind']}({m['title']})" for m in sc.get("modals", [])) or "-"
                     out.append(
-                        f"| `{sc['name']}` | {sc['role']} | `{sc['file']}` | {sc_btns} | {sc_cols} | {sc_modals} |"
+                        f"| `{sc['name']}` | {sc['role']} | `{sc['file']}` | {sc_btns} | {sc_cols_str} | {sc_modals} |"
                     )
+                if summary and len(sub_comps) > 6:
+                    out.append(f"\n- … 외 {len(sub_comps) - 6}개 하위 컴포넌트 생략 (--summary)")
 
-            # 백엔드 API / 파일 / SQL / DB 테이블
+        if tb and show_sec("backend"):
             out.append("")
             out.append("### 5. TOBE 백엔드 API · 매퍼 SQL · DB 테이블")
             apis = tb.get("apis") or []
             be_files = tb.get("backend_files") or []
             sql_ids = tb.get("sql_ids") or []
             tables = tb.get("tables") or []
-            out.append(f"- **호출 API ({len(apis)}개)**: {', '.join(f'`{a}`' for a in apis) if apis else '없음'}")
-            if be_files:
-                out.append(f"- **백엔드 파일 ({len(be_files)}개)**:")
-                for bf in be_files:
-                    out.append(f"  - `{bf}`")
+            if apis:
+                if summary and len(apis) > 6:
+                    api_str = ", ".join(f"`{a}`" for a in apis[:6]) + f" 외 {len(apis) - 6}개"
+                else:
+                    api_str = ", ".join(f"`{a}`" for a in apis)
+                out.append(f"- **호출 API ({len(apis)}개)**: {api_str}")
             else:
-                out.append("- **백엔드 파일**: 없음")
-            out.append(
-                f"- **MyBatis SQL ID ({len(sql_ids)}개)**: {', '.join(f'`{s}`' for s in sql_ids) if sql_ids else '없음'}"
-            )
-            out.append(
-                f"- **참조 DB 테이블 ({len(tables)}개)**: {', '.join(f'`{t}`' for t in tables) if tables else '없음'}"
-            )
+                out.append("- **호출 API**: 없음")
 
-        if asis:
+            out.extend(_format_backend_files(be_files, summary=summary))
+
+            if sql_ids:
+                short_sqls = [_shorten_sql_id(sid) for sid in sql_ids]
+                if summary and len(short_sqls) > 8:
+                    sql_str = ", ".join(f"`{s}`" for s in short_sqls[:8]) + f" 외 {len(short_sqls) - 8}개"
+                else:
+                    sql_str = ", ".join(f"`{s}`" for s in short_sqls)
+                out.append(f"- **MyBatis SQL ID ({len(sql_ids)}개)**: {sql_str}")
+            else:
+                out.append("- **MyBatis SQL ID**: 없음")
+
+            if tables:
+                if summary and len(tables) > 10:
+                    tbl_str = ", ".join(f"`{t}`" for t in tables[:10]) + f" 외 {len(tables) - 10}개"
+                else:
+                    tbl_str = ", ".join(f"`{t}`" for t in tables)
+                out.append(f"- **참조 DB 테이블 ({len(tables)}개)**: {tbl_str}")
+            else:
+                out.append("- **참조 DB 테이블**: 없음")
+
+        if asis and (show_sec("asis") or show_sec("events")):
             out.append("")
-            sec_no = "6" if tb else "2"
-            out.append(f"### {sec_no}. AS-IS 레거시 화면 정보 (`{asis['screen']}`)")
-            out.append(f"- **AS-IS 소스 파일**: `{asis.get('file') or '-'}`")
-            if asis.get("layout"):
-                out.append(f"- **AS-IS 레이아웃**: {asis['layout']}")
-            if asis.get("classes"):
-                out.append(
-                    f"- **AS-IS 연결 클래스 ({len(asis['classes'])}개)**: {', '.join(f'`{c}`' for c in asis['classes'])}"
-                )
-            if asis.get("popups"):
-                out.append(
-                    f"- **AS-IS 팝업 클래스 ({len(asis['popups'])}개)**: {', '.join(f'`{p}`' for p in asis['popups'])}"
-                )
-            if asis.get("services"):
-                out.append(f"- **AS-IS 호출 서비스 RPC ({len(asis['services'])}개)**:")
-                for sv in asis["services"][:20]:
-                    sql_part = ", ".join(f"`{sid}`" for sid in sv["sql_ids"]) if sv["sql_ids"] else (sv["note"] or "-")
-                    out.append(f"  - `{sv['service']}` → {sql_part} (호출: {', '.join(sv['callers'])})")
-            if asis.get("tables"):
-                out.append(
-                    f"- **AS-IS 참조 테이블 ({len(asis['tables'])}개)**: {', '.join(f'`{t}`' for t in asis['tables'])}"
-                )
-            if asis.get("functions"):
-                out.append(
-                    f"- **AS-IS DB 함수 ({len(asis['functions'])}개)**: {', '.join(f'`{f}`' for f in asis['functions'])}"
-                )
+            sec_no = "6" if tb and sec_filter is None else ("2" if not tb else "AS-IS")
+            only_events = sec_filter is not None and "events" in sec_filter and "asis" not in sec_filter
+            if only_events:
+                out.append(f"### AS-IS 주요 이벤트 (`{asis['screen']}`)")
+            else:
+                out.append(f"### {sec_no}. AS-IS 레거시 화면 정보 (`{asis['screen']}`)")
+                out.append(f"- **AS-IS 소스 파일**: `{asis.get('file') or '-'}`")
+                if asis.get("layout"):
+                    out.append(f"- **AS-IS 레이아웃**: {asis['layout']}")
+                if asis.get("classes"):
+                    classes = asis["classes"]
+                    if summary and len(classes) > 6:
+                        c_str = ", ".join(f"`{c}`" for c in classes[:6]) + f" 외 {len(classes) - 6}개"
+                    else:
+                        c_str = ", ".join(f"`{c}`" for c in classes)
+                    out.append(f"- **AS-IS 연결 클래스 ({len(classes)}개)**: {c_str}")
+                if asis.get("popups"):
+                    pop_classes = asis["popups"]
+                    if summary and len(pop_classes) > 6:
+                        p_str = ", ".join(f"`{p}`" for p in pop_classes[:6]) + f" 외 {len(pop_classes) - 6}개"
+                    else:
+                        p_str = ", ".join(f"`{p}`" for p in pop_classes)
+                    out.append(f"- **AS-IS 팝업 클래스 ({len(pop_classes)}개)**: {p_str}")
+                if asis.get("services"):
+                    services = asis["services"]
+                    out.append(f"- **AS-IS 호출 서비스 RPC ({len(services)}개)**:")
+                    svc_items = services[:5] if summary and len(services) > 5 else services[:20]
+                    for sv in svc_items:
+                        sql_part = ", ".join(f"`{sid}`" for sid in sv["sql_ids"]) if sv["sql_ids"] else (sv["note"] or "-")
+                        out.append(f"  - `{sv['service']}` → {sql_part} (호출: {', '.join(sv['callers'])})")
+                    if summary and len(services) > 5:
+                        out.append(f"  - … 외 {len(services) - 5}개 서비스 생략 (--summary)")
+                if asis.get("tables"):
+                    asis_tbls = asis["tables"]
+                    if summary and len(asis_tbls) > 10:
+                        at_str = ", ".join(f"`{t}`" for t in asis_tbls[:10]) + f" 외 {len(asis_tbls) - 10}개"
+                    else:
+                        at_str = ", ".join(f"`{t}`" for t in asis_tbls)
+                    out.append(f"- **AS-IS 참조 테이블 ({len(asis_tbls)}개)**: {at_str}")
+                if asis.get("functions"):
+                    out.append(
+                        f"- **AS-IS DB 함수 ({len(asis['functions'])}개)**: {', '.join(f'`{f}`' for f in asis['functions'])}"
+                    )
+
             if asis.get("events"):
-                out.append(f"- **AS-IS 주요 이벤트 ({len(asis['events'])}개)**:")
-                for ev in asis["events"][:15]:
+                events = asis["events"]
+                out.append(f"- **AS-IS 주요 이벤트 ({len(events)}개)**:")
+                ev_items = events[:6] if summary and len(events) > 6 else events[:15]
+                for ev in ev_items:
                     out.append(f"  - {ev}")
+                if summary and len(events) > 6:
+                    out.append(f"  - … 외 {len(events) - 6}개 이벤트 생략 (--summary)")
+
+    return "\n".join(out) + "\n"
 
     return "\n".join(out) + "\n"

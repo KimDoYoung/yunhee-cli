@@ -22,7 +22,7 @@ def test_screen_pair_has_reasons(world):
 def test_service_api_pairs_use_as_is_comments(world):
     text = "\n".join(trace_pair("Emp00_Tab_TransInfo", world.ctx, world.tobe).facts)
     assert "emp.Emp00_TransInfo.selectByText ↔ GET /api/v1/emp/trans-infos (EmpTransInfoController.searchTransInfos)" in text
-    assert "TOBE 호출: Emp00_Tab_TransInfo(empApi.searchTransInfos)" in text
+    assert "TOBE 호출: Emp00_Tab_TransInfo" in text and "(empApi.searchTransInfos)" in text
     assert "[근거: 컨트롤러 주석의 AS-IS 서비스 키; api 함수 주석의 AS-IS 서비스 키]" in text or "[근거: 컨트롤러 주석의 AS-IS 서비스 키]" in text
     # ASIS에만 있음 / 근거 없는 TOBE 호출은 따로 낸다
     assert "ASIS에만 있음 — TOBE에 대응 API 없음(2)" in text and "emp.Emp09_Etc.legacy" in text and "emp.Emp00_TransInfo.update" in text

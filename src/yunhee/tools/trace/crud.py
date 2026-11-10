@@ -59,6 +59,12 @@ def asis_matrix(doc: ScreenDoc, ops_by_sql: dict[str, dict[str, set[str]]], udm:
     return dict(m)
 
 
+def udm_c_only_tables(doc: ScreenDoc, a_mat: dict[str, set[str]], ops_by_sql: dict[str, dict[str, set[str]]]) -> set[str]:
+    """ASIS에서 SQL INSERT 문장 없이 UDM(updateModel)으로만 C가 들어간 테이블 집합."""
+    sql_c = {t for svc in doc.services for sid in svc.sql_ids for t, ops in ops_by_sql.get(sid, {}).items() if "C" in ops}
+    return {t for t, ops in a_mat.items() if "C" in ops and t not in sql_c}
+
+
 def tobe_matrix(names: list[str], idx: TobeIndex, ops_by_stmt: dict[str, dict[str, set[str]]]) -> dict[str, set[str]]:
     """ASIS 화면과 같은 이름의 TOBE TSX들이 api → 엔드포인트 → 서비스 → mapper 문장으로 닿는 {테이블: 작업}."""
     m: dict[str, set[str]] = defaultdict(set)
@@ -67,10 +73,12 @@ def tobe_matrix(names: list[str], idx: TobeIndex, ops_by_stmt: dict[str, dict[st
         if tsx is None:
             continue
         for obj, fn_name in tsx.api_calls:
-            fn = idx.api_fns.get((obj, fn_name))
-            if fn is None:
-                continue
-            for ep in idx.endpoint_of(fn):
+            eps = idx.endpoints_of_fn((obj, fn_name)) if hasattr(idx, "endpoints_of_fn") else []
+            if not eps:
+                fn = idx.api_fns.get((obj, fn_name))
+                if fn:
+                    eps = idx.endpoint_of(fn)
+            for ep in eps:
                 for st in idx.statements_of(ep):
                     for table, ops in ops_by_stmt.get(st.key, {}).items():
                         m[table] |= ops
@@ -117,6 +125,7 @@ def _compare(
     a: dict[str, set[str]],
     t: dict[str, set[str]],
     other_tobe: dict[str, list[str]] | None = None,
+    udm_c_only: set[str] | None = None,
 ) -> list[str]:
     lines = []
     for table in sorted(set(a) | set(t)):
@@ -133,7 +142,13 @@ def _compare(
             note = "  (TOBE에만)"
         elif sa != st:
             lost = sa - st
-            note = (f"  ⚠ TOBE에 {_fmt(lost)} 없음" if lost else "") + (f"  (TOBE에 {_fmt(st - sa)} 추가)" if st - sa else "")
+            c_note = ""
+            if udm_c_only and table in udm_c_only and "C" in lost and "U" in st:
+                lost = lost - {"C"}
+                c_note = "  (ASIS UDM 등록·수정 공용)"
+            warn = f"  ⚠ TOBE에 {_fmt(lost)} 없음" if lost else ""
+            added = f"  (TOBE에 {_fmt(st - sa)} 추가)" if st - sa else ""
+            note = f"{warn}{c_note}{added}"
         lines.append(f"  {table}: ASIS {_fmt(sa) or '-'} / TOBE {_fmt(st) or '-'}{note}")
     return lines
 
@@ -186,8 +201,9 @@ def trace_crud(
             return res
         screen_names = [name, *[c for c in doc.ui if c != name]]
         a, t = asis_matrix(doc, a_ops, udm), tobe_for(name, doc)
+        udm_c = udm_c_only_tables(doc, a, a_ops)
         other_tobe = _other_tobe_screens(doc, set(screen_names), idx, t_ops)
-        res.facts.append(f"화면 {name}: 테이블 {len(set(a) | set(t))}개 (ASIS {len(a)} / TOBE {len(t)})\n" + "\n".join(_compare(a, t, other_tobe=other_tobe)))
+        res.facts.append(f"화면 {name}: 테이블 {len(set(a) | set(t))}개 (ASIS {len(a)} / TOBE {len(t)})\n" + "\n".join(_compare(a, t, other_tobe=other_tobe, udm_c_only=udm_c)))
     elif table:
         tbl = table.lower()
         rows = []
@@ -195,9 +211,16 @@ def trace_crud(
             if f"`{tbl}`" not in " ".join(f"`{x}`" for x in doc.tables) and not any(tbl in (s.note or "") for s in doc.services):
                 continue
             a, t = asis_matrix(doc, a_ops, udm), tobe_for(name, doc)
+            udm_c = udm_c_only_tables(doc, a, a_ops)
             if tbl in a or tbl in t:
                 sa, st = a.get(tbl, set()), t.get(tbl, set())
-                rows.append(f"  {name}: ASIS {_fmt(sa) or '-'} / TOBE {_fmt(st) or '-'}" + (f"  ⚠ TOBE에 {_fmt(sa - st)} 없음" if sa - st and idx else ""))
+                lost = sa - st
+                c_note = ""
+                if tbl in udm_c and "C" in lost and "U" in st:
+                    lost = lost - {"C"}
+                    c_note = "  (ASIS UDM 등록·수정 공용)"
+                warn = f"  ⚠ TOBE에 {_fmt(lost)} 없음" if lost and idx else ""
+                rows.append(f"  {name}: ASIS {_fmt(sa) or '-'} / TOBE {_fmt(st) or '-'}{warn}{c_note}")
         res.facts.append(f"테이블 {tbl}을(를) 쓰는 화면 {len(rows)}개\n" + ("\n".join(rows) if rows else "  (없음 — 화면 서비스에서 이 테이블에 닿는 SQL이 없음)"))
     else:
         docs = _domain_docs(ctx, domain)
@@ -208,8 +231,13 @@ def trace_crud(
             lines, per_table = [], defaultdict(lambda: defaultdict(set))
             for _, name, doc in docs:
                 a, t = asis_matrix(doc, a_ops, udm), tobe_for(name, doc)
+                udm_c = udm_c_only_tables(doc, a, a_ops)
                 counts = {op: sum(op in v for v in a.values()) for op in ORDER}
-                lost = sorted(tb for tb in a if idx and name in idx.tsx and a[tb] - t.get(tb, set()) - {"R"})
+                lost = sorted(
+                    tb for tb in a
+                    if idx and name in idx.tsx
+                    and (a[tb] - t.get(tb, set()) - {"R"} - ({"C"} if tb in udm_c and "U" in t.get(tb, set()) else set()))
+                )
                 lines.append(
                     f"  {name}: ASIS 테이블 {len(a)}(" + " ".join(f"{op}{n}" for op, n in counts.items()) + f") / TOBE {len(t)}"
                     + ("" if idx and name in idx.tsx else " — TOBE에 화면 없음")

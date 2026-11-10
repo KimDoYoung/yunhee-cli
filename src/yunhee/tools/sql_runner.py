@@ -316,6 +316,47 @@ def get_connection_string(db_name: str | None = None) -> str | None:
     return db_url
 
 
+def _suggest_similar_columns(exc_str: str, query: str | None) -> str:
+    m_col = re.search(r'(?:column|열)\s+["\']?([a-zA-Z0-9_]+)["\']?\s+(?:does not exist|존재하지|이\(가\) 없습니다)', exc_str, re.IGNORECASE)
+    if not m_col:
+        return ""
+    wrong_col = m_col.group(1).lower()
+
+    tables = []
+    if query:
+        tables = [t.lower() for t in re.findall(r"\b(?:from|join|into|update)\s+([a-zA-Z0-9_]+)\b", query, re.IGNORECASE)]
+
+    try:
+        from yunhee.tools.schema_snapshot import load_snapshot
+
+        snap = load_snapshot(config.SCHEMA_ENV)
+        if not snap.ok or not snap.data:
+            return ""
+
+        table_cols: list[str] = []
+        all_snap_tables = snap.data.get("tables", [])
+        if tables:
+            for t in all_snap_tables:
+                if t["name"].lower() in tables:
+                    table_cols.extend(c["name"].lower() for c in t.get("columns", []))
+
+        if not table_cols:
+            for t in all_snap_tables:
+                table_cols.extend(c["name"].lower() for c in t.get("columns", []))
+
+        if not table_cols:
+            return ""
+
+        import difflib
+
+        candidates = difflib.get_close_matches(wrong_col, list(dict.fromkeys(table_cols)), n=3, cutoff=0.4)
+        if candidates:
+            return f"\n💡 비슷한 열: {', '.join(candidates)}"
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return ""
+
+
 def run_sql(
     query: str | None = None,
     file_path: Path | None = None,
@@ -474,7 +515,9 @@ def run_sql(
             conn.rollback()
         except Exception:  # noqa: BLE001, S110
             pass
-        return ToolResult(ok=False, error=f"SQL 실행 오류: {exc}")
+        exc_str = str(exc)
+        hint = _suggest_similar_columns(exc_str, query)
+        return ToolResult(ok=False, error=f"SQL 실행 오류: {exc_str}{hint}")
     finally:
         try:
             conn.rollback()

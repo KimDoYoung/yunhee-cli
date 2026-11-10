@@ -927,6 +927,7 @@ def test_resolve_as_is_paths_priority(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(config, "WORK_DIR", repo_root)
     monkeypatch.setattr("yunhee.tools.as_is.WORK_DIR", repo_root)
+    monkeypatch.setattr(config, "TOBE_SRC_DIR", None)
     monkeypatch.setattr(config, "SRC_INDEX_DIR", None)
     monkeypatch.delenv("YUNHEE_SRC_INDEX_DIR", raising=False)
     monkeypatch.setattr(config, "TOML_CONFIG", {})

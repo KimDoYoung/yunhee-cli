@@ -66,8 +66,8 @@ AS-IS에서 특정 팝업·조회창·편집창을 `new`하여 여는 모든 호
 
 ## 2. 비즈니스 로직 및 SQL 분석 (`method`, `sql`, `model`, `servlet`, `save-script`)
 
-### `yunhee analysis method <클래스>.<메서드>`
-AS-IS 및 TOBE 메서드의 본문 요약, 호출 흐름, 클라이언트/서버 연계 분석을 수행합니다.
+### `yunhee analysis method <클래스>[.<메서드>]`
+AS-IS 및 TOBE 메서드의 본문 요약, 호출 흐름, 클라이언트/서버 연계 분석을 수행합니다. 메서드명을 생략하고 `<클래스>`만 지정하면 클래스 내 정의된 모든 메서드 목록(줄 번호 및 가시성)을 출력합니다.
 - **주요 옵션**:
   - `--raw`: 요약뿐만 아니라 원문 코드까지 함께 출력
   - `--follow`: 서버 메서드 단순 위임(호출)을 1~2단계 추적
@@ -75,6 +75,7 @@ AS-IS 및 TOBE 메서드의 본문 요약, 호출 흐름, 클라이언트/서버
   - `--called-from <CLASS>`: 특정 호출 클래스 기준 오버로드 선택
 - **예시**:
   ```bash
+  yunhee analysis method Sys01_Tab_Company              # 클래스 내 메서드 목록 출력
   yunhee analysis method Emp03_TabPage_Detail.saveDetail
   yunhee analysis method SysService.saveCompany --follow
   ```

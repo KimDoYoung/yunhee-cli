@@ -272,7 +272,45 @@ def resolve(target: str, opts: dict[str, Any]) -> dict[str, Any]:
             pass
 
     if "." not in target_clean:
-        raise ValueError(f"올바른 형식(<클래스>.<메서드>)으로 입력해 주세요: {target}")
+        cls_name = target_clean
+        src_root, src_index = resolve_as_is_paths(
+            src=opts.get("src"),
+            src_index=opts.get("src_index"),
+        )
+        if not src_root or not src_root.is_dir():
+            raise ValueError("AS-IS 소스 디렉터리를 찾을 수 없습니다. --src 옵션을 지정하세요.")
+        app = find_app(src_root) or src_root
+        cand_files = [f for f in app.rglob(f"{cls_name}.java") if "target" not in f.parts]
+        if not cand_files:
+            cand_files = [f for f in src_root.rglob(f"{cls_name}.java") if "target" not in f.parts]
+        if not cand_files:
+            raise ValueError(f"클래스 소스 파일을 찾을 수 없습니다: {cls_name}.java")
+        target_file = cand_files[0]
+        full_text = target_file.read_text(encoding="utf-8", errors="replace")
+        _, bare = strip_java(full_text)
+        methods = find_methods(bare)
+        meth_info_list = []
+        for m in methods:
+            m_name = m[0]
+            start_idx = m[1]
+            line_no = full_text.count("\n", 0, start_idx) + 1
+            is_pub = m[4]
+            meth_info_list.append({
+                "name": m_name,
+                "line": line_no,
+                "public": is_pub,
+                "is_ctor": m_name == cls_name,
+            })
+        try:
+            rel_path = str(target_file.relative_to(src_root))
+        except ValueError:
+            rel_path = str(target_file)
+        return {
+            "class_methods_list": True,
+            "cls": cls_name,
+            "rel": rel_path,
+            "methods": meth_info_list,
+        }
 
     tokens = target_clean.split(".")
     if len(tokens) >= 3:
@@ -965,6 +1003,17 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
     """결과를 포맷에 맞게 렌더링한다."""
     if opts is None:
         opts = {}
+
+    if obj.get("class_methods_list"):
+        cls_name = obj["cls"]
+        rel_file = obj["rel"]
+        methods = obj.get("methods", [])
+        lines = [f"{cls_name}.java 메서드 목록 ({len(methods)}개)  {rel_file}:"]
+        for m in methods:
+            tag = " (생성자)" if m["is_ctor"] else (" [공개]" if m["public"] else "")
+            lines.append(f"  - {m['name']}() (L{m['line']}){tag}")
+        lines.append(f"\n💡 메서드 상세 분석: yunhee analysis method {cls_name}.<메서드명>")
+        return "\n".join(lines)
 
     if obj.get("multi_methods"):
         blocks = [

@@ -2,7 +2,27 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
-## [0.8.2] - 2026-11-09
+## [0.8.4] - 2026-11-10
+`trace-crud`·`trace-pair` 오탐 해결, `api` 테넌트·세션·응답 필터, `log trace` 원인 표시 및 편의 기능 개선
+- **`trace-crud` 쓰기(C/U/D) 집계 및 오탐 해소 (`src/yunhee/tools/trace/crud.py`, `src/yunhee/tools/trace/tobe.py`)**:
+  - TSX 내 다중 엔드포인트(`PUT`/`POST` 등)가 묶인 API 함수(`saveMenu` 등)의 CRUD 작업을 완전 추적하여 `#1077`, `#1078`, `#1197` 등의 쓰기 누락 오탐 해결.
+  - AS-IS `UpdateDataModel`의 `updateModel` 호출로 부여된 가상 C 작업에 대해 TOBE에서 U(수정)가 이미 충족된 경우 `⚠ TOBE에 C 없음` 경고 대신 `(ASIS UDM 등록·수정 공용)`으로 안내.
+- **`trace-pair` 함수 객체 속성 참조 추적 및 원본 변경 의심 감지 (`src/yunhee/tools/trace/tobe.py`, `src/yunhee/tools/trace/pair.py`)**:
+  - `save: sysApi.updateCodeKinds` 등 함수 호출 괄호 없이 객체 속성이나 인자로 전달된 API 함수 참조를 호출부로 인식하고 `파일:줄` 표시.
+  - TOBE 주석의 AS-IS 서비스 키와 현재 AS-IS 화면 호출 서비스 간 불일치(예: `updateByMenuYn` ↔ `insertByMenuYn`) 탐지 시 `💡 원본 변경 의심` 안내 출력.
+- **`api` 테넌트 자동 동기화, `--fresh` 세션 갱신 및 응답 필터 (`src/yunhee/config.py`, `src/yunhee/tools/api_client.py`, `src/yunhee/cli.py`)**:
+  - `-c <회사>` 지정 시 기본 테넌트를 해당 회사로 자동 설정하고 base URL 서브도메인 테넌트 반영. 머리 줄에 실제 접속 호스트 및 `login=new|reused` 표시.
+  - `--fresh` / `--no-session` 옵션으로 로그인 세션 재사용 방지 및 세션 갱신 지원.
+  - 응답 배열 필터링 옵션 `--fields a,b,c` (TSV 출력), `--where k=v` (행 조건 필터), `--count-by k` (값별 빈도 집계) 추가.
+- **`log trace` 원인 표시 및 편의 기능 (`src/yunhee/tools/log_reader.py`, `src/yunhee/tools/sql_runner.py`, `src/yunhee/tools/analysis/method.py`, `src/yunhee/cli.py`)**:
+  - HTTP 500 등 예외 발생 시 가장 안쪽 `Caused by:` / `### Cause:` 예외 메시지(SQLState 등)를 단일 요약 줄에 표시 (`api --log` 연동).
+  - 전체 Typer 명령어에 `-h`를 `--help`의 단축 옵션으로 지원.
+  - `yunhee analysis method <클래스>`(메서드 생략 시) 해당 클래스 내 정의된 전체 메서드 목록 출력.
+  - `sql` 실행 중 열 이름 오류 발생 시 스키마 스냅샷 기반 "비슷한 열" 추천.
+
+## [0.8.3] - 2026-11-09
+`screen-desc` 복수 화면번호 처리 보강 및 종합 요약 기능 개선
+- 복수 화면번호 쉼표/공백 구분 일괄 조회 및 각 화면별 요약 섹션 분리 지원.
 복수 화면번호 종합 조회 명령어 `yunhee screen-desc` (`--format=md|json`) 신설
 - **`yunhee screen-desc` 명령어 및 REPL `/screen-desc` 추가 (`src/yunhee/tools/trace/screen_desc.py`, `src/yunhee/cli.py`, `src/yunhee/ui/repl.py`)**:
   - `yunhee screen-desc 1111,2222,3333, 4444 [--format=md|json]`: 쉼표(`,`)와 공백(` `)이 혼합된 복수의 화면번호(또는 화면 클래스명)를 받아 메뉴명·메뉴 경로·프론트엔드 파일 경로·페이지 스타일·조회조건(`SearchBar`)·버튼·그리드 컬럼·**사용되는 모든 팝업/모달 창**·하위 탭페이지·백엔드 API·파일·MyBatis SQL ID·참조 DB 테이블·AS-IS 레거시 요약을 마크다운 또는 JSON으로 일괄 반환.

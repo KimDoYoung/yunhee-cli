@@ -296,6 +296,24 @@ def extract_events_and_methods(
 
         cond = detect_condition(event_name, body)
 
+        # 팝업/조회창 생성 및 open 콜백 흐름 탐지 (수정사항 050)
+        pop_new_m = re.search(r"new\s+([A-Za-z0-9_]*(?:Lookup|Edit|Popup|Move|Window|Dialog)[A-Za-z0-9_]*)\s*\(", body)
+        pop_open_prefix = ""
+        if pop_new_m:
+            p_cls = pop_new_m.group(1)
+            pop_open_m = re.search(r"\b(?:open|show)\s*\(\s*(?:new\s+\w*[cC]allback\w*\s*\([^)]*\)\s*\{([\s\S]*?)\}|([^)]*))\)", body)
+            if pop_open_m:
+                cb_body_str = pop_open_m.group(1) or ""
+                if cb_body_str:
+                    cb_meths = [
+                        f"{fn}()" for fn in re.findall(r"(?<![\w.])(?:this\.)?(\w+)\s*\(", cb_body_str)
+                        if fn in meth_names and fn != "execute"
+                    ]
+                    cb_meth_desc = ", ".join(dict.fromkeys(cb_meths)) if cb_meths else ""
+                    pop_open_prefix = f"new {p_cls}().open" + (f" → (콜백) {cb_meth_desc}" if cb_meth_desc else "")
+                else:
+                    pop_open_prefix = f"new {p_cls}().open"
+
         # 본문에서 호출하는 내부 메서드 및 callback.execute(...) 추출 (#16)
         call_items: list[tuple[int, str]] = []
         for cb_m in re.finditer(r"\b(\w*[cC]allback\w*)\.execute\s*\(([^)]*)\)", body):
@@ -308,7 +326,9 @@ def extract_events_and_methods(
         call_items.sort(key=lambda x: x[0])
         calls: list[str] = [item[1] for item in call_items]
 
-        if calls:
+        if pop_open_prefix:
+            action_desc = pop_open_prefix
+        elif calls:
             deduped_calls: list[str] = []
             for c in calls:
                 if not deduped_calls or deduped_calls[-1] != c:

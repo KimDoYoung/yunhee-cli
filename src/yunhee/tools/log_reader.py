@@ -372,9 +372,22 @@ def read_logs_docker(
     error_file = f"{log_dir}/{app}-error.log"
 
     if trace_id:
-        sh_cmd = f'grep -F -h "[{trace_id}]" {info_file} {error_file if include_error else ""} 2>/dev/null || true'
+        sh_cmd = (
+            f"awk -v tid=\"[{trace_id}]\" '"
+            r"index($0, tid) { matched=1; print; next } "
+            r"/^[0-9]{4}-[0-9]{2}-[0-9]{2} / { matched=0 } "
+            r"matched { print }' "
+            f'{info_file} {error_file if include_error else ""} 2>/dev/null || true'
+        )
         if archived:
-            sh_cmd += f'; zgrep -F -h "[{trace_id}]" {log_dir}/archived/*/{app}*.log.gz 2>/dev/null || true'
+            arch_cmd = (
+                f"zcat -f {log_dir}/archived/*/{app}*.log.gz 2>/dev/null | "
+                f"awk -v tid=\"[{trace_id}]\" '"
+                r"index($0, tid) { matched=1; print; next } "
+                r"/^[0-9]{4}-[0-9]{2}-[0-9]{2} / { matched=0 } "
+                r"matched { print }' 2>/dev/null || true"
+            )
+            sh_cmd += f"; {arch_cmd}"
         cmd = [
             "docker", "exec", container,
             "sh", "-c",
@@ -514,15 +527,24 @@ def read_logs_local(
             for gz_file in log_dir.glob(f"archived/*/{app}*.log.gz"):
                 try:
                     with gzip.open(gz_file, "rt", encoding="utf-8", errors="replace") as gf:
-                        for line in gf:
-                            if f"[{trace_id}]" in line:
-                                texts.append(line)
+                        texts.append(gf.read())
                 except OSError:
                     pass
 
         combined = "\n".join(texts)
-        lines = [l for l in combined.splitlines() if f"[{trace_id}]" in l]
-        return "\n".join(lines)
+        tid = f"[{trace_id}]"
+        matched_lines = []
+        in_record = False
+        for line in combined.splitlines():
+            if LINE_RE.match(line):
+                if tid in line:
+                    in_record = True
+                    matched_lines.append(line)
+                else:
+                    in_record = False
+            elif in_record:
+                matched_lines.append(line)
+        return "\n".join(matched_lines)
 
     today_date = datetime.now(UTC).date() if log_tz.upper() == "UTC" else datetime.now(KST).date()
 
@@ -1507,6 +1529,10 @@ def get_trace_summary(
             err_lines.append(f"  {t_str} {er.level} {er.logger} - {msg_first}")
             if er.extra_lines:
                 cb = next((el.strip() for el in reversed(er.extra_lines) if "Caused by:" in el), None)
+                if not cb:
+                    cb = next((el.strip() for el in reversed(er.extra_lines) if "### Cause:" in el), None)
+                if not cb:
+                    cb = next((el.strip() for el in reversed(er.extra_lines) if "PSQLException" in el or "ERROR:" in el), None)
                 if cb:
                     err_lines.append(f"    {cb}")
 

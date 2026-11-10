@@ -1,9 +1,8 @@
 import json
 import re
-import os
 import subprocess
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
 
 ASIS_SRC = Path("/home/kdy987/work/IDMS-IC")
 VI_BASE = ASIS_SRC / "application/src/main/java/myApp/client/vi"
@@ -56,7 +55,7 @@ res = subprocess.run([
     "uv", "run", "yunhee", "sql",
     "SELECT m.sys06_class_nm, p.sys06_menu_nm AS parent_nm, m.sys06_menu_nm, m.sys06_note, m.sys06_menu_no, m.sys06_use_yn FROM sys06_menu m LEFT JOIN sys06_menu p ON p.sys06_menu_id = m.sys06_parent_id WHERE m.sys06_class_nm IS NOT NULL AND m.sys06_class_nm <> ''",
     "--limit", "3000"
-], capture_output=True, text=True)
+], capture_output=True, text=True, check=False)
 
 menu_by_class = {}
 if res.returncode == 0:
@@ -86,7 +85,7 @@ all_vi_doms = sorted([d.name for d in VI_BASE.iterdir() if d.is_dir()])
 
 # Generate doc for a single domain
 def generate_domain_doc(dom: str):
-    kor_name, origin, dom_desc = domain_titles.get(dom, (f"{dom.upper()} 도메인", "", ""))
+    kor_name, _origin, _dom_desc = domain_titles.get(dom, (f"{dom.upper()} 도메인", "", ""))
     
     vi_dir = VI_BASE / dom
     srv_dir = SRV_BASE / dom

@@ -605,11 +605,13 @@ def _connect_backend_info(
     sql_ids: list[str] = []
     tables: list[str] = []
     for obj, fn_name in api_calls:
-        fn = idx.api_fns.get((obj, fn_name))
-        if not fn:
+        fns = getattr(idx, "api_fns_multi", {}).get((obj, fn_name)) or ([idx.api_fns[(obj, fn_name)]] if (obj, fn_name) in idx.api_fns else [])
+        if not fns:
             continue
-        apis.append(f"{fn.verb} {fn.url}")
-        for ep in idx.endpoint_of(fn):
+        for fn in fns:
+            apis.append(f"{fn.verb} {fn.url}")
+        eps = idx.endpoints_of_fn((obj, fn_name)) if hasattr(idx, "endpoints_of_fn") else idx.endpoint_of(fns[0])
+        for ep in eps:
             be_files.append(idx.rel(ep.file))
             ctrl_fields = idx.service_fields.get(ep.controller, {})
             for s_field, s_method in ep.service_calls:
@@ -621,7 +623,10 @@ def _connect_backend_info(
                 sql_ids.append(st.key)
                 rel_xml = idx.rel(st.file)
                 be_files.append(rel_xml)
-                if xml_tables_cache is not None:
+                st_tbls = getattr(st, "tables", None)
+                if st_tbls is not None:
+                    tables.extend(st_tbls)
+                elif xml_tables_cache is not None:
                     if st.file not in xml_tables_cache:
                         xml_p = Path(st.file)
                         if xml_p.is_file():
@@ -740,6 +745,107 @@ def _try_load_fresh_snapshot(layout: TobeLayout) -> list[ScreenRecord] | None:
         return None
 
 
+def _save_snapshot(layout: TobeLayout, records: list[ScreenRecord]) -> None:
+    """TOBE 카탈로그 레코드 목록을 .yunhee/tobe_catalog.json에 저장한다."""
+    try:
+        snap_path = get_catalog_snapshot_path(layout)
+        snap_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "tobe_root": str(layout.root),
+            "screen_count": len(records),
+            "screens": [s.to_dict() for s in records],
+        }
+        snap_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+
+def _load_or_update_snapshot(layout: TobeLayout) -> list[ScreenRecord] | None:
+    """TOBE 카탈로그 스냅샷을 로드하며, 변경된 파일만 증분 갱신(0.01~0.3초)하여 최신 상태를 유지한다."""
+    snap_records = _try_load_fresh_snapshot(layout)
+    if snap_records is not None:
+        return snap_records
+
+    snap_path = get_catalog_snapshot_path(layout)
+    existing_map: dict[str, dict[str, Any]] = {}
+    if snap_path.is_file():
+        try:
+            data = json.loads(snap_path.read_text(encoding="utf-8"))
+            for item in data.get("screens", []):
+                existing_map[item["name"]] = item
+        except Exception:  # noqa: BLE001
+            existing_map.clear()
+
+    tsx_files = _collect_tobe_tsx_files(layout)
+    disk_stems = {p.stem for p in tsx_files}
+
+    # 스냅샷이 일부 존재하면 변경된 파일만 증분 갱신
+    if existing_map:
+        stale_files: list[Path] = []
+        for p in tsx_files:
+            item = existing_map.get(p.stem)
+            if not item or abs(p.stat().st_mtime - float(item.get("mtime", 0.0))) > 0.01:
+                stale_files.append(p)
+
+        # 삭제된 파일 제거
+        for del_stem in [s for s in list(existing_map.keys()) if s not in disk_stems]:
+            existing_map.pop(del_stem, None)
+
+        if stale_files:
+            idx = build_index(str(layout.root))
+            reg_tabs, file_texts, _file_paths, rev = _build_reverse_imports(layout.frontend)
+            ctx = load_context("tobe")
+            menu_lookup = _load_full_menu_map(ctx, layout)
+            xml_tables_cache: dict[str, list[str]] = {}
+            root_str = str(layout.root)
+
+            for p in stale_files:
+                stem = p.stem
+                text = file_texts.get(stem) or p.read_text(encoding="utf-8", errors="replace")
+                info = idx.tsx.get(stem) or parse_tsx(text, str(p))
+                tabs = _find_opening_tabs(stem, reg_tabs, file_texts, rev)
+                primary_tab = tabs[0] if tabs else (stem if "_Tab_" in stem else "")
+                menu_no, menu_path, menu_name = _pick_full_menu(primary_tab or stem, menu_lookup, file_texts)
+                if not menu_no and info.header_menu_nos:
+                    menu_no = info.header_menu_nos[0]
+                apis, be_files, sql_ids, tables = _connect_backend_info(info.api_calls, idx, xml_tables_cache)
+                try:
+                    mtime = p.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                rec = ScreenRecord(
+                    name=stem,
+                    side="tobe",
+                    file=idx.rel(p),
+                    menu_no=menu_no,
+                    menu_path=menu_path,
+                    menu_name=menu_name,
+                    role=_infer_role(stem),
+                    page_style=_extract_page_style(text),
+                    opening_tabs=tabs,
+                    search_fields=_extract_search_fields(text),
+                    modals=extract_modals_from_tsx(text),
+                    grid_cols=info.grid_cols,
+                    buttons=info.buttons,
+                    apis=apis,
+                    backend_files=be_files,
+                    sql_ids=sql_ids,
+                    tables=tables,
+                    mtime=mtime,
+                    text=text,
+                    root_dir=root_str,
+                )
+                existing_map[stem] = rec.to_dict()
+
+        root_str = str(layout.root)
+        records = [ScreenRecord.from_dict(item, root_dir=root_str) for item in existing_map.values()]
+        _save_snapshot(layout, records)
+        return records
+
+    return None
+
+
 def _populate_children_and_hashes(records: list[ScreenRecord], file_texts: dict[str, str]) -> None:
     """상위 탭 ↔ 하위 컴포넌트 양방향 연결 및 content_hash 계산."""
     by_name = {r.name: r for r in records if r.side == "tobe"}
@@ -771,9 +877,9 @@ def _cached_catalog(side: str, tobe_root_str: str, src_index_str: str) -> list[S
     src_index_path = Path(src_index_str) if src_index_str else None
     layout = find_layout(tobe_path)
 
-    # TOBE 단독 조회 시 신선한 스냅샷이 있으면 즉시 반환 (~0.01s)
+    # TOBE 단독 조회 시 신선한 스냅샷 또는 증분 갱신이 가능하면 즉시 반환 (~0.01s - 0.2s)
     if side == "tobe" and layout.usable:
-        snap_records = _try_load_fresh_snapshot(layout)
+        snap_records = _load_or_update_snapshot(layout)
         if snap_records is not None:
             return snap_records
 
@@ -828,6 +934,7 @@ def _cached_catalog(side: str, tobe_root_str: str, src_index_str: str) -> list[S
             )
         _propagate_caller_modal_titles(records, file_texts, rev)
         _populate_children_and_hashes(records, file_texts)
+        _save_snapshot(layout, records)
 
     if side in ("asis", "both") and ctx.src_index and ctx.src_index.is_dir():
         for md_path in sorted(ctx.src_index.glob("*/*/*.md")):

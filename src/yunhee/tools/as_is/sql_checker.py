@@ -42,11 +42,18 @@ def render(node: Node, ns: str, statements: dict[str, Statement], seen: tuple[st
     return render_node(node, ns, statements, {}, mode="explain", seen=seen)
 
 
-def to_sql(st: Statement, statements: dict[str, Statement]) -> str:
+def to_sql(st: Any, statements: dict[str, Any]) -> str:
+    import re
     from yunhee.tools.as_is.mybatis_render import render as mr_render
 
-    sql, _ = mr_render(st.key, mode="explain", statements=statements)
-    return sql
+    if hasattr(st, "node"):
+        try:
+            sql, _ = mr_render(st.key, mode="explain", statements=statements)
+            return sql
+        except Exception:  # noqa: BLE001, S110
+            pass
+    raw = getattr(st, "raw", "") or ""
+    return re.sub(r"<[^>]+>", " ", raw).strip()
 
 
 

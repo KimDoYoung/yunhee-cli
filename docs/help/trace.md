@@ -41,12 +41,16 @@
 - **옵션**:
   - `-f, --format <md|json>`: 출력 포맷 지정 (기본: `md`)
   - `--json`: JSON 출력 단축 옵션 (`--format=json`과 동일)
+  - `-s, --summary`: 요약 모드 (메뉴·파일·그리드·버튼·팝업·API 핵심 요약만 표시하고 백엔드/SQL 상세 제외)
+  - `--section <NAMES>`: 특정 섹션만 선택 출력 (쉼표 구분: `tobe`, `popup`, `tabs`, `backend`, `asis`, `events`)
   - `--tobe <DIR>`: TOBE 프로젝트 루트 경로
 - **예시**:
   ```bash
   yunhee screen-desc 1002,1029, 1085
   yunhee screen-desc 1002 1029 --format=json
   yunhee screen-desc 1029 --format=md
+  yunhee screen-desc 1029 --summary
+  yunhee screen-desc 1029 --section tobe,popup,backend
   ```
 
 ---

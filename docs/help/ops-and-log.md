@@ -105,17 +105,24 @@ PostgreSQL 읽기 전용 쿼리를 실행하거나 `--rollback` 트랜잭션 격
 ### `yunhee api <method> <path>`
 자동 로그인 세션 기반으로 API를 호출하고 응답 요약(HTTP 상태, 행 수, 키 목록)만 2~3줄로 압축 출력합니다.
 - **주요 옵션**:
-  - `-c, --company <CODE>`: 로그인 회사 코드 (예: `kfstest`)
-  - `-t, --tenant <TENANT>`: 테넌트 식별자
+  - `-c, --company <CODE>`: 로그인 회사 코드 (예: `kfstest`, `kalpa`). `-t`를 생략하면 테넌트도 해당 회사로 기본 설정됩니다. base URL에 서브도메인이 있으면 해당 서브도메인이 테넌트로 자동 반영됩니다.
+  - `-t, --tenant <TENANT>`: 테넌트 식별자 (미지정 시 `-c` 회사 코드 또는 base URL 서브도메인, 기본 `admin`)
+  - `--fresh` / `--no-session`: 로그인 세션을 재사용하지 않고 이번 호출 전에 새로 로그인 (머리 줄에 `login=new|reused` 표시)
   - `-p, --param <key=val>`: 쿼리 파라미터 (**LIKE용 `%`는 `-p k=%`로 준다**. `%25` 등 이미 `%XX` 인코딩된 값은 이중 인코딩하지 않으며, 문자 그대로 `%25`를 보내야 할 때만 `--raw-param` 사용)
   - `--raw-param`: `-p` 값의 `%XX` 패턴을 디코딩하지 않고 문자 그대로 다시 URL 인코딩
   - `-b, --body <JSON>`: JSON 요청 본문
-  - `--log`: API 호출 직후 서버가 실제로 실행한 SQL 및 파라미터 요약 출력
+  - `--fields <a,b,c>`: 응답 배열의 지정된 필드들만 TSV 탭 구분 형태로 출력
+  - `--where <k=v>`: 응답 배열에서 특정 키=값 조건에 맞는 행만 필터링
+  - `--count-by <k>`: 응답 배열에서 특정 키의 값별 건수를 집계 요약 출력
+  - `--log`: API 호출 직후 서버가 실제로 실행한 SQL 및 파라미터 요약 출력 (500 에러 시 원인 `Caused by:` 한 줄 표시)
   - `--track <테이블>[,<테이블>]`: 호출 전후 지정 테이블의 행 수 변화 및 새로 생긴 PK(`information_schema` 기준)를 한 줄로 출력 (예: `biz05_relate_appr: 40 → 41 (+1: biz05_relate_appr_id=202611059009067)`, 삭제 시 `41 → 40 (-1)`, 실패 시 `변화 없음`)
 - **예시**:
   ```bash
   yunhee api GET /api/v1/sys/roles
+  yunhee api GET /api/v1/sys/menus -c kalpa --fresh
   yunhee api GET /api/v1/sys/companies -c kfstest -t admin --log
+  yunhee api GET /api/v1/sys/corps -c kalpa -p corpType=% --count-by corpTypeName
+  yunhee api GET /api/v1/sys/calendars -c kalpa -p year=2026 --where workingYn=false --fields day,weekday,offReason
   yunhee api POST /api/v1/biz/relate-apprs/promo -t admin -c kfstest -b '{"promoId":202204280115828,"apprId":202509189046469}' --track biz05_relate_appr
   yunhee api DELETE /api/v1/biz/relate-apprs -t admin -c kfstest -b '[202611059009067]' --track biz05_relate_appr
   ```

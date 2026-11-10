@@ -57,7 +57,7 @@
 - `analysis servlet <서블릿클래스>`: 서블릿 클래스 및 fileType 분기 처리 로직 분석
 
 ### 3. 업무 파악 및 종합 추적 (`trace.md`)
-- `screen-desc <targets...> [--format=md|json]`: 쉼표·공백으로 구분된 복수 화면번호(예: `1111,2222,3333, 4444`)의 메뉴명·파일명·사용 팝업·하위 컴포넌트·그리드·버튼·API·SQL·테이블·ASIS 정보를 일괄 반환
+- `screen-desc <targets...> [--format=md|json] [--summary] [--section ...]`: 쉼표·공백으로 구분된 복수 화면번호(예: `1111,2222,3333, 4444`)의 메뉴명·파일명·사용 팝업·하위 컴포넌트·그리드·버튼·API·SQL·테이블·ASIS 정보를 일괄 반환 (--summary 축약 및 --section 필터링 지원)
 - `trace-map`: 업무 영역별 화면 수, 테이블 수, 매핑 진행 상태 요약
 - `trace-menu [menu_path]`: AS-IS 메뉴 트리 구조 → 화면 클래스 → TOBE 화면/API 연계 경로 추적
 - `trace-screen <screen_id>`: 단일 화면의 종합 팩트시트(라벨, 그리드, 버튼, 이벤트, RPC, SQL, 테이블, DB함수) 추출

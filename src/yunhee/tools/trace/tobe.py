@@ -8,6 +8,7 @@ trace-pair/diff/gap은 이 주석을 **근거**로 짝을 짓는다. 이름이 �
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -120,14 +121,15 @@ def parse_api_ts(text: str, file: str) -> list[ApiFn]:
             continue
         if not obj or not (m := _API_FN.match(line)):
             continue
-        # 이 함수 본문(다음 함수 시작 전)에서 apiClient 호출 하나를 찾는다
+        # 이 함수 본문(다음 함수 시작 전)에서 apiClient 호출들을 모두 찾는다
         end = i + 1
         while end < len(lines) and not _API_FN.match(lines[end]) and not _API_OBJ.match(lines[end]):
             end += 1
         body = "\n".join(lines[i:end])
-        call = _API_CALL.search(body)
-        if call:
-            fns.append(ApiFn(obj, m.group(1), call.group(1).upper(), normalize_url(call.group(3)), file, i + 1, _keys(_doc_above(lines, i))))
+        calls = list(_API_CALL.finditer(body))
+        keys = _keys(_doc_above(lines, i))
+        for call in calls:
+            fns.append(ApiFn(obj, m.group(1), call.group(1).upper(), normalize_url(call.group(3)), file, i + 1, keys))
     return fns
 
 
@@ -240,6 +242,7 @@ def field_types(text: str) -> dict[str, str]:
 
 _ASIS_SQL_ID = re.compile(r"\b([a-z]{2,6}\d{2}_[a-z0-9_]+|dbConfig)\.([A-Za-z]\w*)\b", re.ASCII)  # emp00_trans_info.selectByText
 _STMT = re.compile(r"<(select|insert|update|delete)\b[^>]*\bid=\"([^\"]+)\"", re.IGNORECASE)
+_TABLE_NAME_RE = re.compile(r"\b(?:from|join|update|into)\s+([a-z]{2,5}\d{2}_[a-z0-9_]+)\b")
 
 
 @dataclass
@@ -251,6 +254,7 @@ class MapperStatement:
     kind: str
     as_is_ids: list[str] = field(default_factory=list)  # ASIS statement id (`ns.sid`) 또는 sid
     comment: str = ""
+    tables: list[str] = field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -280,8 +284,22 @@ def parse_mapper_xml(text: str, file: str) -> tuple[list[MapperStatement], str, 
             for bare in re.findall(r"AS-IS\s+(?:[\w/]*/)?([a-z][A-Za-z0-9_]*)\s+L\d+", comment):
                 if asis_ns and "." not in bare:
                     ids.append(f"{asis_ns}.{bare}")
+        kind = m.group(1).lower()
+        end_tag = f"</{kind}>"
+        pos = text.lower().find(end_tag, m.end())
+        body = text[m.start() : pos + len(end_tag)] if pos != -1 else text[m.start() : m.start() + 2000]
+        stmt_tables = list(dict.fromkeys(_TABLE_NAME_RE.findall(body.lower())))
         stmts.append(
-            MapperStatement(ns, m.group(2), file, _line_of(text, m.start()), m.group(1).lower(), list(dict.fromkeys(ids)), re.sub(r"\s+", " ", comment)[:200])
+            MapperStatement(
+                ns,
+                m.group(2),
+                file,
+                _line_of(text, m.start()),
+                kind,
+                list(dict.fromkeys(ids)),
+                re.sub(r"\s+", " ", comment)[:200],
+                tables=stmt_tables,
+            )
         )
     return stmts, asis_ns, header_ids
 
@@ -320,21 +338,105 @@ class TsxInfo:
     buttons: list[str]
     impl_events: set[str]
     skipped_events: set[str]
+    api_call_lines: dict[tuple[str, str], list[int]] = field(default_factory=dict)
 
 
-_GB = re.compile(r"\b\w*gb\.(\w+)\(\s*(['\"])([^'\"]+)\2\s*,\s*([^,]+?)\s*,\s*(['\"])(.*?)\5")
+_GB = re.compile(r"\b\w*gb\w*\.(\w+)\(\s*(['\"])(.*?)\2\s*,\s*([^,]+?)\s*,\s*(['\"])(.*?)\5")
 
 
 def _extract_grid_cols(text: str) -> list[GridCol]:
     cols: list[GridCol] = []
+    seen: set[tuple[str, str]] = set()
     for m in _GB.finditer(text):
         col_type = m.group(1)
         field_name = m.group(3)
         w_str = m.group(4).strip()
         width = int(w_str) if w_str.isdigit() else 0
         label = m.group(6)
-        cols.append(GridCol(field_name, label, col_type=col_type, width=width))
+        key = (field_name, label)
+        if key not in seen:
+            seen.add(key)
+            cols.append(GridCol(field_name, label, col_type=col_type, width=width))
+    # ColDef 직접 객체 리터럴: { field: '...', headerName: '...' }
+    if not cols:
+        for m_col in re.finditer(r"\{\s*(?:[^{}]*?\bfield\s*:\s*['\"]([^'\"]+)['\"][^{}]*?\bheaderName\s*:\s*['\"]([^'\"]+)['\"]|[^{}]*?\bheaderName\s*:\s*['\"]([^'\"]+)['\"][^{}]*?\bfield\s*:\s*['\"]([^'\"]+)['\"])", text):
+            fld = m_col.group(1) or m_col.group(4)
+            lbl = m_col.group(2) or m_col.group(3)
+            key = (fld, lbl)
+            if key not in seen:
+                seen.add(key)
+                cols.append(GridCol(fld, lbl, col_type="text", width=0))
     return cols
+
+
+def _extract_buttons_from_tsx(text: str) -> list[str]:
+    btns: list[str] = []
+
+    # 1. JSX <Button ...>...</Button> 태그 파싱
+    for m in re.finditer(r"<Button\b", text):
+        start = m.start()
+        i = m.end()
+        n = len(text)
+        brace = 0
+        quote = None
+        tag_open_end = -1
+        while i < n:
+            ch = text[i]
+            if quote:
+                if ch == "\\":
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = None
+            else:
+                if ch in ('"', "'", "`"):
+                    quote = ch
+                elif ch == "{":
+                    brace += 1
+                elif ch == "}":
+                    brace = max(0, brace - 1)
+                elif brace == 0 and ch == ">":
+                    tag_open_end = i + 1
+                    break
+            i += 1
+        if tag_open_end != -1:
+            close_idx = text.find("</Button>", tag_open_end)
+            if close_idx != -1 and close_idx - tag_open_end < 500:
+                inner = text[tag_open_end:close_idx]
+                clean = re.sub(r"<[^>]+>", "", inner).strip()
+                clean = re.sub(r"\{[^}]*\}", "", clean).strip()
+                if clean:
+                    btns.append(clean)
+                else:
+                    attrs = text[start:tag_open_end]
+                    t_m = re.search(r"\b(?:title|label)\s*=\s*['\"]([^'\"]+)['\"]", attrs)
+                    if t_m:
+                        btns.append(t_m.group(1).strip())
+
+    # 2. SearchBar onSearch -> 조회
+    if re.search(r"<SearchBar\b[^>]*?\bonSearch\b", text) and "조회" not in btns:
+        btns.insert(0, "조회")
+
+    # 3. ModalEditGrid editButton -> 수정
+    m_edit = re.search(r"<ModalEditGrid\b[^>]*?\beditButton(?:=\{?['\"]?([^'\"}>]+)['\"]?\}?)?", text)
+    if m_edit:
+        eb_val = m_edit.group(1)
+        lbl = "수정" if (not eb_val or eb_val in ("true", "")) else eb_val.strip()
+        if lbl not in btns:
+            btns.append(lbl)
+
+    # 4. 이벤트 주석의 버튼 대괄호 라벨 보조 ([E4] retrieveButton[조회].Select 또는 [E3] createRoot[루트매뉴 등록].Select)
+    for b in re.findall(r"\[E\d+\]\s*[A-Za-z0-9_]*\[([^\]]+)\]", text):
+        clean_b = b.strip()
+        if (
+            clean_b
+            and not clean_b.startswith(("http", "L", "선택", "Enter", "data", "arg"))
+            and len(clean_b) <= 20
+            and clean_b not in btns
+        ):
+            btns.append(clean_b)
+
+    return list(dict.fromkeys(btns))
 
 
 def event_ids(text: str) -> tuple[set[str], set[str]]:
@@ -356,20 +458,28 @@ def parse_tsx(text: str, file: str) -> TsxInfo:
     menu = re.findall(r"\[(\d{3,4})\]", head.split("*/")[0] if "*/" in head else head)
     as_is = (re.search(r"AS-IS[^:\n]*:\s*(\S+\.java)", head) or [None, ""])[1]
     impl, skip = event_ids(text)
+
+    api_calls: list[tuple[str, str]] = []
+    api_call_lines: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        code_part = line.split("//")[0]
+        for m in re.finditer(r"\b(\w+Api)\s*\.\s*(\w+)\b", code_part):
+            key = (m.group(1), m.group(2))
+            if key not in api_calls:
+                api_calls.append(key)
+            api_call_lines[key].append(line_no)
+
     return TsxInfo(
-        name=Path(file).stem, file=file, header_menu_nos=menu, as_is_file=as_is,
-        api_calls=list(dict.fromkeys(re.findall(r"\b(\w+Api)\s*\.\s*(\w+)\s*\(", text))),
+        name=Path(file).stem,
+        file=file,
+        header_menu_nos=menu,
+        as_is_file=as_is,
+        api_calls=api_calls,
         grid_cols=_extract_grid_cols(text),
-        # 라벨은 <Button> 안의 글자와, 이벤트 주석 `[E4] retrieveButton[조회].Select`의 대괄호 라벨(SearchBar 등 안에 있는 버튼)
-        buttons=list(dict.fromkeys(
-            [
-                re.sub(r"^[\s\S]*\}>\s*", "", b).strip()
-                for b in re.findall(r"<Button\b(?:[^>=]|=>)*>\s*([^<{][^<]*?)\s*</Button>", text)
-                if re.sub(r"^[\s\S]*\}>\s*", "", b).strip()
-            ]
-            + re.findall(r"\[E\d+\]\s*\w*[Bb]utton\w*\[([^\]]+)\]", text)
-        )),
-        impl_events=impl, skipped_events=skip,
+        buttons=_extract_buttons_from_tsx(text),
+        impl_events=impl,
+        skipped_events=skip,
+        api_call_lines=dict(api_call_lines),
     )
 
 
@@ -381,6 +491,7 @@ class TobeIndex:
     layout: TobeLayout
     tsx: dict[str, TsxInfo] = field(default_factory=dict)  # 클래스명 → TSX
     api_fns: dict[tuple[str, str], ApiFn] = field(default_factory=dict)
+    api_fns_multi: dict[tuple[str, str], list[ApiFn]] = field(default_factory=dict)
     endpoints: list[Endpoint] = field(default_factory=list)
     services: dict[tuple[str, str], ServiceMethod] = field(default_factory=dict)  # (서비스 클래스, 메서드)
     service_fields: dict[str, dict[str, str]] = field(default_factory=dict)  # 컨트롤러 클래스 → {필드: 타입}
@@ -393,7 +504,27 @@ class TobeIndex:
         return [e for e in self.endpoints if key in e.keys]
 
     def endpoint_of(self, fn: ApiFn) -> list[Endpoint]:
-        return [e for e in self.endpoints if e.verb == fn.verb and e.path == fn.url]
+        fns = self.api_fns_multi.get((fn.obj, fn.name), [fn])
+        matched: list[Endpoint] = []
+        for f in fns:
+            for e in self.endpoints:
+                if e.verb == f.verb and e.path == f.url and e not in matched:
+                    matched.append(e)
+        return matched
+
+    def endpoints_of_fn(self, target: ApiFn | tuple[str, str]) -> list[Endpoint]:
+        if isinstance(target, ApiFn):
+            fns = self.api_fns_multi.get((target.obj, target.name), [target])
+        else:
+            fns = self.api_fns_multi.get(target, [])
+            if not fns and target in self.api_fns:
+                fns = [self.api_fns[target]]
+        eps: list[Endpoint] = []
+        for fn in fns:
+            for ep in self.endpoints:
+                if ep.verb == fn.verb and ep.path == fn.url and ep not in eps:
+                    eps.append(ep)
+        return eps
 
     def statements_of(self, ep: Endpoint) -> list[MapperStatement]:
         """엔드포인트 → 서비스 → mapper 호출을 따라간 XML 문장들."""
@@ -430,7 +561,9 @@ def build_index(root: str) -> TobeIndex:
     if layout.api_dir.is_dir():
         for p in sorted(layout.api_dir.glob("*.ts")):
             for fn in parse_api_ts(p.read_text(encoding="utf-8", errors="replace"), str(p)):
-                idx.api_fns[(fn.obj, fn.name)] = fn
+                idx.api_fns_multi.setdefault((fn.obj, fn.name), []).append(fn)
+                if (fn.obj, fn.name) not in idx.api_fns:
+                    idx.api_fns[(fn.obj, fn.name)] = fn
     if layout.java_dir.is_dir():
         for p in sorted(layout.java_dir.rglob("*.java")):
             text = p.read_text(encoding="utf-8", errors="replace")

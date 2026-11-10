@@ -243,17 +243,32 @@ def header_tag(
     tenant: str | None = None,
     company_code: str | None = None,
     trace_id: str | None = None,
+    login_status: str | None = None,
 ) -> str:
-    """결과 머리 태그 — 예: [AssetERP_1 · tenant=admin · company=kfstest · trace=95694936e2a3b376]"""
+    """결과 머리 태그 — 예: [AssetERP_1 · kalpa.localhost:8082 · tenant=kalpa · company=kalpa · login=reused · trace=95694936e2a3b376]"""
     parts = []
     if base_url:
         parsed = urlparse(base_url)
         path_part = parsed.path.strip("/")
-        parts.append(path_part.split("/")[-1] if path_part else (parsed.netloc or "default"))
+        app_name = path_part.split("/")[-1] if path_part else (parsed.netloc or "default")
+        port = parsed.port
+        if tenant:
+            host_tmpl = config.API_TENANT_HOST.format(tenant=tenant)
+            effective_host = f"{host_tmpl}:{port}" if port else host_tmpl
+        elif parsed.netloc:
+            effective_host = parsed.netloc
+        else:
+            effective_host = ""
+
+        parts.append(app_name)
+        if effective_host and effective_host != app_name:
+            parts.append(effective_host)
     if tenant:
         parts.append(f"tenant={tenant}")
     if company_code:
         parts.append(f"company={company_code}")
+    if login_status:
+        parts.append(f"login={login_status}")
     if trace_id:
         parts.append(f"trace={trace_id}")
     return f"[{' · '.join(parts)}]" if parts else ""
@@ -272,6 +287,7 @@ def summarize_response(
     user_info: dict[str, Any] | None = None,
     notice: str | None = None,
     upload_info: list[str] | None = None,
+    login_status: str | None = None,
 ) -> str:
     """응답을 토큰 절약형 1~4줄 요약으로 가공한다."""
     def _finalize(s: str) -> str:
@@ -283,7 +299,7 @@ def summarize_response(
 
     duration_sec = f"{duration_ms / 1000:.2f}s"
     lines = []
-    tag = header_tag(base_url, tenant, company_code, trace_id=trace_id)
+    tag = header_tag(base_url, tenant, company_code, trace_id=trace_id, login_status=login_status)
     if tag:
         lines.append(tag)
 
@@ -606,6 +622,7 @@ def request_api(
     wait_deploy: float | None = None,
     raw_param: bool = False,
     track: str | list[str] | None = None,
+    fresh: bool = False,
 ) -> ToolResult:
     """인증 세션을 사용하여 API를 호출하고 결과를 요약 반환한다.
     
@@ -649,10 +666,17 @@ def request_api(
         return ToolResult(ok=False, error=str(exc))
 
     comp = company_code or config.TEST_COMPANY
-    session = _load_session(user, base_url, tenant, comp)
-    had_existing_session = session is not None
+    if fresh:
+        _clear_session(user, base_url, tenant, comp)
+        session = None
+        had_existing_session = False
+    else:
+        session = _load_session(user, base_url, tenant, comp)
+        had_existing_session = session is not None
     if session and session.get("user_info"):
         user_info = session.get("user_info")
+
+    login_status = "reused" if had_existing_session else "new"
 
     conf_pfx = config.TOML_CONFIG.get("api", {}).get("auto_prefix")
     auto_prefix = "/api/v1/" if conf_pfx is None else (conf_pfx or "")
@@ -681,6 +705,7 @@ def request_api(
             # 로그인 실패 시 실패 메시지를 숨기지 않고 즉시 반환하여 중단!
             return ToolResult(ok=False, error=login_res.error)
         session = login_res.data
+        login_status = "new"
         if session and session.get("user_info"):
             user_info = session.get("user_info")
 
@@ -744,6 +769,7 @@ def request_api(
             return ToolResult(ok=False, error=f"세션 만료 후 재로그인 실패: {login_res.error}")
 
         session = login_res.data
+        login_status = "new"
         if session and session.get("user_info"):
             user_info = session.get("user_info")
         new_headers = dict(session.get("headers", {}))
@@ -824,6 +850,7 @@ def request_api(
         user_info=user_info,
         notice=notice,
         upload_info=upload_info or None,
+        login_status=login_status,
     )
     track_lines = format_table_tracks(before_track_snaps) if before_track_snaps else []
     if track_lines:
@@ -838,6 +865,7 @@ def request_api(
             "trace_id": trace_id,
             "user_info": user_info,
             "track": track_lines,
+            "login_status": login_status,
         },
         error=None if resp.is_success else f"HTTP {resp.status_code}",
     )

@@ -98,13 +98,23 @@ def pair_services(doc: ScreenDoc, idx: TobeIndex, tsx_list: list[TsxInfo]) -> tu
     """ASIS 서비스 ↔ TOBE 엔드포인트. 두 번째 값은 TOBE 화면이 부르지만 짝이 없는 엔드포인트."""
     # api 함수의 주석에 적힌 서비스 키 → api 함수
     fn_by_key: dict[str, list[ApiFn]] = {}
-    for fn in idx.api_fns.values():
+    all_api_fns: list[ApiFn] = []
+    if hasattr(idx, "api_fns_multi") and idx.api_fns_multi:
+        for fns in idx.api_fns_multi.values():
+            all_api_fns.extend(fns)
+    else:
+        all_api_fns.extend(idx.api_fns.values())
+
+    for fn in all_api_fns:
         for k in fn.keys:
             fn_by_key.setdefault(k, []).append(fn)
-    called: dict[tuple[str, str], list[str]] = {}
+
+    called: dict[tuple[str, str], list[tuple[str, int | None]]] = {}
     for t in tsx_list:
         for obj, fn in t.api_calls:
-            called.setdefault((obj, fn), []).append(t.name)
+            lines = getattr(t, "api_call_lines", {}).get((obj, fn), [])
+            line_no = lines[0] if lines else None
+            called.setdefault((obj, fn), []).append((t.name, line_no))
 
     pairs: list[ServicePair] = []
     matched_eps: set[int] = set()
@@ -121,20 +131,24 @@ def pair_services(doc: ScreenDoc, idx: TobeIndex, tsx_list: list[TsxInfo]) -> tu
         sp.endpoints = eps
         for ep in eps:
             matched_eps.add(id(ep))
-        for fn in list(idx.api_fns.values()):
+        for fn in all_api_fns:
             if any(ep in idx.endpoint_of(fn) for ep in eps) and (fn.obj, fn.name) in called:
-                for owner in called[(fn.obj, fn.name)]:
-                    sp.tsx_calls.append(f"{owner}({fn.obj}.{fn.name})")
+                for owner, line_no in called[(fn.obj, fn.name)]:
+                    loc = f"{owner}.tsx:{line_no}" if line_no else owner
+                    call_desc = f"{loc}({fn.obj}.{fn.name})"
+                    if call_desc not in sp.tsx_calls:
+                        sp.tsx_calls.append(call_desc)
         pairs.append(sp)
 
     tobe_only: list[tuple[Endpoint, str]] = []
     for (obj, name), owners in called.items():
-        fn = idx.api_fns.get((obj, name))
-        if fn is None:
-            continue
-        for ep in idx.endpoint_of(fn):
-            if id(ep) not in matched_eps:
-                tobe_only.append((ep, f"{owners[0]}({obj}.{name})"))
+        fns = getattr(idx, "api_fns_multi", {}).get((obj, name)) or ([idx.api_fns[(obj, name)]] if (obj, name) in idx.api_fns else [])
+        for fn in fns:
+            for ep in idx.endpoint_of(fn):
+                if id(ep) not in matched_eps:
+                    owner, line_no = owners[0]
+                    loc = f"{owner}.tsx:{line_no}" if line_no else owner
+                    tobe_only.append((ep, f"{loc}({obj}.{name})"))
     return pairs, list({id(e): (e, w) for e, w in tobe_only}.values())
 
 
@@ -231,6 +245,24 @@ def trace_pair(target: str, ctx: TraceContext, tobe: Path | None = None) -> Trac
             f"TOBE에만 있음 — 화면이 부르는데 이 ASIS 화면의 서비스와 짝이 없는 API({len(tobe_only)}):\n"
             + "\n".join(f"  - {ep.verb} {ep.path} ({ep.controller}.{ep.method}) — TOBE 호출: {who}" + (f" [AS-IS 주석: {', '.join(ep.keys)}]" if ep.keys else " [AS-IS 주석 없음]") for ep, who in tobe_only)
         )
+
+    # 원본 변경 의심 탐지 (수정사항 051 §7)
+    suspicions = []
+    for ep, _who in tobe_only:
+        for k in ep.keys:
+            parts = k.split(".")
+            cls_part = ".".join(parts[:-1]) if len(parts) > 1 else ""
+            method_part = parts[-1]
+            for m in missing:
+                m_parts = m.service.key.split(".")
+                m_cls_part = ".".join(m_parts[:-1]) if len(m_parts) > 1 else ""
+                m_method_part = m_parts[-1]
+                if cls_part and cls_part == m_cls_part and method_part != m_method_part:
+                    suspicions.append(
+                        f"💡 원본 변경 의심: TOBE 주석의 서비스 {method_part}을 현재 AS-IS는 부르지 않고 {m_method_part}을 부른다"
+                    )
+    if suspicions:
+        res.facts.append("\n".join(dict.fromkeys(suspicions)))
 
     # SQL 짝
     a_stmts, t_stmts = asis_statements(ctx), tobe_statements(idx)

@@ -342,14 +342,15 @@ def test_api_and_compare_stop_without_tenant(monkeypatch):
     monkeypatch.setattr(config, "API_DEFAULT_TENANT", None)
     monkeypatch.setattr(config, "TEST_COMPANY", None)
     runner = CliRunner()
-    r1 = runner.invoke(cli.app, ["api", "GET", "/api/v1/sys/roles", "-c", "kfstest"])
-    r2 = runner.invoke(cli.app, ["compare", "GET", "/api/v1/sys/roles", "-c", "kfstest", "--sql", "sys04_role.selectByName"])
+    r1 = runner.invoke(cli.app, ["api", "GET", "/api/v1/sys/roles", "-c", "admin"])
+    r2 = runner.invoke(cli.app, ["compare", "GET", "/api/v1/sys/roles", "-c", "admin", "--sql", "sys04_role.selectByName"])
     assert r1.exit_code == 1 and "admin 테넌트" in r1.output
     assert r2.exit_code == 1 and "admin 테넌트" in r2.output
 
 
 def test_header_tag():
-    assert api_client.header_tag("http://localhost:8082/AssetERP_1", "admin", "kfstest") == "[AssetERP_1 · tenant=admin · company=kfstest]"
+    tag = api_client.header_tag("http://localhost:8082/AssetERP_1", "admin", "kfstest")
+    assert "AssetERP_1" in tag and "tenant=admin" in tag and "company=kfstest" in tag
     assert api_client.header_tag() == ""
 
 

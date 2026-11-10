@@ -29,7 +29,11 @@ from yunhee.tools.as_is.sql_checker import check_sql
 from yunhee.tools.as_is.src_indexer import index_src
 from yunhee.tools.trace import register_trace_commands
 
-app = typer.Typer(rich_markup_mode="rich", add_completion=False)
+app = typer.Typer(
+    rich_markup_mode="rich",
+    add_completion=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 
 
 def _version_callback(value: bool) -> None:
@@ -955,8 +959,14 @@ def api(
     no_mask: Annotated[bool, typer.Option("--no-mask", help="개인정보 마스킹 해제")] = False,
     wait_deploy: Annotated[float | None, typer.Option("--wait-deploy", help="배포 후 앱 기동 완료까지 대기(초, 기본 60초)")] = None,
     track: Annotated[str | None, typer.Option("--track", help="호출 전후 테이블 행 수 및 신규 PK 추적 (쉼표 구분, 예: biz02_person,biz05_relate_appr)")] = None,
+    fresh: Annotated[bool, typer.Option("--fresh", "--no-session", help="기존 로그인 세션을 무시하고 새로 로그인 (기본: 테넌트·계정별 세션 재사용)")] = False,
+    fields: Annotated[str | None, typer.Option("--fields", help="출력할 필드 목록 (쉼표 구분 TSV)")] = None,
+    where: Annotated[list[str] | None, typer.Option("--where", help="행 필터 key=val (반복 가능)")] = None,
+    count_by: Annotated[str | None, typer.Option("--count-by", help="지정 필드의 값별 행 수 집계")] = None,
 ):
     """자동 로그인 기반 API 호출 및 응답(상태·행수·필드) 요약
+
+    로그인 성공 세션을 테넌트·계정별로 재사용하며, --fresh(--no-session)로 재로그인을 강제할 수 있습니다.
 
 [bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
   수천 줄의 원시 응답 JSON 대신 이 명령으로 행 수(rows=N)와 키 목록만 2~3줄로 확인하여 토큰을 절약하세요.
@@ -993,7 +1003,7 @@ def api(
             raise typer.Exit(code=1)
 
     target_base = base or config.API_BASE_URL
-    target_tenant = config.resolve_api_tenant(tenant)
+    target_tenant = config.resolve_api_tenant(tenant, company=company, base_url=target_base)
 
     if company and not target_tenant:
         typer.echo(TENANT_REQUIRED_MSG, err=True)
@@ -1019,6 +1029,7 @@ def api(
         wait_deploy=wait_deploy,
         raw_param=raw_param,
         track=track,
+        fresh=fresh,
         **kw,
     )
 
@@ -1026,8 +1037,82 @@ def api(
         typer.echo(f"오류: {res.error}", err=True)
         raise typer.Exit(code=1)
 
-    if raw:
+    if raw and not (fields or where or count_by):
         print(res.data.get("text", ""))
+        for tline in res.data.get("track") or []:
+            print(tline)
+    elif fields or where or count_by:
+        raw_text = res.data.get("text", "")
+        try:
+            parsed_data = json.loads(raw_text)
+        except Exception:  # noqa: BLE001
+            parsed_data = None
+
+        rows = []
+        if isinstance(parsed_data, dict):
+            if isinstance(parsed_data.get("data"), list):
+                rows = parsed_data["data"]
+            elif isinstance(parsed_data.get("items"), list):
+                rows = parsed_data["items"]
+            elif "data" in parsed_data and isinstance(parsed_data["data"], dict):
+                rows = [parsed_data["data"]]
+            else:
+                rows = [parsed_data]
+        elif isinstance(parsed_data, list):
+            rows = parsed_data
+
+        # 1. --where 필터 적용
+        if where and rows:
+            for w in where:
+                if "=" in w:
+                    wk, wv = w.split("=", 1)
+                    wk, wv = wk.strip(), wv.strip()
+                    filtered = []
+                    for r in rows:
+                        if not isinstance(r, dict):
+                            continue
+                        val = r.get(wk)
+                        if wv.lower() in ("true", "false"):
+                            if str(val).lower() == wv.lower():
+                                filtered.append(r)
+                        elif wv.lower() in ("null", "none"):
+                            if val is None or val == "":
+                                filtered.append(r)
+                        elif wv == "%":
+                            if val is not None:
+                                filtered.append(r)
+                        else:
+                            if str(val) == wv:
+                                filtered.append(r)
+                    rows = filtered
+
+        # 2. --count-by 집계
+        if count_by:
+            from collections import Counter
+            counts = Counter()
+            for r in rows:
+                if isinstance(r, dict):
+                    v = r.get(count_by)
+                    k_str = "(null)" if v is None else str(v)
+                    counts[k_str] += 1
+            out_str = " · ".join(f"{k} {cnt}" for k, cnt in counts.most_common())
+            print(out_str if out_str else "(건수 없음)")
+
+        # 3. --fields TSV 출력
+        elif fields:
+            f_cols = [f.strip() for f in fields.split(",") if f.strip()]
+            print("\t".join(f_cols))
+            for r in rows:
+                if isinstance(r, dict):
+                    row_vals = [str(r.get(c, "")) if r.get(c) is not None else "" for c in f_cols]
+                    print("\t".join(row_vals))
+
+        # 4. where만 지정된 경우 필터링 결과 요약
+        else:
+            print(f"필터링 결과 {len(rows)}건")
+            if rows:
+                print(f"첫 행: {json.dumps(rows[0], ensure_ascii=False)[:300]}")
+
         for tline in res.data.get("track") or []:
             print(tline)
     else:
@@ -1419,6 +1504,7 @@ def agent_guide():
     - `yunhee page-style <화면.java|tsx>`: 화면 파일의 페이지 스타일(SID: SG, SGP, SGVF, SGEF, SGTP, SGT, TG, GG, CG) 및 분할 레이아웃 판별 (대조: `yunhee page-style --compare <asis.java> <tobe.tsx>`)
     - `yunhee analysis screen <화면> --list`: 클래스 목록 및 줄/버튼/이벤트/그리드 통계 (연결 컴포넌트 포함(`(연결)` 표시), `--no-linked` 지원)
     - `yunhee analysis screen <화면> --section layout`: 폼 탭은 원본 Java를 열기 전에 이것부터 확인하세요.
+    - `yunhee analysis screen <화면> --section source`: 화면의 색인 소스 및 커밋 정보 확인.
     - `yunhee analysis callers <클래스> [--tobe frontend/src]`: AS-IS에서 해당 팝업/창을 `new`하여 여는 모든 호출부(`파일:줄 | 부른 메서드(open/view/edit) | 리터럴 인자 | 감싼 메서드 | 메뉴`)와 TOBE 렌더링 짝(`<컴포넌트 ...>`)을 한 번에 대조하세요.
     - `yunhee analysis sql <매퍼ID 또는 dom.Class.method>` / `yunhee port-sql <매퍼ID 또는 dom.Class.method>`: 매퍼 이름(`ics40_dcr_preconfirm.selectByApprId`)뿐 아니라 화면 주석에 적힌 **서비스 이름(`ics.Ics40_DcrPreconfirm.selectByApprId`)을 그대로 넘겨도** 서버 메서드를 거쳐 매퍼 SQL을 자동 해석하며, DB에 없는 테이블/함수가 있으면 즉시 `⚠ DB에 없는 객체` 경고를 표시합니다.
     - `yunhee trace-gap --stubs [-d <도메인>]`: TOBE `frontend/src`에서 미연결 자리(`message.info/warning`의 '다음 단계'·'아직 변환'·'연결됩니다' 안내, `[E… 생략]`, 화면 머리에만 남은 `1단계:`/`다음 단계:` 주석)를 여는 `_Tab_` 화면 및 메뉴 번호(`#번호`)와 함께 표 및 `13-누락대장.md` 체크리스트 꼴로 수집합니다.
@@ -2514,6 +2600,7 @@ def analysis_cmd(
 log_app = typer.Typer(
     help="서버 로그 분석 및 요청·SQL·에러 요약 (trace, req, errors, tail)",
     no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 app.add_typer(log_app, name="log")
 
@@ -2960,6 +3047,17 @@ def screen_desc_cmd(
         Path | None,
         typer.Option("--tobe", help="TOBE 프로젝트 루트 경로 (기본: YUNHEE_TOBE_SRC_DIR)"),
     ] = None,
+    summary: Annotated[
+        bool,
+        typer.Option("--summary", "-s", help="각 절의 긴 목록을 상위 몇 개로 축약 표시"),
+    ] = False,
+    section: Annotated[
+        str | None,
+        typer.Option(
+            "--section",
+            help="특정 절만 필터링하여 출력 (tobe, popup, tabs, backend, asis, events — 쉼표 구분 가능)",
+        ),
+    ] = None,
 ) -> None:
     """화면번호(쉼표·공백 복수 지정 가능)와 관련된 모든 정보(메뉴명·파일명·팝업·하위컴포넌트·그리드·버튼·API·SQL·테이블·ASIS) 반환"""
     from yunhee.tools.trace.screen_desc import (
@@ -2987,7 +3085,7 @@ def screen_desc_cmd(
     if norm_fmt == "json":
         typer.echo(render_screen_desc_json(data))
     else:
-        typer.echo(render_screen_desc_md(data).rstrip())
+        typer.echo(render_screen_desc_md(data, summary=summary, section=section).rstrip())
 
 
 if __name__ == "__main__":

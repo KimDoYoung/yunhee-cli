@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -210,12 +211,35 @@ def _float_env(name: str, default: float) -> float:
     return value if value > 0 else default
 
 
-def resolve_api_tenant(tenant: str | None = None) -> str | None:
+def resolve_api_tenant(
+    tenant: str | None = None,
+    company: str | None = None,
+    base_url: str | None = None,
+) -> str | None:
     """api·compare가 같이 쓰는 기본 테넌트 선택 순서.
 
-    -t → .yunhee.toml [api] tenant → YUNHEE_API_DEFAULT_TENANT → YUNHEE_TEST_COMPANY
+    1. 명시적 -t 옵션
+    2. base URL의 서브도메인 (예: http://kalpa.localhost:8082/... -> kalpa)
+    3. -c <회사>가 주어졌고 회사가 'admin'이 아니면 그 회사 코드
+    4. .yunhee.toml [api] tenant → YUNHEE_API_DEFAULT_TENANT → YUNHEE_TEST_COMPANY
     """
-    return tenant or API_DEFAULT_TENANT or TEST_COMPANY
+    if tenant:
+        return tenant
+
+    if base_url:
+        try:
+            parsed = urlparse(base_url)
+            host = parsed.hostname or ""
+            parts = host.split(".")
+            if len(parts) >= 2 and parts[0] not in ("www", "localhost", "127"):
+                return parts[0]
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+    if company and company.lower() != "admin":
+        return company
+
+    return API_DEFAULT_TENANT or TEST_COMPANY
 
 
 # yunhee api 요청 타임아웃(초). 로그인 요청은 10초 고정.
