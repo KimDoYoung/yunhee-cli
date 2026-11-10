@@ -2,6 +2,17 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.8.5] - 2026-11-10
+API 객체 내 위임 함수 추적, AS-IS 서블릿(FileDelete/FileUpload) 테이블 작업 반영 및 실행 속도 획기적 단축
+- **API 객체 함수 위임 체인 추적 (`src/yunhee/tools/trace/tobe.py`)**:
+  - `parse_api_ts`에서 함수 본문 내 `apiClient`뿐만 아니라 `fileApi.xxx` / `this.xxx` 등 객체 내 다른 함수 위임 호출을 수집하고, `build_index`에서 엔드포인트/AS-IS 키를 자동 전파.
+  - 서비스 클래스 내 다른 서비스 주입 호출(`fileService.upload` 등)을 1~2단계 추적하여 상속된 매퍼 문장의 CRUD 작업 집계 보완.
+- **AS-IS 서블릿(`FileDelete` / `FileUpload`) 작업 집계 (`src/yunhee/tools/trace/crud.py`, `src/yunhee/tools/as_is/src_indexer.py`)**:
+  - AS-IS 화면 자바 파일 및 `## 서블릿 호출`에서 `FileDelete` 감지 시 `sys10_file: {D, R}`, `FileUpload` 감지 시 `sys10_file: {C}`를 추가하여 TOBE와 정확한 대조 지원 (`#1298`, `#1353` 오탐 해소).
+- **디스크 캐시 도입 및 복수 화면 조회 속도 단축 (`src/yunhee/tools/trace/sqlscan.py`, `src/yunhee/tools/trace/tobe.py`, `src/yunhee/tools/trace/crud.py`)**:
+  - 매퍼 XML 파싱(`scan_asis`, `scan_tobe`) 및 TOBE 색인(`build_index`)에 파일 `mtime` 기반 디스크 캐시(`.yunhee/cache/`)를 적용하여 단일 화면 실행 속도를 ~24초에서 **3.4초**로 단축.
+  - `trace-crud --screen`에 쉼표 구분 복수 화면(`--screen '#1353,#1404,#1298'`) 지원으로 수 개 화면을 단 한 번의 스캔으로 일괄 분석.
+
 ## [0.8.4] - 2026-11-10
 `trace-crud`·`trace-pair` 오탐 해결, `api` 테넌트·세션·응답 필터, `log trace` 원인 표시 및 편의 기능 개선
 - **`trace-crud` 쓰기(C/U/D) 집계 및 오탐 해소 (`src/yunhee/tools/trace/crud.py`, `src/yunhee/tools/trace/tobe.py`)**:

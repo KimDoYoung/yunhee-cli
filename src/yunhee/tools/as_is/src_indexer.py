@@ -559,15 +559,15 @@ def parse_client(app: Path) -> dict[str, list[ClientClass]]:
                 found.add(key)
                 cls.services.append((key, line_of(no_comment, m.start())))
 
-        # 서블릿 호출 감지 (FileDownload?fileType=..., FileUpload?...)
-        for m in re.finditer(r'["\'](FileDownload|FileUpload)\?([^"\']+)["\']', no_comment):
+        # 서블릿 호출 감지 (FileDownload?fileType=..., FileUpload?..., FileDelete?...)
+        for m in re.finditer(r'["\'](FileDownload|FileUpload|FileDelete)\??([^"\']*)["\']', no_comment):
             s_name = m.group(1)
             query = m.group(2)
             ft_m = re.search(r'fileType=(\w+)', query)
             ft = ft_m.group(1) if ft_m else ""
             line = line_of(no_comment, m.start())
             subsequent = no_comment[m.start():m.start() + 200]
-            params = re.findall(r'&(\w+)=', subsequent)
+            params = re.findall(r'[?&](\w+)=', subsequent)
             p_desc = " ".join(f"{p}=…" for p in params)
             cls.servlets.append((s_name, ft, p_desc, line))
 

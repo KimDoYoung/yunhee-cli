@@ -56,6 +56,7 @@ uv run yunhee log errors                              # WARN/ERROR 묶음 요약
 uv run yunhee log tail                                # 최근 전체 로그 흐름을 trace 단위로 접어서 요약
 uv run yunhee screen-capture 1029 login=kfstest/104/1111 # TOBE 화면 자동 로그인·겸직선택·오픈 및 조회/행선택/탭/팝업 순회 캡처 (--url, --out 지원)
 uv run yunhee screen-desc 1002,1029, 1085 --format=md # 쉼표·공백 복수 화면번호의 메뉴명·파일명·사용 팝업·하위 컴포넌트·그리드·버튼·API·SQL·테이블·ASIS 종합 조회 (--format=json,md, --summary, --section 지원)
+uv run yunhee trace-crud --screen '#1353,#1404,#1298' # 화면별 C/R/U/D 테이블 작업 매트릭스 일괄 대조 (디스크 캐시 기반 고속 분석)
 
 uv run tools/parse_mapper.py     # ASIS mapper XML → sqlite mapper_index 빌드 (prepare grounding 검증용)
 

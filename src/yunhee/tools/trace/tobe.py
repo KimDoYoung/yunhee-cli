@@ -7,6 +7,7 @@ trace-pair/diff/gap은 이 주석을 **근거**로 짝을 짓는다. 이름이 �
 
 from __future__ import annotations
 
+import pickle
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -97,11 +98,13 @@ class ApiFn:
     file: str
     line: int
     keys: list[str] = field(default_factory=list)  # 주석의 AS-IS 서비스 키
+    delegates: list[tuple[str, str]] = field(default_factory=list)  # 내부 호출 위임 대상 [(obj, fn_name)]
 
 
 _API_OBJ = re.compile(r"^export const (\w+)\s*=\s*\{", re.MULTILINE)
 _API_FN = re.compile(r"^\s{1,4}(\w+)\s*:\s*(?:async\s*)?\(")
 _API_CALL = re.compile(r"apiClient\.(get|post|put|delete|patch)\s*(?:<[^()]*>)?\s*\(\s*([`'\"])(.*?)\2", re.DOTALL)
+_API_DELEGATE = re.compile(r"\b(?:(\w+Api)\s*\.\s*(\w+)|this\s*\.\s*(\w+))\b")
 
 
 def normalize_url(url: str) -> str:
@@ -121,6 +124,7 @@ def parse_api_ts(text: str, file: str) -> list[ApiFn]:
             continue
         if not obj or not (m := _API_FN.match(line)):
             continue
+        fn_name = m.group(1)
         # 이 함수 본문(다음 함수 시작 전)에서 apiClient 호출들을 모두 찾는다
         end = i + 1
         while end < len(lines) and not _API_FN.match(lines[end]) and not _API_OBJ.match(lines[end]):
@@ -128,8 +132,18 @@ def parse_api_ts(text: str, file: str) -> list[ApiFn]:
         body = "\n".join(lines[i:end])
         calls = list(_API_CALL.finditer(body))
         keys = _keys(_doc_above(lines, i))
-        for call in calls:
-            fns.append(ApiFn(obj, m.group(1), call.group(1).upper(), normalize_url(call.group(3)), file, i + 1, keys))
+        if calls:
+            for call in calls:
+                fns.append(ApiFn(obj, fn_name, call.group(1).upper(), normalize_url(call.group(3)), file, i + 1, keys))
+        else:
+            delegates: list[tuple[str, str]] = []
+            for dm in _API_DELEGATE.finditer(body):
+                target_obj = dm.group(1) or obj
+                target_fn = dm.group(2) or dm.group(3)
+                if (target_obj, target_fn) != (obj, fn_name) and (target_obj, target_fn) not in delegates:
+                    delegates.append((target_obj, target_fn))
+            if delegates:
+                fns.append(ApiFn(obj, fn_name, "", "", file, i + 1, keys, delegates=delegates))
     return fns
 
 
@@ -212,12 +226,15 @@ class ServiceMethod:
     file: str
     line: int
     mapper_calls: list[tuple[str, str]] = field(default_factory=list)  # (mapper 필드명, 메서드)
+    service_calls: list[tuple[str, str]] = field(default_factory=list)  # (다른 서비스 필드명, 메서드)
     keys: list[str] = field(default_factory=list)
 
 
 def parse_service(text: str, file: str) -> list[ServiceMethod]:
     cls = re.search(r"\bclass\s+(\w+)", text)
-    mapper_fields = {n for n, t in field_types(text).items() if t.endswith("Mapper")}
+    fields = field_types(text)
+    mapper_fields = {n for n, t in fields.items() if t.endswith("Mapper")}
+    svc_fields = {n for n, t in fields.items() if t.endswith("Service")}
     lines = text.splitlines()
     out: list[ServiceMethod] = []
     for m in re.finditer(r"^[ \t]{2,8}(?:public|protected)\s+(?!class)[\w<>\[\], ?.]+?\s+(\w+)\s*\([^)]*\)[^{;]*\{", text, re.MULTILINE):
@@ -225,8 +242,12 @@ def parse_service(text: str, file: str) -> list[ServiceMethod]:
         body = _body(text, m.end() - 1)
         out.append(
             ServiceMethod(
-                cls.group(1) if cls else Path(file).stem, m.group(1), file, line,
+                cls.group(1) if cls else Path(file).stem,
+                m.group(1),
+                file,
+                line,
                 _calls(body, mapper_fields, "apper"),
+                _calls(body, svc_fields, "ervice"),
                 _keys(_doc_above(lines, line - 1)),
             )
         )
@@ -325,6 +346,9 @@ class GridCol(tuple):
         obj.label = label
         obj.width = width
         return obj
+
+    def __reduce__(self):
+        return (GridCol, (self.field, self.label, self.col_type, self.width))
 
 
 @dataclass
@@ -527,20 +551,31 @@ class TobeIndex:
         return eps
 
     def statements_of(self, ep: Endpoint) -> list[MapperStatement]:
-        """엔드포인트 → 서비스 → mapper 호출을 따라간 XML 문장들."""
+        """엔드포인트 → 서비스 → mapper 호출을 따라간 XML 문장들 (서비스 간 호출 1~2단계 추적)."""
         found: list[MapperStatement] = []
         ctrl_fields = self.service_fields.get(ep.controller, {})
-        for field_name, method in ep.service_calls:
-            svc_type = ctrl_fields.get(field_name)
-            svc = self.services.get((svc_type, method)) if svc_type else None
-            if svc is None:
-                continue
+
+        def collect_from_svc(svc: ServiceMethod, depth: int = 0) -> None:
+            if depth > 2:
+                return
             map_fields = self.mapper_fields.get(svc.service, {})
             for mfield, mmethod in svc.mapper_calls:
                 mtype = map_fields.get(mfield)
                 for st in self.statements.values():
                     if st.id == mmethod and st.namespace.endswith("." + (mtype or "\0")):
                         found.append(st)
+            svc_fields = self.service_fields.get(svc.service, {})
+            for sfield, smethod in getattr(svc, "service_calls", []):
+                next_type = svc_fields.get(sfield)
+                next_svc = self.services.get((next_type, smethod)) if next_type else None
+                if next_svc:
+                    collect_from_svc(next_svc, depth + 1)
+
+        for field_name, method in ep.service_calls:
+            svc_type = ctrl_fields.get(field_name)
+            svc = self.services.get((svc_type, method)) if svc_type else None
+            if svc:
+                collect_from_svc(svc)
         return list({st.key: st for st in found}.values())
 
     def rel(self, path: str | Path) -> str:
@@ -550,9 +585,42 @@ class TobeIndex:
             return str(path)
 
 
+def _tobe_stats(layout: TobeLayout) -> tuple[int, float]:
+    count = 0
+    max_m = 0.0
+    for d, pat, rec in [
+        (layout.pages_dir, "*.tsx", True),
+        (layout.api_dir, "*.ts", False),
+        (layout.java_dir, "*.java", True),
+        (layout.mapper_dir, "*.xml", False),
+    ]:
+        if d.is_dir():
+            it = d.rglob(pat) if rec else d.glob(pat)
+            for p in it:
+                count += 1
+                try:
+                    m = p.stat().st_mtime
+                    max_m = max(max_m, m)
+                except OSError:
+                    pass
+    return count, max_m
+
+
 @lru_cache(maxsize=2)
 def build_index(root: str) -> TobeIndex:
     layout = find_layout(Path(root))
+    count, max_mtime = _tobe_stats(layout)
+    cache_file = config.WORK_DIR / ".yunhee" / "cache" / "tobe_index.pickle"
+
+    if count > 0 and cache_file.is_file():
+        try:
+            with open(cache_file, "rb") as f:
+                meta, data = pickle.load(f)
+            if meta.get("count") == count and meta.get("max_mtime") == max_mtime:
+                return data
+        except Exception:  # noqa: BLE001, S110
+            pass
+
     idx = TobeIndex(layout)
     if layout.pages_dir.is_dir():
         for p in sorted(layout.pages_dir.rglob("*.tsx")):
@@ -564,6 +632,30 @@ def build_index(root: str) -> TobeIndex:
                 idx.api_fns_multi.setdefault((fn.obj, fn.name), []).append(fn)
                 if (fn.obj, fn.name) not in idx.api_fns:
                     idx.api_fns[(fn.obj, fn.name)] = fn
+        for _ in range(3):
+            changed = False
+            for key, fn_list in list(idx.api_fns_multi.items()):
+                for fn in list(fn_list):
+                    if fn.delegates and not fn.verb:
+                        for d_obj, d_name in fn.delegates:
+                            for t in idx.api_fns_multi.get((d_obj, d_name), []):
+                                if t.verb and t.url:
+                                    resolved_fn = ApiFn(
+                                        obj=fn.obj,
+                                        name=fn.name,
+                                        verb=t.verb,
+                                        url=t.url,
+                                        file=fn.file,
+                                        line=fn.line,
+                                        keys=list(dict.fromkeys(fn.keys + t.keys)),
+                                    )
+                                    if resolved_fn not in idx.api_fns_multi[key]:
+                                        idx.api_fns_multi[key].append(resolved_fn)
+                                        if key not in idx.api_fns or not idx.api_fns[key].verb:
+                                            idx.api_fns[key] = resolved_fn
+                                        changed = True
+            if not changed:
+                break
     if layout.java_dir.is_dir():
         for p in sorted(layout.java_dir.rglob("*.java")):
             text = p.read_text(encoding="utf-8", errors="replace")
@@ -574,6 +666,7 @@ def build_index(root: str) -> TobeIndex:
                 for sm in parse_service(text, str(p)):
                     idx.services[(sm.service, sm.name)] = sm
                 idx.mapper_fields[p.stem] = field_types(text)
+                idx.service_fields[p.stem] = field_types(text)
     if layout.mapper_dir.is_dir():
         for p in sorted(layout.mapper_dir.glob("*.xml")):
             stmts, asis_ns, _ = parse_mapper_xml(p.read_text(encoding="utf-8", errors="replace"), str(p))
@@ -581,4 +674,12 @@ def build_index(root: str) -> TobeIndex:
                 idx.statements[st.key] = st
                 idx.mapper_files[st.namespace] = str(p)
                 idx.mapper_asis_ns[st.namespace] = asis_ns
+    if count > 0:
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            meta = {"count": count, "max_mtime": max_mtime}
+            with open(cache_file, "wb") as f:
+                pickle.dump((meta, idx), f, protocol=pickle.HIGHEST_PROTOCOL)
+        except Exception:  # noqa: BLE001, S110
+            pass
     return idx

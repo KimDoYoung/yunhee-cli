@@ -44,6 +44,7 @@ def render(node: Node, ns: str, statements: dict[str, Statement], seen: tuple[st
 
 def to_sql(st: Any, statements: dict[str, Any]) -> str:
     import re
+
     from yunhee.tools.as_is.mybatis_render import render as mr_render
 
     if hasattr(st, "node"):

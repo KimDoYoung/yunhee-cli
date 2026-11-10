@@ -7,6 +7,7 @@ TOBE: TSX → api 함수 → 컨트롤러 → 서비스 → mapper 문장 → �
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -45,8 +46,17 @@ def udm_by_service(index_data: dict | None) -> dict[str, dict[str, set[str]]]:
     return out
 
 
-def asis_matrix(doc: ScreenDoc, ops_by_sql: dict[str, dict[str, set[str]]], udm: dict[str, dict[str, set[str]]] | None = None) -> dict[str, set[str]]:
-    """한 ASIS 화면(하위 클래스의 서비스 포함)의 {테이블: 작업}. SQL로 닿는 작업에 동적 쓰기(UpdateDataModel)를 더한다."""
+_SERVLET_FILE_DELETE = re.compile(r'\bFileDelete(?:\?|["\'])')
+_SERVLET_FILE_UPLOAD = re.compile(r'\bFileUpload(?:\?|["\'])')
+
+
+def asis_matrix(
+    doc: ScreenDoc,
+    ops_by_sql: dict[str, dict[str, set[str]]],
+    udm: dict[str, dict[str, set[str]]] | None = None,
+    src_root: Path | str | None = None,
+) -> dict[str, set[str]]:
+    """한 ASIS 화면(하위 클래스의 서비스 포함)의 {테이블: 작업}. SQL로 닿는 작업에 동적 쓰기(UpdateDataModel)와 서블릿(FileDelete/FileUpload)을 더한다."""
     m: dict[str, set[str]] = defaultdict(set)
     for svc in doc.services:
         for sql_id in svc.sql_ids:
@@ -56,6 +66,45 @@ def asis_matrix(doc: ScreenDoc, ops_by_sql: dict[str, dict[str, set[str]]], udm:
             m[table] |= ops
         if not svc.sql_ids and not (udm or {}).get(svc.key) and (dyn := _DYNAMIC.search(svc.note)):
             m[dyn.group(1)] |= {"D"} if "DELETE" in dyn.group(2) else {"C", "U"}  # 색인 없이 화면 문서의 설명만 있는 경우
+
+    has_file_delete = any("FileDelete" in s for s in doc.servlets)
+    has_file_upload = any("FileUpload" in s for s in doc.servlets)
+
+    if src_root and (not has_file_delete or not has_file_upload):
+        root = Path(src_root)
+        check_paths: list[Path] = []
+        if doc.file:
+            for base in (root, root / "application/src/main/java"):
+                cand = base / doc.file
+                if cand.is_file() and cand not in check_paths:
+                    check_paths.append(cand)
+        if doc.frontmatter and "source_files" in doc.frontmatter:
+            for fpath in doc.frontmatter["source_files"]:
+                if fpath.endswith(".java"):
+                    cand = root / fpath
+                    if cand.is_file() and cand not in check_paths:
+                        check_paths.append(cand)
+        for ui_info in doc.ui.values():
+            if ui_info.java:
+                for base in (root, root / "application/src/main/java"):
+                    cand = base / ui_info.java
+                    if cand.is_file() and cand not in check_paths:
+                        check_paths.append(cand)
+        for p in check_paths:
+            try:
+                txt = p.read_text(encoding="utf-8", errors="replace")
+                if not has_file_delete and _SERVLET_FILE_DELETE.search(txt):
+                    has_file_delete = True
+                if not has_file_upload and _SERVLET_FILE_UPLOAD.search(txt):
+                    has_file_upload = True
+            except Exception:  # noqa: BLE001, S110
+                pass
+
+    if has_file_delete:
+        m["sys10_file"] |= {"D", "R"}
+    if has_file_upload:
+        m["sys10_file"] |= {"C"}
+
     return dict(m)
 
 
@@ -193,24 +242,29 @@ def trace_crud(
         return tobe_matrix([name, *[c for c in doc.ui if c != name]], idx, t_ops) if idx else {}
 
     if screen:
-        name = resolve_screen(screen, ctx)
-        res.params["resolved"] = name
-        doc = next((d for _, n, d in _domain_docs(ctx, None) if n == name), None)
-        if doc is None:
-            res.unresolved.append(f"ASIS 색인 문서를 찾지 못함: {name}.md")
-            return res
-        screen_names = [name, *[c for c in doc.ui if c != name]]
-        a, t = asis_matrix(doc, a_ops, udm), tobe_for(name, doc)
-        udm_c = udm_c_only_tables(doc, a, a_ops)
-        other_tobe = _other_tobe_screens(doc, set(screen_names), idx, t_ops)
-        res.facts.append(f"화면 {name}: 테이블 {len(set(a) | set(t))}개 (ASIS {len(a)} / TOBE {len(t)})\n" + "\n".join(_compare(a, t, other_tobe=other_tobe, udm_c_only=udm_c)))
+        screen_items = [s.strip() for s in screen.split(",") if s.strip()]
+        resolved_names = []
+        all_domain_docs = _domain_docs(ctx, None)
+        for s_item in screen_items:
+            name = resolve_screen(s_item, ctx)
+            resolved_names.append(name)
+            doc = next((d for _, n, d in all_domain_docs if n == name), None)
+            if doc is None:
+                res.unresolved.append(f"ASIS 색인 문서를 찾지 못함: {name}.md")
+                continue
+            screen_names = [name, *[c for c in doc.ui if c != name]]
+            a, t = asis_matrix(doc, a_ops, udm, src_root=ctx.src_root), tobe_for(name, doc)
+            udm_c = udm_c_only_tables(doc, a, a_ops)
+            other_tobe = _other_tobe_screens(doc, set(screen_names), idx, t_ops)
+            res.facts.append(f"화면 {name}: 테이블 {len(set(a) | set(t))}개 (ASIS {len(a)} / TOBE {len(t)})\n" + "\n".join(_compare(a, t, other_tobe=other_tobe, udm_c_only=udm_c)))
+        res.params["resolved"] = ", ".join(resolved_names)
     elif table:
         tbl = table.lower()
         rows = []
         for _, name, doc in _domain_docs(ctx, None):
             if f"`{tbl}`" not in " ".join(f"`{x}`" for x in doc.tables) and not any(tbl in (s.note or "") for s in doc.services):
                 continue
-            a, t = asis_matrix(doc, a_ops, udm), tobe_for(name, doc)
+            a, t = asis_matrix(doc, a_ops, udm, src_root=ctx.src_root), tobe_for(name, doc)
             udm_c = udm_c_only_tables(doc, a, a_ops)
             if tbl in a or tbl in t:
                 sa, st = a.get(tbl, set()), t.get(tbl, set())
@@ -230,7 +284,7 @@ def trace_crud(
         if domain:
             lines, per_table = [], defaultdict(lambda: defaultdict(set))
             for _, name, doc in docs:
-                a, t = asis_matrix(doc, a_ops, udm), tobe_for(name, doc)
+                a, t = asis_matrix(doc, a_ops, udm, src_root=ctx.src_root), tobe_for(name, doc)
                 udm_c = udm_c_only_tables(doc, a, a_ops)
                 counts = {op: sum(op in v for v in a.values()) for op in ORDER}
                 lost = sorted(

@@ -1,6 +1,7 @@
 """trace-crud: 화면 × 테이블 × C/R/U/D (ASIS와 TOBE)."""
 
 import json
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -76,3 +77,46 @@ def test_cli_trace_crud(world, fake_schema):
     assert out.exit_code == 0
     assert json.loads(out.output[out.output.index("{"):])["params"]["resolved"] == "Emp00_Tab_TransInfo"
     assert runner.invoke(app, ["trace-crud", "-d", "emp", "-t", "x", *base]).exit_code == 2
+
+
+def test_screen_scope_multi_screens(world, fake_schema):
+    """052 §3: --screen 복수 화면(#1029,#1030) 일괄 지원."""
+    res = trace_crud(world.ctx, world.tobe, screen="#1029,#1030")
+    text = _facts(res)
+    assert "화면 Emp00_Tab_TransInfo: 테이블 3개" in text
+    assert "화면 Emp09_Tab_Legacy: 테이블 0개" in text
+    assert res.params["resolved"] == "Emp00_Tab_TransInfo, Emp09_Tab_Legacy"
+
+
+def test_asis_matrix_servlet_file_delete_and_upload(tmp_path: Path):
+    """052 §2: FileDelete -> sys10_file D, FileUpload -> sys10_file C 반영 검증."""
+    doc = parse_screen_doc("TestScreen", "# TestScreen\n## 서블릿 호출\n- `Test:1` `FileUpload`\n")
+    java_file = tmp_path / "TestScreen.java"
+    java_file.write_text('String actionUrl = "FileDelete?fileId=" + id; fileDeleteForm.setAction(actionUrl);')
+    doc.frontmatter = {"source_files": {"TestScreen.java": "abc"}}
+
+    m = asis_matrix(doc, {}, src_root=tmp_path)
+    assert "D" in m["sys10_file"] and "C" in m["sys10_file"]
+
+
+def test_api_delegation_chain(tmp_path: Path):
+    """052 §1: api 객체 내 다른 함수 위임 호출 엔드포인트 상속 검증."""
+
+    api_text = """
+export const fileApi = {
+  checkFileDelete: async (fileId, parentId) => (await fileApi.checkFileDeleteResult(fileId, parentId)).status,
+  checkFileDeleteResult: async (fileId, parentId) => {
+    const res = await apiClient.post(`v1/sys/files/${fileId}/check-delete`, null, { params: { parentId } });
+    return res.data;
+  },
+};
+"""
+    api_dir = tmp_path / "frontend" / "src" / "api"
+    api_dir.mkdir(parents=True)
+    (api_dir / "file.ts").write_text(api_text, encoding="utf-8")
+
+    from yunhee.tools.trace.tobe import build_index
+    idx = build_index(str(tmp_path))
+    assert ("fileApi", "checkFileDelete") in idx.api_fns_multi
+    fns = idx.api_fns_multi[("fileApi", "checkFileDelete")]
+    assert any(fn.verb == "POST" and "check-delete" in fn.url for fn in fns)

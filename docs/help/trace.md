@@ -89,12 +89,17 @@
   ```
 
 ### `yunhee trace-crud`
-화면 × 테이블 × C/R/U/D 매트릭스를 ASIS와 TOBE 나란히 대조하여 추적합니다 (`--screen` 지정 시 현재 화면 파일에 없더라도 다른 TOBE 화면/공통 부품에 변환된 테이블은 `(다른 화면에 있음: ...)`으로 안내).
-- **옵션**: `-d, --domain <영역>`, `-s, --screen <화면>`, `-t, --table <테이블>`
+화면 × 테이블 × C/R/U/D 매트릭스를 ASIS와 TOBE 나란히 대조하여 추적합니다 (`--screen` 지정 시 현재 화면 파일에 없더라도 다른 TOBE 화면/공통 부품에 변환된 테이블은 `(다른 화면에 있음: ...)`으로 안내하며, 디스크 캐시 적용으로 수 초 내에 빠르게 분석됩니다).
+- **옵션**:
+  - `-d, --domain <영역>`: 도메인 전체 화면 요약
+  - `-s, --screen <화면>`: 단일 또는 쉼표 구분 복수 화면 (예: `#1029`, `#1353,#1404,#1298`, `Sys95_Tab_ManualAdmin`)
+  - `-t, --table <테이블>`: 특정 테이블을 사용하는 모든 화면 목록 대조
 - **예시**:
   ```bash
   yunhee trace-crud -d emp
   yunhee trace-crud -s Emp00_Tab_TransInfo
+  yunhee trace-crud -s '#1353,#1404,#1298'
+  yunhee trace-crud -t sys10_file
   ```
 
 ---
