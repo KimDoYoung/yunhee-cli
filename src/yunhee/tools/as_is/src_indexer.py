@@ -552,6 +552,7 @@ def parse_client(app: Path) -> dict[str, list[ClientClass]]:
                         cls.services.append((v, line))
             else:
                 cls.unresolved.append((arg, line))
+        # 변수나 분기문에 직접 할당된 서비스 키 리터럴("ics.Ics32_RelateAppr.selectApprList")도 서비스 호출로 수집
         found = {v for v, _ in cls.services}
         for m in SERVICE_KEY_LITERAL_RE.finditer(no_comment):
             key = m.group(0)[1:-1]
@@ -639,13 +640,23 @@ def parse_server(app: Path) -> dict[str, ServerClass]:
             meth = ServerMethod(cls, name, line_of(bare, name_pos), is_service)
             body = no_comment[body_start:body_end + 1]
             body_bare = bare[body_start:body_end + 1]
+            # mapperName 필드가 있으면 그 값을 스코프에 추가
+            class_scopes = [body, no_comment]
             for m in SQL_CALL_RE.finditer(body):
                 arg = call_argument(body, m.end() - 1)
-                vals = eval_string(arg, [body, no_comment])
+                vals = eval_string(arg, class_scopes)
                 if vals:
                     # namespace 없는 "getSeq"는 MyBatis가 dbConfig.getSeq로 찾는다.
                     meth.sql_ids |= {SEQ_SQL_ID if v == "getSeq" else v for v in vals}
                 else:
+                    # sqlSession.selectList(mapperName + ".selectApprList") 형태 처리
+                    m_concat = re.search(r'mapperName\s*\+\s*"\.([^"]+)"', arg)
+                    if m_concat:
+                        m_names = eval_string("mapperName", [no_comment])
+                        if m_names:
+                            sid_suffix = m_concat.group(1)
+                            meth.sql_ids |= {f"{mn}.{sid_suffix}" for mn in m_names}
+                            continue
                     meth.unresolved.append((arg, line_of(no_comment, body_start + m.start())))
             for m in UDM_CALL_RE.finditer(body):
                 op = m.group(1)

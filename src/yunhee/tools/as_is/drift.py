@@ -520,13 +520,17 @@ def resolve_drift_config(work_dir: Path | None = None) -> dict[str, Any]:
 
 
 def resolve_baseline_path(work_dir: Path | None = None) -> Path:
-    """TOBE 저장소의 baseline.json 경로를 결정한다 (.yunhee.toml [drift] baseline 우선, 기본 .yunhee/baseline.json)."""
+    """TOBE 저장소의 baseline.json 경로를 결정한다 (.yunhee.toml [drift] baseline 우선, docs/baseline.json 또는 .yunhee/baseline.json)."""
     wd = (work_dir or Path.cwd()).resolve()
     d_cfg = resolve_drift_config(wd)
     custom_rel = d_cfg.get("baseline")
     if custom_rel:
         p = Path(custom_rel)
         return p if p.is_absolute() else (d_cfg["base_root"] / p)
+    # 기본 경로 후보 확인: docs/baseline.json -> .yunhee/baseline.json
+    docs_bl = wd / "docs" / "baseline.json"
+    if docs_bl.is_file():
+        return docs_bl
     return wd / ".yunhee" / "baseline.json"
 
 
@@ -1434,6 +1438,10 @@ def run_drift(
     shared_changes_global: dict[str, dict[str, Any]] = {}
     base_commits_seen: set[str] = set()
 
+    # 단위/파일 기준선(__units__, __files__) 로드
+    units_baseline: dict[str, Any] = baseline_data.get("__units__", {}) if isinstance(baseline_data.get("__units__"), dict) else {}
+    files_baseline: dict[str, Any] = baseline_data.get("__files__", {}) if isinstance(baseline_data.get("__files__"), dict) else {}
+
     for s_name in target_names:
         idx_info = indexed_screens.get(s_name, {})
         base_commit: str | None = None
@@ -1580,6 +1588,18 @@ def run_drift(
                 continue
 
             # 파일이 존재하는 경우 해시 비교
+            # §2: baseline의 __files__ 또는 __units__에 이 파일이 등록되어 있고 완료 상태인지 확인
+            f_bl = files_baseline.get(rel_p)
+            if f_bl and isinstance(f_bl, dict) and f_bl.get("status") in ("반영", "해당없음", "완료"):
+                continue
+            if any(
+                isinstance(u_info, dict)
+                and u_info.get("status") in ("반영", "해당없음", "완료")
+                and (u_key == rel_p or rel_p in u_key or Path(rel_p).stem in u_key)
+                for u_key, u_info in units_baseline.items()
+            ):
+                continue
+
             if not git_mode or b_hash.startswith("sha256:"):
                 curr_hash = compute_sha256_file(abs_p)
                 expected_hash = b_hash if b_hash.startswith("sha256:") else compute_sha256_file(abs_p)

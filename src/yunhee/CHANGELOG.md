@@ -2,7 +2,29 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
-## [0.8.6] - 2026-11-10
+## [0.8.7] - 2026-11-11
+수정사항 054 반영: 변경반영용 `drift-*` 명령군 (단위 감지·대장·파일 기준선) 및 호출 색인 누락 보완
+- **`drift-unit` 바뀐 파일의 SQL ID·메서드·UI·모델 단위 세분화 (`src/yunhee/tools/as_is/drift_ops.py`, `src/yunhee/cli.py`)**:
+  - 변경된 파일 전체가 아닌 hunk가 걸친 `<select|insert|update|delete id="...">` 및 자바 메서드(`Class#method()`) 단위로 분해.
+  - 단위마다 영향받는 화면 번호(`#1029`), TOBE 대응 후보, 변경 줄 수, 마지막 커밋 표시. 쓰는 화면 없는 단위는 접어서 표시(`--all-units` 지원).
+- **파일·단위 기준선 + `drift-done` (`src/yunhee/tools/as_is/drift.py`, `src/yunhee/tools/as_is/drift_ops.py`, `src/yunhee/cli.py`)**:
+  - `baseline.json`에 `__units__` 및 `__files__` 기준선을 함께 관리.
+  - `drift-done <키…|단위…> [--status 반영|해당없음] [--note "…"]` 명령으로 단위/파일 기준선을 최신 커밋으로 이동하고 대장의 상태·처리일·비고를 자동 기록.
+  - `drift`(화면 단위)에서 파일이 변경되었더라도 해당 파일 또는 연관 단위가 `drift-done`으로 반영/해당없음 처리되어 있으면 화면 변경 목록에서 제외하여 "동일" 판정.
+- **`drift-ledger` (= `drift-list`) 대장 자동 덧붙이기 및 갱신 (`src/yunhee/tools/as_is/drift_ops.py`, `src/yunhee/cli.py`)**:
+  - `drift-unit` 결과를 `docs/3-변경반영/변경반영-대장.md` 끝에 `CH-` 다음 번호를 매겨 `대기` 행으로 자동 덧붙임 (`--dry-run` 지원).
+  - 같은 단위가 이미 `대기` 상태로 존재하면 최신 커밋·변경 요약만 갱신.
+- **`drift-diff <단위>` AS-IS diff 및 TOBE 대응 비교 (`src/yunhee/tools/as_is/drift_ops.py`, `src/yunhee/cli.py`)**:
+  - 단일 SQL ID 또는 Java 메서드의 AS-IS hunk diff와 TOBE 매퍼 문장/서비스 메서드 본문을 나란히 출력.
+- **`drift-db` DBML 스냅샷 구조 차이 비교 (`src/yunhee/tools/as_is/drift_ops.py`, `src/yunhee/cli.py`)**:
+  - 이전 DBML과 새 DBML 간 테이블 추가/삭제, 컬럼 추가/삭제/타입 변경, DB 함수 추가/삭제/본문 변경을 비교 추출.
+- **`drift-log` 기준 이후 커밋 요약 (`src/yunhee/tools/as_is/drift_ops.py`, `src/yunhee/cli.py`)**:
+  - 기준선/커밋 이후 변경된 파일들을 커밋별로 종류(DB·SQL·LOGIC·MODEL·UI·ETC)별 개수로 접어 1줄 요약 출력.
+- **호출 색인 누락 보완 (`src/yunhee/tools/as_is/src_indexer.py`)**:
+  - `new ServiceRequest("ics.Ics32_RelateAppr.selectApprList")` 생성자 인자 추적.
+  - `serviceName = "dcr.Dcr00_DocList.selectNoAuthByText"` 등 변수에 할당되거나 분기문에 나타난 서비스 키 리터럴 인식.
+  - 서버 `sqlSession.selectList(mapperName + ".selectApprList", ...)` 형태의 동적 문자열 결합 SQL 호출 추적.
+  - 매퍼 `<include refid="..."/>` 조각 의존성 전파.
 수정사항 053 반영: `run` 시험 요약 개선, `trace-crud` `INSERT…SELECT` 대상 R 오탐 해소 및 근거(`--why`), `compare` 파라미터 자동 상속·`--no-grid`, 메뉴 없는 클래스 역추적(`analysis ui`, `drift`), 호출자 탐색(`grep -l`, `analysis callers --server`)
 - **`run "gradle test …"` 복수 테스트 클래스 합산 및 상세 분석 (`src/yunhee/tools/runner.py`, `src/yunhee/context/run_analyzer.py`, `src/yunhee/tools/analysis/run.py`)**:
   - `re.findall` 기반 복수 `--tests` 패턴 필터링을 지원하여 여러 테스트 클래스를 동시에 실행했을 때 마지막 클래스만 세던 문제를 해결하고 전체 합산(`tests 14 ... · 클래스 3`) 표기.

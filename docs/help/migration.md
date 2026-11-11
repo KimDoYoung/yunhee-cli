@@ -139,3 +139,70 @@ TOBE MyBatis 매퍼 statement를 직접 실행하고 AS-IS SQL 결과와 건수/
   yunhee drift Sys01_Tab_Company -o diff
   yunhee drift --record Sys01_Tab_Company --id A01
   ```
+
+### `yunhee drift-unit`
+공통 파일로 인한 잡음을 줄이기 위해 바뀐 파일을 **SQL ID, 서버 메서드(`Class#method()`), UI, 모델 단위**로 세분화하고 영향 화면 및 TOBE 대응 후보를 탐색합니다.
+- **주요 옵션**:
+  - `--base <BASE>`: 비교 기준 (`baseline`, `index`, `<커밋해시>`)
+  - `--done-only`: 완료(baseline) 화면 관련 단위만 표시
+  - `--kind <KINDS>`: 필터링할 종류 (`SQL`, `LOGIC`, `UI`, `MODEL`, `DB`, `NEW`, `ETC`)
+  - `--all-units`: 쓰는 화면 없는 단위도 접지 않고 전체 표시
+  - `-o, --output <FORMAT>`: 출력 형식 (`table`, `json`)
+- **예시**:
+  ```bash
+  yunhee drift-unit --done-only
+  yunhee drift-unit --kind SQL,LOGIC -o json
+  ```
+
+### `yunhee drift-done <keys|units...>`
+단위 또는 파일 기준선을 `baseline.json`(`__units__`, `__files__`)에 최신 커밋으로 갱신하고 반영대장(`변경반영-대장.md` 또는 `반영대장.md`)의 상태·처리일·비고를 기록합니다.
+- **주요 옵션**:
+  - `--status <STATUS>`: 상태 (`반영`, `해당없음`, `보류`, `넘김` - 기본 `반영`)
+  - `--note <TEXT>`: 비고/사유 (TOBE 커밋 해시 등)
+  - `--ledger <PATH>`: 반영대장 마크다운 경로
+- **예시**:
+  ```bash
+  yunhee drift-done CH-0012 --status 반영 --note "TOBE 커밋 3a1b2c"
+  yunhee drift-done apr01_appr.selectByApprIdList --status 해당없음
+  ```
+
+### `yunhee drift-ledger [ledger_path]` (`drift-list`)
+`drift-unit` 결과를 반영대장 마크다운 표 끝에 `CH-` 다음 번호를 매겨 `대기` 행으로 자동 덧붙이거나 기존 `대기` 건의 커밋·요약을 갱신합니다.
+- **주요 옵션**:
+  - `--dry-run`: 실제 파일에 쓰지 않고 추가/갱신될 행만 미리보기
+  - `--done-only`: 완료 화면 관련 단위만 수집
+  - `--base <BASE>`: 비교 기준
+- **예시**:
+  ```bash
+  yunhee drift-ledger --dry-run
+  yunhee drift-list docs/3-변경반영/변경반영-대장.md
+  ```
+
+### `yunhee drift-diff <unit>`
+단일 단위(SQL ID 또는 `Class#method` 등)의 AS-IS git diff(정규화)와 현재 TOBE 매퍼/서비스 대응 본문을 나란히 비교합니다.
+- **예시**:
+  ```bash
+  yunhee drift-diff apr01_appr.selectByApprIdList
+  yunhee drift-diff 'Sys99_Print#insertComplianceState'
+  ```
+
+### `yunhee drift-db`
+직전 DBML 스냅샷과 새 DBML 스냅샷 간 테이블/컬럼/함수 구조 변경 사항 및 영향 TOBE 매퍼를 탐색합니다.
+- **주요 옵션**:
+  - `-f, --from <PATH>`: 이전 DBML 파일 경로 (기본: `.yunhee/<ENV>-dbml.prev.md`)
+  - `-t, --to <PATH>`: 새 DBML 파일 경로 (기본: `.yunhee/<ENV>-dbml.md`)
+- **예시**:
+  ```bash
+  yunhee drift-db
+  yunhee drift-db --from .yunhee/asseterp-dbml.prev.md --to .yunhee/asseterp-dbml.md
+  ```
+
+### `yunhee drift-log`
+기준선/커밋 이후 변경된 파일들을 커밋별로 종류(DB·SQL·LOGIC·MODEL·UI·ETC)별 개수로 접어 요약 출력합니다.
+- **주요 옵션**:
+  - `--since <SINCE>`: 시작 기준 (`baseline`, `<커밋해시>`, `<날짜>`)
+- **예시**:
+  ```bash
+  yunhee drift-log
+  yunhee drift-log --since HEAD~10
+  ```

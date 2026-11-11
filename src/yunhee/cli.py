@@ -1898,6 +1898,264 @@ def drift_cmd(
         raise typer.Exit(code=code)
 
 
+@app.command(name="drift-unit")
+def drift_unit_cmd(
+    base: Annotated[
+        str,
+        typer.Option("--base", help="비교 기준: baseline(기본) | index | <커밋>"),
+    ] = "baseline",
+    done_only: Annotated[
+        bool,
+        typer.Option("--done-only", help="완료(baseline) 화면 관련 단위만 표시"),
+    ] = False,
+    kind: Annotated[
+        str | None,
+        typer.Option("--kind", help="필터링할 종류 (쉼표 구분: SQL,LOGIC,UI,MODEL,DB,NEW,ETC)"),
+    ] = None,
+    output: Annotated[
+        str,
+        typer.Option("--output", "-o", help="출력 형식: table(기본) | json"),
+    ] = "table",
+    all_units: Annotated[
+        bool,
+        typer.Option("--all-units", help="쓰는 화면 없는 단위도 모두 표시"),
+    ] = False,
+    src: Annotated[
+        Path | None,
+        typer.Option("--src", help="AS-IS 소스 루트 (기본: YUNHEE_ASIS_SRC_DIR)"),
+    ] = None,
+    src_index: Annotated[
+        Path | None,
+        typer.Option("--src-index", help="색인 폴더 (기본: docs/as-is/src)"),
+    ] = None,
+):
+    """바뀐 파일을 SQL ID·메서드·UI·모델 단위로 세분화하고 영향 화면 및 TOBE 대응 탐색"""
+    from yunhee.tools.as_is.drift_ops import (
+        analyze_drift_units,
+        render_drift_unit_table,
+    )
+
+    src_dir = (src or (Path(config.ASIS_SRC_DIR).resolve() if config.ASIS_SRC_DIR else None))
+    if not src_dir or not src_dir.is_dir():
+        typer.secho("오류: AS-IS 소스 루트(--src 또는 YUNHEE_ASIS_SRC_DIR)가 지정되지 않았습니다.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    idx_dir = (src_index or (WORK_DIR / "docs" / "as-is" / "src")).resolve()
+    if not idx_dir.is_dir():
+        typer.secho(f"오류: 색인 폴더를 찾을 수 없습니다: {idx_dir}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    kind_filter = [k.strip() for k in kind.split(",")] if kind else None
+    units = analyze_drift_units(
+        src_root=src_dir,
+        src_index=idx_dir,
+        base=base,
+        done_only=done_only,
+        kind_filter=kind_filter,
+        work_dir=WORK_DIR,
+    )
+
+    if output == "json":
+        import json
+        typer.echo(json.dumps(units, ensure_ascii=False, indent=2))
+    else:
+        typer.echo(render_drift_unit_table(units, all_units=all_units))
+
+
+@app.command(name="drift-done")
+def drift_done_cmd(
+    keys: Annotated[
+        list[str],
+        typer.Argument(help="반영 완료할 대장 키(CH-0001 등) 또는 단위/파일명"),
+    ],
+    status: Annotated[
+        str,
+        typer.Option("--status", help="변경 상태: 반영(기본) | 해당없음 | 보류 | 넘김"),
+    ] = "반영",
+    note: Annotated[
+        str,
+        typer.Option("--note", help="비고/사유"),
+    ] = "",
+    ledger: Annotated[
+        Path | None,
+        typer.Option("--ledger", help="반영대장 마크다운 파일 경로"),
+    ] = None,
+):
+    """단위 또는 파일 기준선을 갱신하고 반영대장의 상태·처리일·비고 기록"""
+    from yunhee.tools.as_is.drift_ops import update_drift_done
+
+    code, msg = update_drift_done(
+        keys=keys,
+        status=status,
+        note=note,
+        work_dir=WORK_DIR,
+        ledger_path=ledger,
+    )
+    if code != 0:
+        typer.secho(f"오류: {msg}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=code)
+    typer.echo(msg)
+
+
+@app.command(name="drift-ledger")
+@app.command(name="drift-list")
+def drift_ledger_cmd(
+    ledger_path: Annotated[
+        Path | None,
+        typer.Argument(help="반영대장 마크다운 파일 경로 (기본: docs/3-변경반영/변경반영-대장.md 또는 반영대장.md)"),
+    ] = None,
+    base: Annotated[
+        str,
+        typer.Option("--base", help="비교 기준: baseline(기본) | index | <커밋>"),
+    ] = "baseline",
+    done_only: Annotated[
+        bool,
+        typer.Option("--done-only", help="완료 화면 관련 단위만 수집"),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="실제 파일에 쓰지 않고 추가/갱신될 행만 출력"),
+    ] = False,
+    src: Annotated[
+        Path | None,
+        typer.Option("--src", help="AS-IS 소스 루트 (기본: YUNHEE_ASIS_SRC_DIR)"),
+    ] = None,
+    src_index: Annotated[
+        Path | None,
+        typer.Option("--src-index", help="색인 폴더 (기본: docs/as-is/src)"),
+    ] = None,
+):
+    """drift-unit 결과를 반영대장 표 끝에 대기로 덧붙이거나 기존 대기 건 갱신"""
+    from yunhee.tools.as_is.drift_ops import (
+        analyze_drift_units,
+        append_to_ledger,
+        resolve_ledger_path,
+    )
+
+    src_dir = (src or (Path(config.ASIS_SRC_DIR).resolve() if config.ASIS_SRC_DIR else None))
+    if not src_dir or not src_dir.is_dir():
+        typer.secho("오류: AS-IS 소스 루트(--src 또는 YUNHEE_ASIS_SRC_DIR)가 지정되지 않았습니다.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    idx_dir = (src_index or (WORK_DIR / "docs" / "as-is" / "src")).resolve()
+    if not idx_dir.is_dir():
+        typer.secho(f"오류: 색인 폴더를 찾을 수 없습니다: {idx_dir}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    l_file = resolve_ledger_path(WORK_DIR, ledger_path)
+    if not l_file.is_file():
+        typer.secho(f"오류: 반영대장 파일을 찾을 수 없습니다: {l_file}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    units = analyze_drift_units(
+        src_root=src_dir,
+        src_index=idx_dir,
+        base=base,
+        done_only=done_only,
+        work_dir=WORK_DIR,
+    )
+
+    code, msg = append_to_ledger(
+        ledger_path=l_file,
+        units=units,
+        dry_run=dry_run,
+    )
+    if code != 0:
+        typer.secho(f"오류: {msg}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=code)
+    typer.echo(msg)
+
+
+@app.command(name="drift-diff")
+def drift_diff_cmd(
+    unit: Annotated[
+        str,
+        typer.Argument(help="비교할 단위 (예: apr01_appr.selectByApprIdList 또는 Apr01_Appr#update 또는 파일경로)"),
+    ],
+    base: Annotated[
+        str,
+        typer.Option("--base", help="비교 기준: baseline(기본) | index | <커밋>"),
+    ] = "baseline",
+    src: Annotated[
+        Path | None,
+        typer.Option("--src", help="AS-IS 소스 루트 (기본: YUNHEE_ASIS_SRC_DIR)"),
+    ] = None,
+):
+    """단일 단위의 AS-IS 전후 diff 및 현재 TOBE 대응 문장/메서드 나란히 대조"""
+    from yunhee.tools.as_is.drift_ops import render_unit_diff
+
+    src_dir = (src or (Path(config.ASIS_SRC_DIR).resolve() if config.ASIS_SRC_DIR else None))
+    if not src_dir or not src_dir.is_dir():
+        typer.secho("오류: AS-IS 소스 루트(--src 또는 YUNHEE_ASIS_SRC_DIR)가 지정되지 않았습니다.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    code, out = render_unit_diff(
+        unit=unit,
+        src_root=src_dir,
+        base=base,
+        work_dir=WORK_DIR,
+    )
+    if code != 0:
+        typer.secho(f"오류: {out}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=code)
+    typer.echo(out)
+
+
+@app.command(name="drift-db")
+def drift_db_cmd(
+    from_dbml: Annotated[
+        Path | None,
+        typer.Option("--from", "-f", help="이전 DBML 파일 경로 (기본: .yunhee/<ENV>-dbml.prev.md)"),
+    ] = None,
+    to_dbml: Annotated[
+        Path | None,
+        typer.Option("--to", "-t", help="새 DBML 파일 경로 (기본: .yunhee/<ENV>-dbml.md)"),
+    ] = None,
+):
+    """DBML 스냅샷 전후(테이블/컬럼/함수) 차이 및 영향 SQL/TOBE 매퍼 탐색"""
+    from yunhee.tools.as_is.drift_ops import compare_dbml_snapshots
+
+    code, out = compare_dbml_snapshots(
+        from_path=from_dbml,
+        to_path=to_dbml,
+        work_dir=WORK_DIR,
+    )
+    if code != 0:
+        typer.secho(f"오류: {out}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=code)
+    typer.echo(out)
+
+
+@app.command(name="drift-log")
+def drift_log_cmd(
+    since: Annotated[
+        str,
+        typer.Option("--since", help="시작 기준: baseline(기본) | <커밋> | <날짜>"),
+    ] = "baseline",
+    src: Annotated[
+        Path | None,
+        typer.Option("--src", help="AS-IS 소스 루트 (기본: YUNHEE_ASIS_SRC_DIR)"),
+    ] = None,
+):
+    """기준 이후 들어온 커밋들을 파일/종류(DB·SQL·LOGIC·MODEL·UI·ETC) 단위로 요약"""
+    from yunhee.tools.as_is.drift_ops import render_drift_log
+
+    src_dir = (src or (Path(config.ASIS_SRC_DIR).resolve() if config.ASIS_SRC_DIR else None))
+    if not src_dir or not src_dir.is_dir():
+        typer.secho("오류: AS-IS 소스 루트(--src 또는 YUNHEE_ASIS_SRC_DIR)가 지정되지 않았습니다.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    code, out = render_drift_log(
+        src_root=src_dir,
+        since=since,
+        work_dir=WORK_DIR,
+    )
+    if code != 0:
+        typer.secho(f"오류: {out}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=code)
+    typer.echo(out)
+
+
 
 @app.command(name="sql-check")
 def sql_check_cmd(

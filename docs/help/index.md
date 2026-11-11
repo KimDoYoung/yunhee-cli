@@ -20,7 +20,7 @@
 | **테이블 CRUD 매트릭스 / 컬럼 상태 전이 로직** | `yunhee trace-table`, `trace-crud`, `trace-state` | [`trace.md`](file:///home/kdy987/work/yunhee-cli/docs/help/trace.md) |
 | **AS-IS ↔ TOBE 비교 / 갭(Gap) 및 미연결 자리(--stubs)** | `yunhee trace-pair`, `trace-diff`, `trace-gap [--stubs]` | [`trace.md`](file:///home/kdy987/work/yunhee-cli/docs/help/trace.md) |
 | **AS-IS SQL/CUD → TOBE 매퍼/DTO 코드 생성 (서비스명·DB 객체 검증)** | `yunhee port-sql`, `yunhee port-save` | [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
-| **화면 스타일 판별 / AS-IS 원본 변경(Drift)·신규 매퍼 검증** | `yunhee page-style`, `yunhee drift`, `yunhee sql-check [--new-since-index]`| [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
+| **화면 스타일 판별 / AS-IS 원본 변경(Drift)·신규 매퍼 검증** | `yunhee page-style`, `yunhee drift`, `yunhee drift-*`, `yunhee sql-check [--new-since-index]`| [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
 | **TOBE 화면 자동 오픈 & 버튼/팝업 순회 캡처 검수** | `yunhee screen-capture <screen_id> login=<comp>/<id>/<pw>` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **TOBE 프로젝트 RAG 학습(카탈로그·ChromaDB) 및 상태 점검** | `yunhee rag-index`, `rag-reset`, `rag-status`, `rag-search` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **자연어 화면/모달/그리드 조건 탐색 및 질의** | `yunhee agent "<질문>"`, `yunhee ask -a "<질문>"` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
@@ -84,3 +84,9 @@
 - `page-style <targets...>`: 화면 파일(.tsx / .java)의 구조를 정적 분석하여 페이지 스타일 ID(SID) 판별 및 대조
 - `events <target>`: AS-IS GXT 화면 파일의 이벤트(E0~En), 메서드 테이블, Grid Spec, 버튼 목록 추출
 - `drift [screens...]`: 색인 또는 기준선(baseline) 대비 AS-IS 화면 및 의존 파일의 변경(drift) 감지
+- `drift-unit`: 바뀐 파일을 SQL ID·메서드·UI·모델 단위로 세분화하고 영향 화면 및 TOBE 대응 탐색
+- `drift-done <keys|units>`: 단위 또는 파일 기준선을 갱신하고 반영대장의 상태·처리일·비고 기록
+- `drift-ledger [ledger_path]` (`drift-list`): drift-unit 결과를 반영대장 표 끝에 대기 행으로 자동 덧붙임
+- `drift-diff <unit>`: 단일 단위의 AS-IS 전후 diff 및 TOBE 대응 본문 대조
+- `drift-db`: 직전 DBML과 새 DBML 간 테이블/컬럼/함수 구조 변경 및 영향 매퍼 탐색
+- `drift-log`: 기준선/커밋 이후 변경된 파일들을 커밋별 종류(DB·SQL·LOGIC·MODEL·UI·ETC)로 요약
