@@ -10,7 +10,9 @@
 
 from __future__ import annotations
 
+import difflib
 import json
+import logging
 import re
 from collections import defaultdict
 from datetime import datetime
@@ -28,6 +30,8 @@ from yunhee.tools.as_is.drift import (
     resolve_baseline_path,
     resolve_done_screens,
 )
+
+logger = logging.getLogger(__name__)
 
 # --- 단위 판별 및 종류 판정 ---
 
@@ -50,6 +54,90 @@ def resolve_ledger_path(work_dir: Path | None = None, explicit: Path | None = No
         if c.is_file():
             return c
     return cands[0]
+
+
+def parse_ledger_header(lines: list[str]) -> tuple[int, list[str], dict[str, int]]:
+    """대장 마크다운 줄들에서 표 머리줄(header) 행 번호, 컬럼 목록, 컬럼명->인덱스 맵을 추출한다.
+    
+    헤더 판정:
+    - 파이프(|)로 시작하고 끝나는 행
+    - '키'와 '상태' 컬럼이 모두 포함되어 있는 행
+    """
+    for idx, line in enumerate(lines):
+        line_s = line.strip()
+        if not line_s.startswith("|") or not line_s.endswith("|"):
+            continue
+        parts = [p.strip() for p in line_s.split("|")[1:-1]]
+        if "키" in parts and "상태" in parts:
+            col_map = {name: i for i, name in enumerate(parts)}
+            return idx, parts, col_map
+    return -1, [], {}
+
+
+def split_table_row(line: str) -> list[str] | None:
+    """마크다운 테이블 행을 파싱하여 셀 문자열 리스트 반환. 유효한 행이 아니면 None."""
+    line_s = line.strip()
+    if not line_s.startswith("|") or not line_s.endswith("|"):
+        return None
+    return [p.strip() for p in line_s.split("|")[1:-1]]
+
+
+def format_table_row(cells: list[str]) -> str:
+    """셀 리스트를 마크다운 테이블 행 문자열로 변환 (| c1 | c2 | ... |)."""
+    return "| " + " | ".join(cells) + " |"
+
+
+def extract_mapper_statement_block(xml_text: str, sid: str) -> tuple[str, str, list[str], int] | None:
+    """매퍼 XML에서 id가 sid인 <select|insert|update|delete> 블록을 (kind, body, includes, line_no)로 추출."""
+    stmt_re = re.compile(
+        r"<(select|insert|update|delete)\b[^>]*?\bid\s*=\s*[\"']" + re.escape(sid) + r"[\"'][^>]*>",
+        re.IGNORECASE,
+    )
+    m = stmt_re.search(xml_text)
+    if not m:
+        return None
+    kind = m.group(1).lower()
+    end_tag = f"</{kind}>"
+    pos = xml_text.lower().find(end_tag, m.end())
+    if pos == -1:
+        stmt_body = xml_text[m.start():]
+    else:
+        stmt_body = xml_text[m.start(): pos + len(end_tag)]
+    line_no = xml_text[:m.start()].count("\n") + 1
+    includes = re.findall(r"<include\s+refid\s*=\s*[\"']([^\"']+)[\"']", stmt_body)
+    return kind, stmt_body, includes, line_no
+
+
+def extract_mapper_include_block(xml_text: str, refid: str) -> str | None:
+    """매퍼 XML에서 id가 refid인 <sql> 블록 본문을 추출."""
+    sql_re = re.compile(
+        r"<sql\b[^>]*?\bid\s*=\s*[\"']" + re.escape(refid) + r"[\"'][^>]*>",
+        re.IGNORECASE,
+    )
+    m = sql_re.search(xml_text)
+    if not m:
+        return None
+    end_tag = "</sql>"
+    pos = xml_text.lower().find(end_tag, m.end())
+    if pos == -1:
+        return xml_text[m.start():]
+    return xml_text[m.start(): pos + len(end_tag)]
+
+
+def extract_mapper_resultmap_columns(xml_text: str, result_map_id: str) -> list[str]:
+    """매퍼 XML에서 id가 result_map_id인 <resultMap> 블록의 result/id 컬럼/프로퍼티 목록 추출."""
+    rm_re = re.compile(
+        r"<resultMap\b[^>]*?\bid\s*=\s*[\"']" + re.escape(result_map_id) + r"[\"'][^>]*>",
+        re.IGNORECASE,
+    )
+    m = rm_re.search(xml_text)
+    if not m:
+        return []
+    end_tag = "</resultmap>"
+    pos = xml_text.lower().find(end_tag, m.end())
+    body = xml_text[m.start(): pos + len(end_tag)] if pos != -1 else xml_text[m.start():]
+    cols = re.findall(r"\b(?:column|property)\s*=\s*[\"']([^\"']+)[\"']", body)
+    return list(dict.fromkeys(cols))
 
 
 def classify_file_kind(rel_path: str) -> str:
@@ -608,7 +696,12 @@ def render_drift_unit_table(units: list[dict[str, Any]], all_units: bool = False
 def update_drift_done(
     keys: list[str],
     status: str = "반영",
+    check: str = "",
+    tobe: str = "",
     note: str = "",
+    note_append: bool = False,
+    force: bool = False,
+    dry_run: bool = False,
     work_dir: Path | None = None,
     ledger_path: Path | None = None,
 ) -> tuple[int, str]:
@@ -636,34 +729,87 @@ def update_drift_done(
     ch_keys = [k for k in keys if k.startswith("CH-")]
     raw_units = [k for k in keys if not k.startswith("CH-")]
 
-    updated_units: set[str] = set(raw_units)
-    updated_ledger_rows: list[str] = []
-
-    # 대장에서 CH-키 정보 조회 및 행 갱신
+    header_idx = -1
+    col_names: list[str] = []
+    col_map: dict[str, int] = {}
     if ledger_lines:
-        new_lines: list[str] = []
-        for line in ledger_lines:
-            cols = [c.strip() for c in line.split("|")]
-            if len(cols) >= 12 and cols[1].startswith("CH-"):
-                row_ch = cols[1]
-                row_unit = re.sub(r"[`*]", "", cols[5]).strip()
-                if row_ch in ch_keys or any(ru in row_unit for ru in raw_units):
-                    # 상태, 처리일, 비고 갱신
-                    # | 키 | 발견일 | AS-IS 커밋 | 종류 | 단위 | 변경 요약 | 영향 화면 | TOBE 대응 | 상태 | 처리일 | 비고 |
-                    cols[9] = status
-                    cols[10] = today_str
-                    if note:
-                        cols[11] = f"{cols[11]} {note}".strip() if cols[11] else note
-                    line = " | ".join(cols).strip()
-                    if not line.startswith("|"):
-                        line = "| " + line
-                    if not line.endswith("|"):
-                        line = line + " |"
-                    updated_ledger_rows.append(row_ch)
-                    updated_units.add(row_unit)
-            new_lines.append(line)
+        header_idx, col_names, col_map = parse_ledger_header(ledger_lines)
+        if header_idx == -1:
+            return 1, f"대장 표 머리줄(| 키 | ... | 상태 | ...)을 찾을 수 없습니다: {ledger_file.name}"
+        for req in ("키", "상태", "처리일"):
+            if req not in col_map:
+                return 1, f"대장 표 머리줄에 필수 칸 '{req}'이(가) 없습니다: {ledger_file.name}"
 
-        ledger_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    # 대장 행 매칭
+    matched_rows: list[tuple[int, list[str], str, str]] = []  # (line_idx, parts, row_ch, row_unit)
+    all_table_rows: list[tuple[int, list[str], str, str, str]] = []  # (line_idx, parts, row_ch, row_unit, row_status)
+
+    if ledger_lines and col_map:
+        for line_idx, line in enumerate(ledger_lines):
+            parts = split_table_row(line)
+            if parts is None:
+                continue
+            if len(parts) != len(col_names):
+                if line_idx != header_idx and not line.strip().startswith("|:"):
+                    logger.warning(
+                        "대장 %s:%d 줄의 칸 수가 머리줄과 다릅니다(%d != %d), 건너뜁니다: %s",
+                        ledger_file.name,
+                        line_idx + 1,
+                        len(parts),
+                        len(col_names),
+                        line,
+                    )
+                continue
+            row_ch = parts[col_map["키"]]
+            if not row_ch.startswith("CH-"):
+                continue
+            row_status = parts[col_map["상태"]]
+            row_unit = re.sub(r"[`*]", "", parts[col_map["단위"]]).strip() if "단위" in col_map else ""
+            all_table_rows.append((line_idx, parts, row_ch, row_unit, row_status))
+
+            if row_ch in ch_keys or any(ru in row_unit for ru in raw_units):
+                matched_rows.append((line_idx, parts, row_ch, row_unit))
+
+    # 검증: status가 '반영'인데 '확인' 칸이 비어있는 경우
+    if status == "반영" and "확인" in col_map:
+        for _line_idx, parts, row_ch, _row_unit in matched_rows:
+            curr_check = parts[col_map["확인"]].strip()
+            if not check.strip() and not curr_check and not force:
+                return (
+                    1,
+                    (
+                        f"키 {row_ch}: 상태가 '반영'이지만 '확인' 칸이 비어 있습니다. "
+                        f"(--check \"<확인내용>\"을 지정하거나 --force로 진행하세요)"
+                    ),
+                )
+
+    # 대장 행 갱신 및 diff 미리보기 준비
+    new_ledger_lines = list(ledger_lines)
+    diff_previews: list[str] = []
+    updated_ledger_rows: list[str] = []
+    updated_units: set[str] = set(raw_units)
+
+    for line_idx, parts, row_ch, row_unit in matched_rows:
+        old_line = ledger_lines[line_idx]
+        parts[col_map["상태"]] = status
+        parts[col_map["처리일"]] = today_str
+        if check and "확인" in col_map:
+            parts[col_map["확인"]] = check
+        if tobe and "TOBE 대응" in col_map:
+            parts[col_map["TOBE 대응"]] = tobe
+        if note and "비고" in col_map:
+            old_note = parts[col_map["비고"]].strip()
+            if note_append and old_note:
+                parts[col_map["비고"]] = f"{old_note} · {note}".strip()
+            else:
+                parts[col_map["비고"]] = note
+
+        new_line = format_table_row(parts)
+        new_ledger_lines[line_idx] = new_line
+        diff_previews.append(f"- {old_line}\n+ {new_line}")
+        updated_ledger_rows.append(row_ch)
+        if row_unit:
+            updated_units.add(row_unit)
 
     # baseline.json에 단위 기준선(__units__, __files__) 기록
     if "__units__" not in baseline_data or not isinstance(baseline_data["__units__"], dict):
@@ -678,6 +824,19 @@ def update_drift_done(
         if rc_c == 0 and c_out.strip():
             head_commit = c_out.strip()
 
+    # 대장 내 파일별 남은 대기 단위 집계 (이번에 갱신되는 row 제외)
+    updated_row_set = set(updated_ledger_rows)
+    waiting_units_by_file: dict[str, list[str]] = defaultdict(list)
+    for _l_idx, _pts, r_ch, r_u, r_st in all_table_rows:
+        if r_ch in updated_row_set:
+            continue
+        if r_st == "대기" and r_u:
+            f_part = r_u.split(" · ")[0].strip("`")
+            waiting_units_by_file[f_part].append(r_ch)
+
+    pending_file_msgs: list[str] = []
+    updated_files: list[str] = []
+
     for u in updated_units:
         unit_entry = {
             "status": status,
@@ -689,29 +848,54 @@ def update_drift_done(
 
         baseline_data["__units__"][u] = unit_entry
 
-        # 파일 경로인 경우 __files__에도 함께 기록
+        # 파일 경로인 경우 __files__ 기록 여부 판정
         if "/" in u or u.endswith((".java", ".xml", ".sql")):
             f_clean = u.split(" · ")[0].strip("`")
-            file_entry = {
-                "status": status,
-                "updated_at": now_iso,
-                "note": note,
-            }
-            if head_commit:
-                file_entry["commit"] = head_commit
-            if eff_src and (eff_src / f_clean).is_file():
-                file_entry["blob"] = compute_git_blob_file(eff_src / f_clean)
-            baseline_data["__files__"][f_clean] = file_entry
-
-    baseline_path.write_text(json.dumps(baseline_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            # 해당 파일에 아직 대기 중인 다른 단위가 남아있는지 확인
+            waiting_remains = waiting_units_by_file.get(f_clean, [])
+            if waiting_remains:
+                pending_file_msgs.append(
+                    f"파일 기준선 보류: {f_clean} (대기 단위 {len(waiting_remains)}건: {', '.join(waiting_remains)})"
+                )
+            else:
+                file_entry = {
+                    "status": status,
+                    "updated_at": now_iso,
+                    "note": note,
+                }
+                if head_commit:
+                    file_entry["commit"] = head_commit
+                if eff_src and (eff_src / f_clean).is_file():
+                    file_entry["blob"] = compute_git_blob_file(eff_src / f_clean)
+                baseline_data["__files__"][f_clean] = file_entry
+                updated_files.append(f_clean)
 
     msg_parts = []
     if updated_ledger_rows:
         msg_parts.append(f"대장 갱신 {len(updated_ledger_rows)}건 ({', '.join(updated_ledger_rows)})")
     if updated_units:
         msg_parts.append(f"단위 기준선 갱신 {len(updated_units)}건 ({status})")
+    if updated_files:
+        msg_parts.append(f"파일 기준선 갱신 {len(updated_files)}건")
+    if pending_file_msgs:
+        msg_parts.extend(pending_file_msgs)
 
-    return 0, " · ".join(msg_parts) if msg_parts else "갱신 대상이 없습니다."
+    final_msg = " · ".join(msg_parts) if msg_parts else "갱신 대상이 없습니다."
+
+    # --dry-run인 경우 파일에 쓰지 않고 전/후 diff 및 예정 메시지 반환
+    if dry_run:
+        preview_lines = [f"[dry-run] {final_msg}"]
+        if diff_previews:
+            preview_lines.append("\n대장 변경 예정 diff:")
+            preview_lines.extend(diff_previews)
+        return 0, "\n".join(preview_lines)
+
+    if ledger_lines and new_ledger_lines != ledger_lines:
+        ledger_file.write_text("\n".join(new_ledger_lines) + "\n", encoding="utf-8")
+
+    baseline_path.write_text(json.dumps(baseline_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return 0, final_msg
 
 
 # --- 3. drift-ledger 구현 ---
@@ -728,31 +912,34 @@ def append_to_ledger(
     text = ledger_path.read_text(encoding="utf-8", errors="replace")
     lines = text.splitlines()
 
-    # 기존 대장 행 파싱
-    # 칸: 키 · 발견일 · AS-IS 커밋 · 종류 · 단위 · 변경 요약 · 영향 화면 · TOBE 대응 · 상태 · 처리일 · 비고
+    # 대장 머리줄 파싱 (11칸/12칸 동적 대응)
+    header_idx, col_names, col_map = parse_ledger_header(lines)
+    if header_idx == -1:
+        # 헤더가 없으면 기본 12칸 양식 채택
+        col_names = [
+            "키", "발견일", "AS-IS 커밋", "종류", "단위",
+            "변경 요약", "영향 화면", "TOBE 대응", "확인", "상태", "처리일", "비고",
+        ]
+        col_map = {name: i for i, name in enumerate(col_names)}
+
     existing_rows: dict[str, dict[str, Any]] = {}
     max_num = 0
 
     for idx, line in enumerate(lines):
-        cols = [c.strip() for c in line.split("|")]
-        if len(cols) >= 12 and cols[1].startswith("CH-"):
-            k = cols[1]
+        parts = split_table_row(line)
+        if not parts or len(parts) != len(col_names):
+            continue
+        k = parts[col_map["키"]]
+        if k.startswith("CH-"):
             m_num = re.search(r"CH-(\d+)", k)
             if m_num:
                 max_num = max(max_num, int(m_num.group(1)))
             existing_rows[k] = {
                 "line_idx": idx,
+                "parts": parts,
                 "key": k,
-                "found_date": cols[2],
-                "commit": cols[3],
-                "kind": cols[4],
-                "unit": cols[5],
-                "summary": cols[6],
-                "screens": cols[7],
-                "tobe": cols[8],
-                "status": cols[9],
-                "done_date": cols[10],
-                "note": cols[11],
+                "unit": parts[col_map["단위"]] if "단위" in col_map else "",
+                "status": parts[col_map["상태"]] if "상태" in col_map else "",
             }
 
     now_kst = datetime.now(tz=KST)
@@ -778,35 +965,52 @@ def append_to_ledger(
         summary_disp = u["change"]
 
         if matched and matched["status"] == "대기":
-            # 대기 상태이면 커밋·요약만 갱신
-            matched["commit"] = c_disp
-            matched["summary"] = summary_disp
-            matched["screens"] = sc_disp
-            if tobe_disp:
-                matched["tobe"] = tobe_disp
+            # 대기 상태이면 커밋·요약·화면·TOBE 갱신
+            pts = matched["parts"]
+            if "AS-IS 커밋" in col_map:
+                pts[col_map["AS-IS 커밋"]] = c_disp
+            if "변경 요약" in col_map:
+                pts[col_map["변경 요약"]] = summary_disp
+            if "영향 화면" in col_map:
+                pts[col_map["영향 화면"]] = sc_disp
+            if tobe_disp and "TOBE 대응" in col_map:
+                pts[col_map["TOBE 대응"]] = tobe_disp
+            lines[matched["line_idx"]] = format_table_row(pts)
             updated_rows.append(matched["key"])
         else:
-            # 새 줄 추가 (이전에 반영/해당없음이었더라도 다시 바뀌었으면 새 줄)
+            # 새 줄 추가
             max_num += 1
             new_key = f"CH-{max_num:04d}"
-            # | 키 | 발견일 | AS-IS 커밋 | 종류 | 단위 | 변경 요약 | 영향 화면 | TOBE 대응 | 상태 | 처리일 | 비고 |
-            row_line = (
-                f"| {new_key} | {today_str} | {c_disp} | {u['kind']} | {u_str} | "
-                f"{summary_disp} | {sc_disp} | {tobe_disp} | 대기 |  |  |"
-            )
-            added_rows.append(row_line)
+            row_cells = []
+            for col in col_names:
+                if col == "키":
+                    row_cells.append(new_key)
+                elif col == "발견일":
+                    row_cells.append(today_str)
+                elif col == "AS-IS 커밋":
+                    row_cells.append(c_disp)
+                elif col == "종류":
+                    row_cells.append(u["kind"])
+                elif col == "단위":
+                    row_cells.append(u_str)
+                elif col == "변경 요약":
+                    row_cells.append(summary_disp)
+                elif col == "영향 화면":
+                    row_cells.append(sc_disp)
+                elif col == "TOBE 대응":
+                    row_cells.append(tobe_disp)
+                elif col == "확인":
+                    row_cells.append("")
+                elif col == "상태":
+                    row_cells.append("대기")
+                elif col in ("확인", "처리일", "비고"):
+                    row_cells.append("")
+                else:
+                    row_cells.append("")
+            added_rows.append(format_table_row(row_cells))
 
     if dry_run:
         return 0, f"[dry-run] 추가 예정 {len(added_rows)}건, 대기 갱신 예정 {len(updated_rows)}건"
-
-    # 파일에 반영
-    for r in existing_rows.values():
-        if r["key"] in updated_rows:
-            idx = r["line_idx"]
-            lines[idx] = (
-                f"| {r['key']} | {r['found_date']} | {r['commit']} | {r['kind']} | {r['unit']} | "
-                f"{r['summary']} | {r['screens']} | {r['tobe']} | {r['status']} | {r['done_date']} | {r['note']} |"
-            )
 
     lines.extend(added_rows)
     ledger_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -832,7 +1036,9 @@ def render_unit_diff(
     # 기준 커밋
     baseline_path = resolve_baseline_path(wd)
     base_commit = "HEAD~1"
-    if baseline_path.is_file():
+    if base != "baseline":
+        base_commit = base
+    elif baseline_path.is_file():
         try:
             b_data = json.loads(baseline_path.read_text(encoding="utf-8"))
             commits = [v.get("commit") for v in b_data.values() if isinstance(v, dict) and v.get("commit") and v.get("commit") != "none"]
@@ -852,24 +1058,97 @@ def render_unit_diff(
         if xml_matches:
             xml_p = xml_matches[0]
             rel_p = xml_p.relative_to(src_root).as_posix()
-            _rc, diff_txt, _ = _run_git(src_root, ["diff", "-w", base_commit, "HEAD", "--", rel_p])
-            out_lines.append(f"--- AS-IS Diff ({rel_p} @ {base_commit}..HEAD) ---")
-            if diff_txt.strip():
-                # 해당 statement 블록 diff만 필터링
-                out_lines.append(diff_txt.strip())
+
+            # 이전(base_commit) 및 현재(작업 트리) 파일 내용 조회
+            rc_base, base_raw, _ = _run_git(src_root, ["show", f"{base_commit}:{rel_p}"])
+            base_content = base_raw if rc_base == 0 else ""
+            curr_content = xml_p.read_text(encoding="utf-8", errors="replace")
+
+            base_stmt = extract_mapper_statement_block(base_content, sid) if base_content else None
+            curr_stmt = extract_mapper_statement_block(curr_content, sid)
+
+            out_lines.append(f"--- AS-IS Diff ({rel_p} #{sid} @ {base_commit}..HEAD) ---")
+
+            if base_stmt is None and curr_stmt is None:
+                out_lines.append(f"(SQL ID '{sid}'를 base({base_commit})와 현재 파일 모두에서 찾을 수 없습니다)")
+            elif base_stmt is None and curr_stmt is not None:
+                kind, body, _incs, line_no = curr_stmt
+                out_lines.append(f"[신규 추가] <{kind} id=\"{sid}\"> (L{line_no})")
+                out_lines.append(body.strip())
+            elif base_stmt is not None and curr_stmt is None:
+                kind, body, _incs, line_no = base_stmt
+                out_lines.append(f"[삭제됨] <{kind} id=\"{sid}\"> (base L{line_no})")
+                out_lines.append(body.strip())
             else:
-                out_lines.append("(해당 파일 diff 없음)")
+                assert base_stmt is not None and curr_stmt is not None
+                _b_kind, b_body, _b_incs, b_lno = base_stmt
+                _c_kind, c_body, c_incs, c_lno = curr_stmt
+
+                # 공백 정규화 비교 (-w)
+                b_norm = re.sub(r"\s+", " ", b_body.strip())
+                c_norm = re.sub(r"\s+", " ", c_body.strip())
+
+                if b_norm == c_norm:
+                    out_lines.append(f"(해당 SQL 변경 없음 — 동일 또는 공백만 다름 @ L{c_lno})")
+                else:
+                    b_lines = [ln.rstrip() for ln in b_body.splitlines()]
+                    c_lines = [ln.rstrip() for ln in c_body.splitlines()]
+                    diff_lines = list(
+                        difflib.unified_diff(
+                            b_lines,
+                            c_lines,
+                            fromfile=f"{base_commit}:{rel_p} #{sid} L{b_lno}",
+                            tofile=f"HEAD:{rel_p} #{sid} L{c_lno}",
+                            lineterm="",
+                        )
+                    )
+                    out_lines.extend(diff_lines)
+
+                # 연관 <include refid="..."> 변경점 추적
+                if c_incs and base_content:
+                    for ref in dict.fromkeys(c_incs):
+                        b_inc = extract_mapper_include_block(base_content, ref)
+                        c_inc = extract_mapper_include_block(curr_content, ref)
+                        if b_inc and c_inc:
+                            b_inc_norm = re.sub(r"\s+", " ", b_inc.strip())
+                            c_inc_norm = re.sub(r"\s+", " ", c_inc.strip())
+                            if b_inc_norm != c_inc_norm:
+                                out_lines.append(f"\n--- 연관 <sql id=\"{ref}\"> diff ---")
+                                inc_diff = list(
+                                    difflib.unified_diff(
+                                        b_inc.splitlines(),
+                                        c_inc.splitlines(),
+                                        fromfile=f"include:{ref}@{base_commit}",
+                                        tofile=f"include:{ref}@HEAD",
+                                        lineterm="",
+                                    )
+                                )
+                                out_lines.extend(inc_diff)
+
+                # 연관 resultMap 변경 요약 (curr_stmt 내에 resultMap="foo" 참조 시)
+                rm_match = re.search(r"resultMap\s*=\s*[\"']([^\"']+)[\"']", c_body)
+                if rm_match and base_content:
+                    rm_id = rm_match.group(1).split(".")[-1]
+                    b_cols = set(extract_mapper_resultmap_columns(base_content, rm_id))
+                    added_rm_cols = [c for c in extract_mapper_resultmap_columns(curr_content, rm_id) if c not in b_cols]
+                    if added_rm_cols:
+                        out_lines.append(f"\n(연관 resultMap '{rm_id}' +{len(added_rm_cols)}: {', '.join(added_rm_cols)})")
+
         else:
             out_lines.append(f"AS-IS 매퍼 XML({ns}.xml)을 찾지 못했습니다.")
 
-        # TOBE 매퍼 대응 본문
+        # TOBE 매퍼 대응 본문 (네임스페이스/AS-IS 주석 일치 우선)
         if tobe_idx:
-            tobe_stmts = [s for s in tobe_idx.statements.values() if unit in s.as_is_ids or sid == s.id]
+            # 1순위: as_is_ids에 ns.sid 또는 unit이 들어있는 경우
+            # 2순위: 네임스페이스와 sid가 모두 일치하는 경우
+            tobe_stmts = [
+                s for s in tobe_idx.statements.values()
+                if unit in s.as_is_ids or f"{ns}.{sid}" in s.as_is_ids or (s.namespace.lower() == ns.lower() and s.id == sid)
+            ]
             if tobe_stmts:
                 out_lines.append("\n--- TOBE 대응 문장 ---")
                 for ts in tobe_stmts:
                     out_lines.append(f"[{ts.namespace}.{ts.id}] {ts.file}:{ts.line} ({ts.kind})")
-                    # 파일 본문 읽기
                     t_xml = Path(ts.file).read_text(encoding="utf-8", errors="replace").splitlines()
                     out_lines.extend(t_xml[max(0, ts.line - 1):min(len(t_xml), ts.line + 25)])
             else:
@@ -895,7 +1174,8 @@ def render_unit_diff(
         if tobe_idx:
             tobe_svcs = [
                 sm for (s_cls, sm_name), sm in tobe_idx.services.items()
-                if sm_name == m_name or any(unit in k for k in sm.keys)
+                if (sm_name == m_name and (cls_name.lower() in s_cls.lower() or not cls_name))
+                or any(unit in k for k in sm.keys)
             ]
             if tobe_svcs:
                 out_lines.append("\n--- TOBE 대응 서비스 메서드 ---")

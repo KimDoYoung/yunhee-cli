@@ -1972,22 +1972,47 @@ def drift_done_cmd(
         str,
         typer.Option("--status", help="변경 상태: 반영(기본) | 해당없음 | 보류 | 넘김"),
     ] = "반영",
+    check: Annotated[
+        str,
+        typer.Option("--check", help="확인 방법·근거 (상태가 '반영'일 때 필수; 예: compare 일치, 테스트 클래스명 등)"),
+    ] = "",
+    tobe: Annotated[
+        str,
+        typer.Option("--tobe", help="TOBE 대응 문장/메서드 (대장 'TOBE 대응' 칸)"),
+    ] = "",
     note: Annotated[
         str,
-        typer.Option("--note", help="비고/사유"),
+        typer.Option("--note", help="비고/사유 (기본: 덮어쓰기)"),
     ] = "",
+    note_append: Annotated[
+        bool,
+        typer.Option("--note-append", help="비고 칸을 덮어쓰지 않고 ' · <note>'로 덧붙이기"),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="확인 칸 누락 등의 검증 경고를 무시하고 강제 진행"),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="대장과 baseline.json에 실제 쓰지 않고 변경 전후 diff 미리보기"),
+    ] = False,
     ledger: Annotated[
         Path | None,
         typer.Option("--ledger", help="반영대장 마크다운 파일 경로"),
     ] = None,
 ):
-    """단위 또는 파일 기준선을 갱신하고 반영대장의 상태·처리일·비고 기록"""
+    """단위 또는 파일 기준선을 갱신하고 반영대장의 확인·상태·처리일·비고 기록"""
     from yunhee.tools.as_is.drift_ops import update_drift_done
 
     code, msg = update_drift_done(
         keys=keys,
         status=status,
+        check=check,
+        tobe=tobe,
         note=note,
+        note_append=note_append,
+        force=force,
+        dry_run=dry_run,
         work_dir=WORK_DIR,
         ledger_path=ledger,
     )

@@ -1588,16 +1588,14 @@ def run_drift(
                 continue
 
             # 파일이 존재하는 경우 해시 비교
-            # §2: baseline의 __files__ 또는 __units__에 이 파일이 등록되어 있고 완료 상태인지 확인
+            # baseline의 __files__ 또는 __units__에 이 파일 전체가 등록되어 있고 완료 상태인지 확인
+            # (주의: 파일 내 개별 단위가 완료되었다고 해서 파일 전체를 스킵하면 안 되며,
+            # 모든 하위 단위가 완료되어 __files__에 기록되었거나 파일 자체가 단위로 등록된 경우만 스킵)
             f_bl = files_baseline.get(rel_p)
-            if f_bl and isinstance(f_bl, dict) and f_bl.get("status") in ("반영", "해당없음", "완료"):
+            if f_bl and isinstance(f_bl, dict) and f_bl.get("status") in ("반영", "해당없음", "완료", "넘김", "보류"):
                 continue
-            if any(
-                isinstance(u_info, dict)
-                and u_info.get("status") in ("반영", "해당없음", "완료")
-                and (u_key == rel_p or rel_p in u_key or Path(rel_p).stem in u_key)
-                for u_key, u_info in units_baseline.items()
-            ):
+            u_self = units_baseline.get(rel_p)
+            if u_self and isinstance(u_self, dict) and u_self.get("status") in ("반영", "해당없음", "완료", "넘김", "보류"):
                 continue
 
             if not git_mode or b_hash.startswith("sha256:"):

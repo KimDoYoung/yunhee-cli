@@ -2,7 +2,27 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
-## [0.8.7] - 2026-11-11
+## [0.8.8] - 2026-11-11
+수정사항 055 반영: `drift-done` 대장 칸 동적 매핑, `확인` 칸 지원 및 검증, 파일 기준선 범위 정상화 / `drift-diff` SQL statement 블록 격리 diff
+- **대장 표 머리줄 기반 열 동적 위치 매핑 (`src/yunhee/tools/as_is/drift_ops.py`, `src/yunhee/cli.py`)**:
+  - `drift-done` 및 `drift-ledger`에서 대장 표 헤더(`| 키 | ... |`)를 정적 분석하여 컬럼 위치(`키`, `상태`, `확인`, `처리일`, `비고`, `TOBE 대응` 등)를 동적으로 찾아 값을 기록.
+  - 12칸 대장(`확인` 칸 신설)에서 발생하던 한 칸 밀림 버그 원천 해결 및 열 순서가 변경된 커스텀 대장에서도 완벽 지원.
+  - 머리줄과 칸 수가 다른 줄은 수정하지 않고 경고 로깅, 필수 칸(`키`, `상태`, `처리일`) 누락 시 안전하게 중단.
+  - `--dry-run`: 실제 대장 및 `baseline.json`을 수정하지 않고 전/후 변경 diff 미리보기 출력.
+- **`확인` 칸 관리 및 `--status 반영` 엄격 검증 (`src/yunhee/tools/as_is/drift_ops.py`, `src/yunhee/cli.py`)**:
+  - `--check "<문구>"` 옵션 추가: `확인` 칸에 반영 방법/근거(compare 일치, 테스트 클래스명 등) 기록.
+  - `--status 반영`일 때 `--check`가 없고 기존 `확인` 칸도 비어 있으면 작업을 중단하고 경고 (`--force` 지정 시에만 강제 진행). `해당없음`/`보류`/`넘김`은 `--check` 생략 가능.
+  - `--tobe "<파일·id>"` 옵션 추가: 대장의 `TOBE 대응` 칸을 직접 갱신 가능.
+  - `--note` 기본 덮어쓰기 및 `--note-append` 옵션 신설: 기존 비고 뒤에 ` · <note>`로 안전하게 덧붙이기 지원.
+- **파일 기준선(`__files__`) 보류 로직 및 화면 변경 감지 누락 방지 (`src/yunhee/tools/as_is/drift_ops.py`, `src/yunhee/tools/as_is/drift.py`)**:
+  - 단위 하나 처리 시 파일 전체를 `__files__`로 갱신하던 문제를 해결하여, 대장 내 해당 파일의 바뀐 단위 중 `대기` 상태가 남아있으면 `__files__` 갱신을 보류하고 `__units__`만 갱신(`파일 기준선 보류: ... 대기 단위 n건`).
+  - 해당 파일의 모든 단위가 처리되었을 때만 `__files__` 기준선 최신화.
+  - `drift`(화면 drift)에서 파일 내 특정 단위 하나만 완료되어 있어도 파일 전체를 스킵하던 버그를 제거하여, 미완료 단위가 남아있는 화면이 변경 없음으로 누락되는 문제 차단.
+- **`drift-diff <ns.id>` SQL statement 블록 단위 격리 diff (`src/yunhee/tools/as_is/drift_ops.py`)**:
+  - SQL 단위 비교 시 파일 전체 git diff를 출력하던 문제를 해결하고, 기준 커밋과 현재 작업 트리의 대상 `<select|insert|update|delete id="...">` 블록만 추출하여 블록 대 블록 unified diff(`-w` 공백 무시) 수행.
+  - 신규 생성 블록(`[신규 추가]`), 삭제된 블록(`[삭제됨]`), 동일 블록(`(해당 SQL 변경 없음)`)을 명확히 구분.
+  - 해당 SQL이 참조하는 `<include refid="...">` 조각의 변경 diff 덧붙이기 및 `resultMap` 신규 컬럼 변경 요약 출력.
+  - TOBE 대응 매핑 시 단순 ID 일치가 아닌 네임스페이스(`ns.sid`) 및 AS-IS 주석 일치 기준으로 정밀 필터링하여 무관한 타 파일 매퍼 노출 차단.
 수정사항 054 반영: 변경반영용 `drift-*` 명령군 (단위 감지·대장·파일 기준선) 및 호출 색인 누락 보완
 - **`drift-unit` 바뀐 파일의 SQL ID·메서드·UI·모델 단위 세분화 (`src/yunhee/tools/as_is/drift_ops.py`, `src/yunhee/cli.py`)**:
   - 변경된 파일 전체가 아닌 hunk가 걸친 `<select|insert|update|delete id="...">` 및 자바 메서드(`Class#method()`) 단위로 분해.
