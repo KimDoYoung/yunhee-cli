@@ -3586,5 +3586,37 @@ def biz_code(
         raise typer.Exit(code=1) from exc
 
 
+@app.command(name="biz-db-write")
+def biz_db_write(
+    file: Annotated[str | None, typer.Option("-f", "--file", help="실행할 SQL 파일 경로")] = None,
+    expr: Annotated[str | None, typer.Option("-e", "--expr", help="직접 실행할 SQL 문장")] = None,
+    db: Annotated[str | None, typer.Option("--db", help="데이터베이스 환경변수 이름")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="커밋하지 않고 전체 롤백 (--rollback)")] = False,
+    no_backup: Annotated[bool, typer.Option("--no-backup", help="실행 전 자동 백업 생략")] = False,
+    allow_ddl: Annotated[bool, typer.Option("--allow-ddl", help="DDL 및 WHERE 절 없는 UPDATE/DELETE 허용")] = False,
+) -> None:
+    """로컬 DB에 한하여 자동 백업 및 안전 가드를 거쳐 안전하게 SQL 쓰기 및 트랜잭션 실행"""
+    from yunhee.tools.biz.dbwrite import execute_db_write
+
+    if not file and not expr:
+        typer.secho("오류: 실행할 SQL 파일(-f) 또는 문장(-e)을 지정하세요.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        lines, _ = execute_db_write(
+            sql_text=expr,
+            file_path=file,
+            db_name=db,
+            dry_run=dry_run,
+            no_backup=no_backup,
+            allow_ddl=allow_ddl,
+        )
+        for line in lines:
+            typer.echo(line)
+    except (ValueError, RuntimeError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
 if __name__ == "__main__":
     app()

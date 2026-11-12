@@ -731,6 +731,97 @@ class TestBizCode:
         assert "PaymentMethodCode" in similar
 
 
+class TestBizDbWrite:
+    """수정사항060 #7: biz-db-write 로컬 DB 안전 쓰기 및 트랜잭션 롤백 테스트."""
+
+    def test_safety_check_connection(self, monkeypatch):
+        from yunhee.tools.biz.dbwrite import check_db_write_allowed
+
+        monkeypatch.setenv("YUNHEE_DB_WRITE", "1")
+        # localhost + asseterpdb -> 허용
+        assert check_db_write_allowed("postgresql://user:pass@localhost:5432/asseterpdb") is True
+        assert check_db_write_allowed("postgresql://user:pass@127.0.0.1:5432/asseterpdb") is True
+
+        # 원격 호스트 -> 거절
+        with pytest.raises(ValueError, match="원격"):
+            check_db_write_allowed("postgresql://user:pass@10.0.0.5:5432/asseterpdb")
+
+        # 다른 DB -> 거절
+        with pytest.raises(ValueError, match="허용되지 않은 DB"):
+            check_db_write_allowed("postgresql://user:pass@localhost:5432/otherdb")
+
+        # YUNHEE_DB_WRITE 꺼짐 -> 거절
+        monkeypatch.delenv("YUNHEE_DB_WRITE", raising=False)
+        with pytest.raises(ValueError, match="YUNHEE_DB_WRITE"):
+            check_db_write_allowed("postgresql://user:pass@localhost:5432/asseterpdb")
+
+    def test_guard_write_statement(self):
+        from yunhee.tools.biz.dbwrite import guard_write_statement
+
+        # 정상 문장
+        guard_write_statement("UPDATE table SET a=1 WHERE id=1;")
+        guard_write_statement("DELETE FROM table WHERE id=1;")
+        guard_write_statement("INSERT INTO table (id) VALUES (1);")
+
+        # WHERE 없는 DELETE / UPDATE -> 거절
+        with pytest.raises(ValueError, match="WHERE"):
+            guard_write_statement("DELETE FROM table;")
+        with pytest.raises(ValueError, match="WHERE"):
+            guard_write_statement("UPDATE table SET a=1;")
+
+        # DDL 문장 -> 거절
+        with pytest.raises(ValueError, match="DDL"):
+            guard_write_statement("DROP TABLE table;")
+        with pytest.raises(ValueError, match="DDL"):
+            guard_write_statement("TRUNCATE TABLE table;")
+
+        # allow_ddl=True 면 통과
+        guard_write_statement("DROP TABLE table;", allow_ddl=True)
+
+    def test_backup_failure_aborts(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from yunhee.tools.biz.dbwrite import execute_db_write
+
+        monkeypatch.setenv("YUNHEE_DB_WRITE", "1")
+        monkeypatch.setattr("yunhee.tools.sql_runner.get_connection_string", lambda *args: "postgresql://localhost/asseterpdb")
+
+        mock_sub = MagicMock()
+        mock_sub.return_value.returncode = 1
+        mock_sub.return_value.stderr = "Backup failed"
+        monkeypatch.setattr("subprocess.run", mock_sub)
+
+        with pytest.raises(ValueError, match="백업"):
+            execute_db_write(sql_text="UPDATE t SET a=1 WHERE id=1;", no_backup=False)
+
+    def test_multi_statement_rollback_on_error(self, monkeypatch):
+        from yunhee.tools.biz.dbwrite import execute_db_write
+
+        monkeypatch.setenv("YUNHEE_DB_WRITE", "1")
+        monkeypatch.setattr("yunhee.tools.sql_runner.get_connection_string", lambda *args: "postgresql://localhost/asseterpdb")
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+
+        def fake_execute(query, params=None):
+            if "FAIL" in query:
+                raise RuntimeError("DB Error on statement 2")
+
+        mock_cur.execute.side_effect = fake_execute
+        monkeypatch.setattr("psycopg.connect", lambda *args, **kwargs: mock_conn)
+
+        sql_script = "UPDATE t SET a=1 WHERE id=1;\nUPDATE t SET a=FAIL WHERE id=2;"
+        with pytest.raises(RuntimeError, match="DB Error"):
+            execute_db_write(sql_text=sql_script, no_backup=True)
+
+        # 롤백 호출 확인
+        assert mock_conn.rollback.called
+        assert not mock_conn.commit.called
+
+
+
 
 
 
