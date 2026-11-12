@@ -3379,5 +3379,35 @@ def screen_desc_cmd(
         typer.echo(render_screen_desc_md(data, summary=summary, section=section).rstrip())
 
 
+@app.command(name="biz-endpoints")
+def biz_endpoints(
+    target: Annotated[str, typer.Argument(help="도메인명 (예: att, pay) 또는 컨트롤러 .java 파일 경로")],
+    path: Annotated[str | None, typer.Option("--path", help="경로 필터링 문자열 (예: annuals)")] = None,
+    output: Annotated[str, typer.Option("-o", "--output", help="출력 형식 (md, json, tsv)")] = "md",
+) -> None:
+    """TOBE API 엔드포인트 목록 및 파라미터·본문 DTO·서비스·권한검사 표 출력"""
+    import json
+
+    from yunhee.tools.biz.endpoints import (
+        collect_endpoints,
+        format_endpoints_json,
+        format_endpoints_md,
+        format_endpoints_tsv,
+    )
+
+    endpoints = collect_endpoints(target, path_filter=path)
+    if not endpoints:
+        typer.secho(f"조회된 엔드포인트가 없습니다: target={target}, path={path}", fg=typer.colors.YELLOW, err=True)
+        return
+
+    fmt = output.lower()
+    if fmt == "json":
+        typer.echo(json.dumps(format_endpoints_json(endpoints), ensure_ascii=False, indent=2))
+    elif fmt == "tsv":
+        typer.echo(format_endpoints_tsv(endpoints))
+    else:
+        typer.echo(format_endpoints_md(endpoints))
+
+
 if __name__ == "__main__":
     app()

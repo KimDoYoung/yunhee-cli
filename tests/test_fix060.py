@@ -189,3 +189,66 @@ class TestApiLogin:
         )
         # 실패 응답을 직접 받음 (가드에 의해 차단되지 않음)
         assert "서버 실패 횟수 3/5회" in res_forced.error
+
+
+class TestBizEndpoints:
+    """수정사항060 #2: biz-endpoints 파싱 및 표/JSON 출력 테스트."""
+
+    def test_collect_endpoints_fixtures(self):
+        from yunhee.tools.biz.endpoints import (
+            collect_endpoints,
+            format_endpoints_json,
+            format_endpoints_md,
+        )
+
+        fixture_dir = Path(__file__).parent / "fixtures" / "biz060"
+        ctrl_file = fixture_dir / "controller" / "FooController.java"
+
+        endpoints = collect_endpoints(ctrl_file, root_dir=fixture_dir)
+        assert len(endpoints) == 4
+
+        # 1. GET /api/v1/foo/bars
+        e_get = endpoints[0]
+        assert e_get["method"] == "GET"
+        assert e_get["path"] == "/api/v1/foo/bars"
+        assert e_get["query_str"] == "personId?, baseDate"
+        assert e_get["body_str"] == "—"
+        assert e_get["service"] == "FooService.search"
+        assert "회사" in e_get["guards"] and "본인" in e_get["guards"]
+
+        # 2. PUT /api/v1/foo/bars/{id}/time
+        e_put_time = endpoints[1]
+        assert e_put_time["method"] == "PUT"
+        assert e_put_time["path"] == "/api/v1/foo/bars/{id}/time"
+        assert e_put_time["query_str"] == "—"
+        assert e_put_time["body_str"] == "FooReq{ids(List<Long>), checkIn(LocalDate), checkInStr}"
+        assert e_put_time["service"] == "FooService.updateTime"
+        assert e_put_time["guards"] == ["회사"]
+
+        # 3. DELETE /api/v1/foo/bars
+        e_del = endpoints[2]
+        assert e_del["method"] == "DELETE"
+        assert e_del["path"] == "/api/v1/foo/bars"
+        assert e_del["body_str"] == "List<Long>"
+        assert e_del["service"] == "FooService.deleteList"
+        assert e_del["guards"] == ["KFS관리자"]
+
+        # 4. PUT /api/v1/foo/bars/{id}/appr
+        e_put_appr = endpoints[3]
+        assert e_put_appr["method"] == "PUT"
+        assert e_put_appr["query_str"] == "apprId"
+        assert e_put_appr["body_str"] == "—"
+        assert e_put_appr["service"] == "FooService.updateAppr"
+        assert e_put_appr["guards"] == ["⚠없음"]
+
+        # Markdown 포맷 검증
+        md = format_endpoints_md(endpoints)
+        assert "| GET | /api/v1/foo/bars |" in md
+        assert "FooReq{ids(List<Long>), checkIn(LocalDate), checkInStr}" in md
+        assert "엔드포인트 4개 · 쓰기 3개 · 쓰기 중 'KFS관리자' 1 · '본인' 0 · '회사'만 1 ← biz-authz 후보" in md
+
+        # JSON 포맷 키 구조 검증
+        j_data = format_endpoints_json(endpoints)
+        assert len(j_data) == 4
+        assert set(j_data[0].keys()) >= {"method", "path", "query", "body", "service", "guards", "file", "line"}
+
