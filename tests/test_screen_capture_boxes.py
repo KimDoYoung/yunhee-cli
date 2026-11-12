@@ -167,16 +167,16 @@ def test_collect_boxes_full_page():
 
         # 5. 모달 및 모달 타이틀 확인
         modal_elem = next(e for e in elements if e["kind"] == "modal")
-        assert modal_elem["name"] == "책무 등록"
+        assert modal_elem["name"] == "책무 등록(모달)"
         assert modal_elem["area"] == "modal"
 
         title_elem = next(e for e in elements if e["kind"] == "modal-title")
         assert title_elem["name"] == "책무 등록:제목"
-        assert title_elem["parent"] == "책무 등록"
+        assert title_elem["parent"] == "책무 등록(모달)"
 
         # 6. 모달 내부 버튼 확인
         save_btn = next(e for e in elements if e["name"] == "저장")
-        assert save_btn["parent"] == "책무 등록"
+        assert save_btn["parent"] == "책무 등록(모달)"
         assert save_btn["area"] == "modal"
 
         # 7. 그리드 요소 확인
@@ -223,7 +223,7 @@ def test_collect_boxes_modal_only():
         names = [e["name"] for e in elements]
 
         # 모달 내부 요소들만 포함되거나 모달 영역 내에 위치해야 함
-        assert "책무 등록" in names
+        assert "책무 등록(모달)" in names
         assert "책무 등록:제목" in names
         assert "저장" in names
         assert "닫기" in names

@@ -2,6 +2,28 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.9.2] - 2026-11-12
+수정사항 059 반영: `--boxes` 및 `mark` 7가지 결함 보완 (가려진 요소 배제 · 레이어 격리 네이밍 · 아이콘 헤더 매핑 · 체크박스 정합성 · 미지원 type 차단 · 팝업 폼 라벨 취득 · 바깥 앵커)
+- **팝업에 가려진 본 화면 요소 자동 배제 (`src/yunhee/tools/screen_capture.py`)**:
+  - `document.elementFromPoint` 기반 다중 샘플링 검사(`isElementCovered`)를 도입하여 모달 마스크나 창 뒤에 가려져 보이지 않는 본 화면(`area: main`) 요소를 `.boxes.json` 수집에서 완전 제외.
+- **레이어(main vs modal) 단위 요소 이름 번호 매기기 (`src/yunhee/tools/screen_capture.py`)**:
+  - `layerKey`를 기준으로 번호 카운트를 격리하여, 본 화면의 요소 존재 여부에 관계없이 모달 내부 요소가 전체 캡처와 `--modal-only` 캡처에서 일관된 이름(`책무구분`, 불필요한 `#2` 제거) 유지.
+- **아이콘 컬럼 헤더 및 셀 이름 ID 매핑 (`src/yunhee/tools/screen_capture.py`)**:
+  - `__rownum` $\to$ `헤더:번호` / `grid1.행1.번호`, `ag-Grid-SelectionColumn` $\to$ `헤더:선택` / `grid1.행1.선택` 고정 매핑.
+  - 글자 없는 아이콘 컬럼은 바로 왼쪽 헤더 글자와 결합하여 `헤더:세부내용 수정`, `grid1.행1.세부내용 수정` 등 사람이 식별 가능한 이름으로 자동 매핑.
+- **행 체크박스 이름 및 크기 정합성 확보 (`src/yunhee/tools/screen_capture.py`)**:
+  - 행 선택 체크박스는 `grid1.행1.선택`, 값 체크박스는 컬럼 헤더 이름(`grid1.행1.공통책무`)으로 분기.
+  - 셀 안쪽 체크박스 크기를 내부 박스 기준 16x16 픽셀 크기로 정밀 보정.
+- **`mark`: 지원되지 않는 `type` 오류 차단 및 추천 (`src/yunhee/tools/marker.py`, `src/yunhee/cli.py`)**:
+  - 알려지지 않은 type 입력 시 무시되지 않고 `ValueError` 발생, 종료코드 1 및 출력 파일 미생성 가드 강제.
+  - `difflib` 기반 오타 후보 추천(예: `circel-number` $\to$ `circle-number`) 및 향후 지원 예정 타입(`orthogonal-arrow` 등) 별도 안내.
+- **팝업 안 폼 요소 라벨 및 모달 이름 충돌 방지 (`src/yunhee/tools/screen_capture.py`)**:
+  - 모달 창 이름을 `[이름](모달)`로 명명하여 내부 라벨과의 이름 충돌 원천 방지.
+  - AntD `Form.Item` 안의 라벨(왼쪽/오른쪽)을 체크박스/라디오 및 textarea 이름으로 정확히 추출.
+- **`mark`: 대상 상자 바깥 배치 `anchor` 지원 (`src/yunhee/tools/marker.py`)**:
+  - `outside-top-left`, `outside-top`, `outside-top-right`, `outside-bottom-*`, `outside-left`, `outside-right` 8종 앵커 추가.
+  - 대상 요소의 텍스트를 가리지 않고 `radius` 및 `gap`(기본 4px)만큼 대상 테두리 바깥으로 이격 배치.
+
 ## [0.9.1] - 2026-11-12
 수정사항 058 반영: `mark` 캡처 PNG 위에 번호 원·강조 상자·화살표·말풍선·마스킹 렌더링 (A-Man 매뉴얼 이미지 자동 제작)
 - **A-Man 호환 매뉴얼 이미지 마킹 도구 (`src/yunhee/tools/marker.py`, `src/yunhee/cli.py`)**:

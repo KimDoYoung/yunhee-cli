@@ -78,6 +78,27 @@ DEFAULT_STYLES: dict[str, dict[str, Any]] = {
 }
 
 
+# 지원하는 마킹 아이템 타입
+SUPPORTED_TYPES = {
+    "circle-number",
+    "box",
+    "arrow",
+    "text",
+    "callout",
+    "mask",
+    "crop",
+}
+
+# A-Man 등 설계상 알려져 있으나 아직 구현되지 않은 미래 타입
+FUTURE_TYPES = {
+    "orthogonal-arrow",
+    "bracket-arrow",
+    "block-arrow-stamp",
+    "symbol",
+    "image",
+}
+
+
 def normalize_color(color_str: str | None) -> str:
     """색상 이름(red, blue 등)을 A-Man 기본 팔레트 헥스 코드로 변환한다."""
     if not color_str:
@@ -86,10 +107,20 @@ def normalize_color(color_str: str | None) -> str:
     return COLOR_NAME_MAP.get(s, color_str.strip())
 
 
-def compute_anchor_point(box: list[int | float], anchor: str) -> tuple[float, float]:
-    """대상 상자([bx, by, bw, bh])에서 anchor 기준 좌표 (x, y)를 계산한다."""
+def compute_anchor_point(
+    box: list[int | float],
+    anchor: str,
+    radius: float = 0.0,
+    gap: float = 4.0,
+) -> tuple[float, float]:
+    """대상 상자([bx, by, bw, bh])에서 anchor 기준 좌표 (x, y)를 계산한다.
+
+    outside-* 앵커의 경우 요소 반지름(radius)과 간격(gap)을 고려하여 대상 상자 바깥에 떨어져 위치하도록 계산한다.
+    """
     bx, by, bw, bh = box
     anc = anchor.lower().strip()
+
+    # 1. 대상 상자 경계 / 내부 앵커
     if anc == "top-left":
         return (float(bx), float(by))
     if anc == "top":
@@ -108,6 +139,26 @@ def compute_anchor_point(box: list[int | float], anchor: str) -> tuple[float, fl
         return (float(bx), float(by + bh / 2))
     if anc == "center":
         return (float(bx + bw / 2), float(by + bh / 2))
+
+    # 2. 대상 상자 바깥 앵커 (outside-*) - 버튼/요소 텍스트를 가리지 않도록 상자 바깥에 배치
+    dist = radius + gap
+    if anc == "outside-top-left":
+        return (float(bx), float(by - dist))
+    if anc == "outside-top":
+        return (float(bx + bw / 2), float(by - dist))
+    if anc == "outside-top-right":
+        return (float(bx + bw), float(by - dist))
+    if anc == "outside-bottom-left":
+        return (float(bx), float(by + bh + dist))
+    if anc == "outside-bottom":
+        return (float(bx + bw / 2), float(by + bh + dist))
+    if anc == "outside-bottom-right":
+        return (float(bx + bw), float(by + bh + dist))
+    if anc == "outside-left":
+        return (float(bx - dist), float(by + bh / 2))
+    if anc == "outside-right":
+        return (float(bx + bw + dist), float(by + bh / 2))
+
     return (float(bx), float(by))
 
 
@@ -174,6 +225,18 @@ def resolve_draw_items(
         if not item_type:
             raise ValueError(f"{idx}번째 아이템에 'type' 필드가 없습니다.")
 
+        if item_type not in SUPPORTED_TYPES:
+            if item_type in FUTURE_TYPES:
+                raise ValueError(
+                    f"{idx}번째 아이템의 type '{item_type}'은(는) 아직 지원하지 않는 타입입니다."
+                )
+            all_known = sorted(list(SUPPORTED_TYPES) + list(FUTURE_TYPES))
+            candidates = difflib.get_close_matches(str(item_type), all_known, n=3, cutoff=0.3)
+            cand_str = f" (비슷한 후보: {candidates})" if candidates else ""
+            raise ValueError(
+                f"{idx}번째 아이템의 type '{item_type}'은(는) 알 수 없는 타입입니다.{cand_str}"
+            )
+
         resolved = {
             "id": item.get("id") or f"item-{idx}",
             "type": item_type,
@@ -196,13 +259,14 @@ def resolve_draw_items(
         if item_type == "circle-number":
             font_size = merged_style.get("fontSize", 28)
             radius = font_size * 1.05
+            gap = float(item.get("gap", 4.0))
 
             if item.get("x") is not None and item.get("y") is not None:
                 cx, cy = float(item["x"]), float(item["y"])
             elif target:
                 box = find_target_box(target)
                 anchor = item.get("anchor", "top-left")
-                anchor_x, anchor_y = compute_anchor_point(box, anchor)
+                anchor_x, anchor_y = compute_anchor_point(box, anchor, radius=radius, gap=gap)
                 offset = item.get("offset") or [0, 0]
                 cx = anchor_x + float(offset[0])
                 cy = anchor_y + float(offset[1])
@@ -326,7 +390,8 @@ def resolve_draw_items(
                         x, y = bx, by
                 else:
                     anchor = item.get("anchor", "top-left")
-                    x, y = compute_anchor_point(box, anchor)
+                    gap_anchor = float(item.get("gap", 4.0))
+                    x, y = compute_anchor_point(box, anchor, radius=0.0, gap=gap_anchor)
 
                 offset = item.get("offset") or [0, 0]
                 x += float(offset[0])
@@ -399,14 +464,7 @@ def resolve_draw_items(
             resolved["style"] = merged_style
 
         else:
-            # 기타 요소
-            resolved["x"] = round(float(item.get("x", 0)))
-            resolved["y"] = round(float(item.get("y", 0)))
-            if "width" in item:
-                resolved["width"] = round(float(item["width"]))
-            if "height" in item:
-                resolved["height"] = round(float(item["height"]))
-            resolved["style"] = merged_style
+            raise ValueError(f"{idx}번째 아이템의 지원되지 않는 타입: {item_type}")
 
         resolved_items.append(resolved)
 

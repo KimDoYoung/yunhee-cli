@@ -1732,6 +1732,42 @@ COLLECT_BOXES_JS = r"""
         return true;
     }
 
+    function isElementCovered(el) {
+        if (!el || !(el instanceof Element)) return true;
+        if (el.classList.contains('ant-modal-content') || el.classList.contains('ant-modal-title')) {
+            return false;
+        }
+
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return true;
+        if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= vpW || rect.top >= vpH) {
+            return true;
+        }
+
+        const pts = [
+            { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
+            { x: rect.left + Math.min(3, rect.width / 2), y: rect.top + Math.min(3, rect.height / 2) },
+            { x: rect.right - Math.min(3, rect.width / 2), y: rect.bottom - Math.min(3, rect.height / 2) },
+        ];
+
+        let visible = false;
+        let tested = 0;
+        for (const pt of pts) {
+            if (pt.x < 0 || pt.x >= vpW || pt.y < 0 || pt.y >= vpH) continue;
+            tested++;
+            const topEl = document.elementFromPoint(pt.x, pt.y);
+            if (!topEl) continue;
+            if (el === topEl || el.contains(topEl) || topEl.contains(el)) {
+                visible = true;
+                break;
+            }
+        }
+        if (tested > 0 && !visible) {
+            return true;
+        }
+        return false;
+    }
+
     function computeBox(rect) {
         if (!rect || rect.width <= 0 || rect.height <= 0) return null;
         const relX = rect.left - originX;
@@ -1771,7 +1807,7 @@ COLLECT_BOXES_JS = r"""
 
         let c = (modalNamesCount.get(t) || 0) + 1;
         modalNamesCount.set(t, c);
-        const modalName = c > 1 ? `${t}#${c}` : t;
+        const modalName = c > 1 ? `${t}(모달)#${c}` : `${t}(모달)`;
 
         const isLookup = Boolean(
             mEl.closest('.lookup-modal') ||
@@ -1819,6 +1855,34 @@ COLLECT_BOXES_JS = r"""
         return "";
     }
 
+    function findLabelForCheckbox(chk) {
+        const formItem = chk.closest('.ant-form-item');
+        if (formItem) {
+            const lbl = formItem.querySelector('.ant-form-item-label label, .ant-form-item-label, label');
+            if (lbl) {
+                const t = cleanText(lbl.innerText).replace(/^[*\s]+|[*\s:]+$/g, '');
+                if (t) return t;
+            }
+        }
+        const directText = cleanText(chk.innerText);
+        if (directText) return directText;
+
+        const aria = chk.getAttribute('aria-label') || chk.getAttribute('title');
+        if (aria) return cleanText(aria);
+
+        let parent = chk.parentElement;
+        while (parent && parent !== document.body) {
+            const prev = parent.previousElementSibling;
+            if (prev && prev.innerText && prev.innerText.trim().length < 20) {
+                const t = cleanText(prev.innerText).replace(/^[*\s]+|[*\s:]+$/g, '');
+                if (t) return t;
+            }
+            if (parent.classList.contains('ant-space') || parent.classList.contains('ant-row') || parent.classList.contains('ant-form-item')) break;
+            parent = parent.parentElement;
+        }
+        return "";
+    }
+
     const rawElements = [];
 
     // --- A. Modals & Modal Titles ---
@@ -1837,7 +1901,7 @@ COLLECT_BOXES_JS = r"""
             const tBox = computeBox(mInfo.titleEl.getBoundingClientRect());
             if (tBox) {
                 rawElements.push({
-                    name: `${mInfo.name}:제목`,
+                    name: `${mInfo.titleText}:제목`,
                     kind: "modal-title",
                     text: mInfo.titleText,
                     box: tBox,
@@ -1851,6 +1915,7 @@ COLLECT_BOXES_JS = r"""
     // --- B. Tabs ---
     const tabEls = Array.from(document.querySelectorAll('.ant-tabs-tab')).filter(isVisible);
     for (const tEl of tabEls) {
+        if (isElementCovered(tEl)) continue;
         const tBox = computeBox(tEl.getBoundingClientRect());
         if (!tBox) continue;
         const text = cleanText(tEl.innerText);
@@ -1872,6 +1937,7 @@ COLLECT_BOXES_JS = r"""
         if (btn.closest('.ag-cell')) continue;
         if (btn.closest('.ant-tabs-tab')) continue;
         if (btn.closest('.ant-picker-header')) continue;
+        if (isElementCovered(btn)) continue;
 
         const box = computeBox(btn.getBoundingClientRect());
         if (!box) continue;
@@ -1943,6 +2009,7 @@ COLLECT_BOXES_JS = r"""
     // --- D. Form Labels ---
     const labelEls = Array.from(document.querySelectorAll('.ant-form-item-label label')).filter(isVisible);
     for (const lbl of labelEls) {
+        if (isElementCovered(lbl)) continue;
         const box = computeBox(lbl.getBoundingClientRect());
         if (!box) continue;
         const text = cleanText(lbl.innerText).replace(/^[*\s]+|[*\s:]+$/g, '');
@@ -1962,6 +2029,7 @@ COLLECT_BOXES_JS = r"""
     const inpEls = Array.from(document.querySelectorAll('input.ant-input, textarea.ant-input, input.ant-input-number-input')).filter(isVisible);
     for (const inp of inpEls) {
         if (inp.closest('.ant-picker-input') || inp.closest('.ant-select') || inp.closest('.ag-cell')) continue;
+        if (isElementCovered(inp)) continue;
         const box = computeBox(inp.getBoundingClientRect());
         if (!box) continue;
         const mInfo = getElementModalInfo(inp);
@@ -1980,6 +2048,7 @@ COLLECT_BOXES_JS = r"""
     const selEls = Array.from(document.querySelectorAll('.ant-select')).filter(isVisible);
     for (const sel of selEls) {
         if (sel.closest('.ag-cell')) continue;
+        if (isElementCovered(sel)) continue;
         const box = computeBox(sel.getBoundingClientRect());
         if (!box) continue;
         const mInfo = getElementModalInfo(sel);
@@ -1998,6 +2067,7 @@ COLLECT_BOXES_JS = r"""
     const pickerEls = Array.from(document.querySelectorAll('.ant-picker')).filter(isVisible);
     for (const p of pickerEls) {
         if (p.closest('.ag-cell')) continue;
+        if (isElementCovered(p)) continue;
         const box = computeBox(p.getBoundingClientRect());
         if (!box) continue;
         const mInfo = getElementModalInfo(p);
@@ -2016,14 +2086,15 @@ COLLECT_BOXES_JS = r"""
     const chkEls = Array.from(document.querySelectorAll('.ant-checkbox-wrapper')).filter(isVisible);
     for (const chk of chkEls) {
         if (chk.closest('.ag-cell')) continue;
+        if (isElementCovered(chk)) continue;
         const box = computeBox(chk.getBoundingClientRect());
         if (!box) continue;
-        const text = cleanText(chk.innerText);
+        const name = findLabelForCheckbox(chk) || "checkbox";
         const mInfo = getElementModalInfo(chk);
         rawElements.push({
-            name: text || "checkbox",
+            name: name,
             kind: "checkbox",
-            text: text,
+            text: cleanText(chk.innerText),
             box: box,
             area: mInfo ? (mInfo.isLookup ? "lookup" : "modal") : "main",
             parent: mInfo ? mInfo.name : undefined,
@@ -2034,14 +2105,15 @@ COLLECT_BOXES_JS = r"""
     const radEls = Array.from(document.querySelectorAll('.ant-radio-wrapper')).filter(isVisible);
     for (const rad of radEls) {
         if (rad.closest('.ag-cell')) continue;
+        if (isElementCovered(rad)) continue;
         const box = computeBox(rad.getBoundingClientRect());
         if (!box) continue;
-        const text = cleanText(rad.innerText);
+        const name = findLabelForCheckbox(rad) || "radio";
         const mInfo = getElementModalInfo(rad);
         rawElements.push({
-            name: text || "radio",
+            name: name,
             kind: "radio",
-            text: text,
+            text: cleanText(rad.innerText),
             box: box,
             area: mInfo ? (mInfo.isLookup ? "lookup" : "modal") : "main",
             parent: mInfo ? mInfo.name : undefined,
@@ -2062,6 +2134,7 @@ COLLECT_BOXES_JS = r"""
 
     let gridIdx = 1;
     for (const grid of uniqueGrids) {
+        if (isElementCovered(grid)) continue;
         const gridName = uniqueGrids.length > 1 ? `grid${gridIdx}` : `grid1`;
         gridIdx++;
         const gBox = computeBox(grid.getBoundingClientRect());
@@ -2082,17 +2155,45 @@ COLLECT_BOXES_JS = r"""
         // Header cells
         const headerCells = Array.from(grid.querySelectorAll('.ag-header-cell')).filter(isVisible);
         const colHeaderMap = new Map();
+        let prevHeaderColName = "";
+
         for (const hc of headerCells) {
-            const hBox = computeBox(hc.getBoundingClientRect());
             const colId = hc.getAttribute('col-id') || "";
             const textEl = hc.querySelector('.ag-header-cell-text');
-            let colName = cleanText(textEl ? textEl.innerText : hc.innerText);
+            let explicitText = cleanText(textEl ? textEl.innerText : hc.innerText);
+
+            let colName = explicitText;
             if (!colName) {
-                colName = hc.getAttribute('title') || colId || "col";
+                if (colId === '__rownum') {
+                    colName = "번호";
+                } else if (colId === 'ag-Grid-SelectionColumn') {
+                    colName = "선택";
+                } else {
+                    let action = "";
+                    if (/edit/i.test(colId)) action = "수정";
+                    else if (/delete|del|remove/i.test(colId)) action = "삭제";
+                    else if (/search|find|view/i.test(colId)) action = "조회";
+
+                    const titleAttr = hc.getAttribute('title') || hc.getAttribute('aria-label') || "";
+                    if (titleAttr) {
+                        colName = cleanText(titleAttr);
+                    } else if (prevHeaderColName && action) {
+                        colName = `${prevHeaderColName} ${action}`;
+                    } else if (action) {
+                        colName = action;
+                    } else {
+                        colName = colId ? `ID:${colId}` : "col";
+                    }
+                }
+            }
+
+            if (explicitText) {
+                prevHeaderColName = explicitText;
             }
             if (colId) colHeaderMap.set(colId, colName);
 
-            if (hBox) {
+            const hBox = computeBox(hc.getBoundingClientRect());
+            if (hBox && !isElementCovered(hc)) {
                 rawElements.push({
                     name: `헤더:${colName}`,
                     kind: "grid-header",
@@ -2112,6 +2213,7 @@ COLLECT_BOXES_JS = r"""
 
         let rowNum = 1;
         for (const rEl of limitedRows) {
+            if (isElementCovered(rEl)) continue;
             const currentRow = rowNum++;
             const rBox = computeBox(rEl.getBoundingClientRect());
             if (rBox) {
@@ -2127,6 +2229,7 @@ COLLECT_BOXES_JS = r"""
 
             const cells = Array.from(rEl.querySelectorAll('.ag-cell')).filter(isVisible);
             for (const cell of cells) {
+                if (isElementCovered(cell)) continue;
                 const colId = cell.getAttribute('col-id') || "";
                 const colName = colHeaderMap.get(colId) || colId || "col";
                 const cBox = computeBox(cell.getBoundingClientRect());
@@ -2134,31 +2237,42 @@ COLLECT_BOXES_JS = r"""
 
                 // Checkbox inside cell
                 const chk = cell.querySelector('.ag-selection-checkbox, .ant-checkbox, input[type="checkbox"]');
-                if (chk && isVisible(chk)) {
-                    const chkBox = computeBox(chk.getBoundingClientRect());
+                if (chk && isVisible(chk) && !isElementCovered(chk)) {
+                    const innerBox = chk.querySelector('.ag-checkbox-input, .ant-checkbox-inner, input[type="checkbox"]') || chk;
+                    const chkBox = computeBox(innerBox.getBoundingClientRect());
                     if (chkBox) {
-                        rawElements.push({
-                            name: `${gridName}.행${currentRow}.체크`,
-                            kind: "grid-check",
-                            row: currentRow,
-                            box: chkBox,
-                            area: area,
-                            parent: parent,
-                        });
+                        const isSelectionCol = colId === 'ag-Grid-SelectionColumn' || chk.classList.contains('ag-selection-checkbox') || cell.classList.contains('ag-selection-checkbox');
+                        if (isSelectionCol) {
+                            rawElements.push({
+                                name: `${gridName}.행${currentRow}.선택`,
+                                kind: "grid-check",
+                                row: currentRow,
+                                box: chkBox,
+                                area: area,
+                                parent: parent,
+                            });
+                        } else {
+                            rawElements.push({
+                                name: `${gridName}.행${currentRow}.${colName}`,
+                                kind: "checkbox",
+                                row: currentRow,
+                                col: colName,
+                                box: chkBox,
+                                area: area,
+                                parent: parent,
+                            });
+                        }
                     }
                 }
 
                 // Icon button inside cell
                 const iconBtn = cell.querySelector('button, .ant-btn, .anticon, .ag-icon');
-                if (iconBtn && isVisible(iconBtn)) {
+                if (iconBtn && isVisible(iconBtn) && !isElementCovered(iconBtn)) {
                     const iBox = computeBox(iconBtn.getBoundingClientRect());
                     if (iBox) {
                         let iconName = cleanText(iconBtn.innerText) || iconBtn.getAttribute('title') || iconBtn.getAttribute('aria-label');
                         if (!iconName) {
-                            const cls = (typeof iconBtn.className === 'string') ? iconBtn.className : "";
-                            if (cls.includes('edit')) iconName = "수정";
-                            else if (cls.includes('delete')) iconName = "삭제";
-                            else iconName = colName;
+                            iconName = colName;
                         }
                         rawElements.push({
                             name: `${gridName}.행${currentRow}.${iconName}`,
@@ -2190,14 +2304,15 @@ COLLECT_BOXES_JS = r"""
         }
     }
 
-    // --- J. Deduplicate names & Build final elements ---
+    // --- J. Deduplicate names & Build final elements by Layer ---
     const nameCounts = new Map();
     const finalElements = [];
 
     for (const item of rawElements) {
         const baseName = item.name;
-        const count = (nameCounts.get(baseName) || 0) + 1;
-        nameCounts.set(baseName, count);
+        const layerKey = item.parent ? `modal:${item.parent}::${baseName}` : `main::${baseName}`;
+        const count = (nameCounts.get(layerKey) || 0) + 1;
+        nameCounts.set(layerKey, count);
 
         const finalName = count > 1 ? `${baseName}#${count}` : baseName;
 
