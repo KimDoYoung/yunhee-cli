@@ -2,6 +2,32 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.9.3] - 2026-11-13
+수정사항 060 반영: 업무분석용 `biz-*` 명령 묶음 및 API 로그인 계정 보호 강화
+- **TOBE API 엔드포인트 목록 및 DTO 분석 (`yunhee biz-endpoints`)**:
+  - 도메인명 또는 컨트롤러 소스 경로 기반으로 전체 API 엔드포인트 수집 (`-o md|json|tsv`, `--path` 경로 필터).
+  - 메서드, HTTP 경로, 파라미터/쿼리, 요청 DTO, 서비스 호출 메서드, 인가 권한 검사 여부를 구조화하여 일괄 출력.
+- **도메인 API 권한 훑기 및 BOLA/IDOR 검사 (`yunhee biz-authz`)**:
+  - 사원 권한(`-u`, 기본 401)으로 도메인 API를 호출하여 관리자 자료 노출 여부 기계적 판정.
+  - `--probe-write` (빈 본문 안전 프로빙), `--probe-delete`, `--emit-rows` (보안 의심 행 마크다운 보고서) 지원.
+- **전자결재 상신·업무 행 연결·결재자 승인 자동화 (`yunhee biz-appr`)**:
+  - 전자결재 연동 코드(`link_code`, 예: A74, A73) 및 업무 행 ID(`--ref`) 기반으로 상신부터 결재선 순차 승인(`--confirm`) 및 반려(`--reject`) 원스톱 실행.
+  - `--dry-run` 지원으로 상신 본문 JSON 사전 확인 가능.
+- **조회(GET) 데이터의 지정 필드 부분 수정(PUT) 및 안전 검증 (`yunhee biz-patch`)**:
+  - 기존 데이터 조회 $\to$ 지정 필드(`--set key=val`) 수정 $\to$ 저장(PUT) 및 미지정 필드 유실 여부 검증.
+  - 목록 응답 처리(`--list`, `--where`), 읽기 전용 접미사 자동 제거(`--drop-suffix`), `--dry-run` 지원.
+- **공통코드 조회 및 f_cdnm 규칙 검증 (`yunhee biz-code`)**:
+  - `sys08_code_kind`, `sys09_code` 테이블 기반 공통코드 목록 및 회사별 우선 적용 행(`f_cdnm` 규칙) 표 형식 출력.
+  - `--like` 검색어 및 오타 시 비슷한 종류 코드 자동 추천.
+- **로컬 DB 안전 SQL 실행 및 자동 백업 (`yunhee biz-db-write`)**:
+  - 로컬 DB(`127.0.0.1`/`localhost`) 대상 쓰기 전용 실행기. 실행 전 스키마/데이터 자동 백업(`data/backup/`).
+  - 트랜잭션 안전 가드: `--dry-run` (자동 롤백), DDL 및 WHERE 절 없는 UPDATE/DELETE 차단 (`--allow-ddl`로 해제).
+- **이벤트 분석 문서 틀 자동 생성 (`yunhee biz-event-new`)**:
+  - 이벤트 ID 및 연관 화면 번호(`--screens`) 지정 시 AS-IS/TOBE 화면 색인을 결합하여 업무분석 마크다운 문서 뼈대 자동 생성.
+- **API 로그인 보안 및 세션 잠금 방지 (`src/yunhee/tools/api_client.py`)**:
+  - `--password` 직접 지정 옵션 추가 (DB 및 환경변수보다 최우선).
+  - 회사 지정 시 회사 소속 사원 우선 매핑, 연속 실패 시 계정 잠금 경고 및 강제 시도 플래그(`--force-login`) 지원.
+
 ## [0.9.2] - 2026-11-12
 수정사항 059 반영: `--boxes` 및 `mark` 7가지 결함 보완 (가려진 요소 배제 · 레이어 격리 네이밍 · 아이콘 헤더 매핑 · 체크박스 정합성 · 미지원 type 차단 · 팝업 폼 라벨 취득 · 바깥 앵커)
 - **팝업에 가려진 본 화면 요소 자동 배제 (`src/yunhee/tools/screen_capture.py`)**:
