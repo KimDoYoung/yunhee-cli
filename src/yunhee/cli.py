@@ -3497,5 +3497,50 @@ def biz_appr(
         raise typer.Exit(code=1) from exc
 
 
+@app.command(name="biz-patch")
+def biz_patch(
+    path: Annotated[str, typer.Argument(help="조회 및 수정할 API 경로 (예: /api/v1/sys/companies/{id}/account)")],
+    set_fields: Annotated[list[str], typer.Option("--set", help="변경할 필드 key=val (반복 가능, 예: commutePopupYn=true)")],
+    where: Annotated[list[str] | None, typer.Option("--where", help="--list 목록 중 특정 행을 고르는 조건 key=val (반복 가능)")] = None,
+    is_list: Annotated[bool, typer.Option("--list", help="GET 응답이 목록 형태인 경우 한 행을 골라 리스트로 감싸 저장")] = False,
+    put_path: Annotated[str | None, typer.Option("--put", help="저장 경로가 GET 경로와 다를 때 지정")] = None,
+    drop_suffix: Annotated[str, typer.Option("--drop-suffix", help="제거할 읽기 전용 필드 접미사 (기본: Nm, 쉼표 구분)")] = "Nm",
+    keep: Annotated[str | None, typer.Option("--keep", help="보존하여 전송할 키 목록 (쉼표 구분)")] = None,
+    method: Annotated[str, typer.Option("--method", help="저장 HTTP 메서드 (기본: PUT)")] = "PUT",
+    as_user: Annotated[str, typer.Option("--as", "-u", help="로그인 계정/사번 (기본: admin)")] = "admin",
+    company: Annotated[str, typer.Option("--company", "-c", help="회사 코드 (기본: kalpa)")] = "kalpa",
+    password: Annotated[str | None, typer.Option("--password", help="계정 비밀번호")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="실제 저장하지 않고 전송할 본문 JSON만 확인")] = False,
+) -> None:
+    """조회(GET)한 데이터의 지정 필드만 안전하게 변경하여 저장(PUT)하고 미변경 칸 소실 검증"""
+    from yunhee.tools.biz.patch import run_patch
+
+    drop_suffixes = [s.strip() for s in drop_suffix.split(",") if s.strip()]
+    keep_keys = [k.strip() for k in keep.split(",") if k.strip()] if keep else None
+
+    try:
+        lines, warnings = run_patch(
+            path=path,
+            sets=set_fields,
+            where=where,
+            is_list=is_list,
+            put_path=put_path,
+            drop_suffixes=drop_suffixes,
+            keep_keys=keep_keys,
+            method=method,
+            as_user=as_user,
+            company=company,
+            password=password,
+            dry_run=dry_run,
+        )
+        for line in lines:
+            typer.echo(line)
+        for w in warnings:
+            typer.secho(f"경고: {w}", fg=typer.colors.YELLOW, err=True)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
 if __name__ == "__main__":
     app()

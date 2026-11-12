@@ -537,4 +537,118 @@ class TestBizAppr:
         assert sent_post_bodies[0]["message"] == "사유 부족"
 
 
+class TestBizPatch:
+    """수정사항060 #5: biz-patch 조회 후 수정 저장 테스트."""
+
+    def test_biz_patch_single_object(self, monkeypatch):
+        from yunhee.tools.base import ToolResult
+        from yunhee.tools.biz.patch import run_patch
+
+        db_state = {"a": "false", "b": 1, "cNm": "x"}
+        sent_put_payload = {}
+
+        def mock_request_api(method, path, **kwargs):
+            m = method.upper()
+            if m == "GET":
+                return ToolResult(ok=True, data={"data": dict(db_state)})
+            if m == "PUT":
+                sent_put_payload.update(kwargs.get("json_body", {}))
+                db_state.update(kwargs.get("json_body", {}))
+                return ToolResult(ok=True, data={"success": True})
+            return ToolResult(ok=False, error="Unhandled")
+
+        monkeypatch.setattr("yunhee.tools.api_client.request_api", mock_request_api)
+
+        lines, warnings = run_patch(
+            path="/api/v1/test/obj",
+            sets=["a=true", "b=2"],
+            drop_suffixes=["Nm"],
+            as_user="admin",
+            company="kalpa",
+        )
+
+        # 1. cNm 제거 확인
+        assert "cNm" not in sent_put_payload
+        # 2. 원래 타입 유지: 'false'(str) -> 'true'(str), 1(int) -> 2(int)
+        assert sent_put_payload["a"] == "true"
+        assert sent_put_payload["b"] == 2
+        assert any("a: 'false' → 'true'" in line or "a: false → true" in line for line in lines)
+        assert len(warnings) == 0
+
+    def test_biz_patch_list_where(self, monkeypatch):
+        from yunhee.tools.base import ToolResult
+        from yunhee.tools.biz.patch import run_patch
+
+        rows = [
+            {"id": 1, "name": "A", "val": 10},
+            {"id": 2, "name": "B", "val": 20},
+        ]
+        sent_body = []
+
+        def mock_request_api(method, path, **kwargs):
+            m = method.upper()
+            if m == "GET":
+                return ToolResult(ok=True, data={"data": list(rows)})
+            if m == "PUT":
+                sent_body.extend(kwargs.get("json_body", []))
+                return ToolResult(ok=True, data={"success": True})
+            return ToolResult(ok=False, error="Unhandled")
+
+        monkeypatch.setattr("yunhee.tools.api_client.request_api", mock_request_api)
+
+        # 1. id=2 행 선택 및 수정
+        _lines, _ = run_patch(
+            path="/api/v1/test/list",
+            sets=["val=25"],
+            where=["id=2"],
+            is_list=True,
+            as_user="admin",
+            company="kalpa",
+        )
+        assert len(sent_body) == 1
+        assert sent_body[0]["id"] == 2
+        assert sent_body[0]["val"] == 25
+
+        # 2. id=999 (0건) -> 오류
+        with pytest.raises(ValueError, match="0개"):
+            run_patch(
+                path="/api/v1/test/list",
+                sets=["val=30"],
+                where=["id=999"],
+                is_list=True,
+                as_user="admin",
+                company="kalpa",
+            )
+
+    def test_biz_patch_wiped_field_warning(self, monkeypatch):
+        from yunhee.tools.base import ToolResult
+        from yunhee.tools.biz.patch import run_patch
+
+        first_get = True
+
+        def mock_request_api(method, path, **kwargs):
+            nonlocal first_get
+            m = method.upper()
+            if m == "GET":
+                if first_get:
+                    first_get = False
+                    return ToolResult(ok=True, data={"data": {"id": 1, "important": "data", "status": "init"}})
+                # 두 번째 GET에서는 important가 지워져서 None이 됨
+                return ToolResult(ok=True, data={"data": {"id": 1, "important": None, "status": "updated"}})
+            if m == "PUT":
+                return ToolResult(ok=True, data={"success": True})
+            return ToolResult(ok=False, error="Unhandled")
+
+        monkeypatch.setattr("yunhee.tools.api_client.request_api", mock_request_api)
+
+        _lines, warnings = run_patch(
+            path="/api/v1/test/obj",
+            sets=["status=updated"],
+            as_user="admin",
+            company="kalpa",
+        )
+        assert any("important" in w for w in warnings)
+
+
+
 

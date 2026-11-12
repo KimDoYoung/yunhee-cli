@@ -101,7 +101,10 @@ def resolve_user_credentials(
     """admin 또는 사원 ID/로그인 ID를 받아 (username, password, user_info)를 조회한다."""
     role_lower = user_or_role.lower()
     if role_lower == "admin":
-        user = os.getenv("YUNHEE_TEST_ADMIN_USER", config.TEST_ADMIN_USER)
+        if company_code == "admin":
+            user = "admin"
+        else:
+            user = os.getenv("YUNHEE_TEST_ADMIN_USER", config.TEST_ADMIN_USER)
         pw = password or os.getenv("YUNHEE_TEST_ADMIN_PASS", config.TEST_ADMIN_PASS)
         pw_src = "--password" if password else "YUNHEE_TEST_ADMIN_PASS"
         user_info = {
