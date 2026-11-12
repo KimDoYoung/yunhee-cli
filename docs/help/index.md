@@ -24,6 +24,7 @@
 | **TOBE 화면 자동 오픈 & 버튼/팝업 순회 캡처 검수** | `yunhee screen-capture <screen_id> login=<comp>/<id>/<pw>` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **TOBE 프로젝트 RAG 학습(카탈로그·ChromaDB) 및 상태 점검** | `yunhee rag-index`, `rag-reset`, `rag-status`, `rag-search` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **자연어 화면/모달/그리드 조건 탐색 및 질의** | `yunhee agent "<질문>"`, `yunhee ask -a "<질문>"` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
+| **업무분석 / API 권한 검증 / 결재 흐름 / 로컬 DB 쓰기 / 이벤트 문서** | `yunhee biz-endpoints`, `biz-authz`, `biz-appr`, `biz-patch`, `biz-code`, `biz-db-write`, `biz-event-new` | [`biz.md`](file:///home/kdy987/work/yunhee-cli/docs/help/biz.md) |
 
 ---
 
@@ -90,3 +91,14 @@
 - `drift-diff <unit>`: 단일 단위의 AS-IS 전후 diff 및 TOBE 대응 본문 대조
 - `drift-db`: 직전 DBML과 새 DBML 간 테이블/컬럼/함수 구조 변경 및 영향 매퍼 탐색
 - `drift-log`: 기준선/커밋 이후 변경된 파일들을 커밋별 종류(DB·SQL·LOGIC·MODEL·UI·ETC)로 요약
+
+### 5. 업무분석 및 비즈니스 검증 (`biz.md`)
+- `biz-endpoints <target> [--path <path>] [-o md|json|tsv]`: Spring Boot 컨트롤러 엔드포인트·DTO·서비스·권한 가드 정적 분석
+- `biz-authz <target> -u <user> -c <company> [--probe-write]`: API URL과 메뉴 인가를 대조하여 허용 여부 판정 및 취약 엔드포인트 진단
+- `biz-appr <link_code> --ref <id> -u <user> -c <company> [--confirm|--reject]`: 업무 문서와 결재 연동 상신·연결·승인/반려 단계 자동화
+- `biz-patch <method> <path> -d <json> [--where <cond>]`: API 엔드포인트 단일 객체/목록 필드 안전 수정 및 누락 검증
+- `biz-code [kind] [--like <pattern>] [-c <company>]`: 공통코드 분류 및 목록 조회 (회사별 명칭 지원)
+- `biz-db-write -f <file>|-e <sql> [--no-backup]`: 로컬 DB 대상 안전한 쓰기 실행 (자동 pg_dump 백업 및 안전 가드)
+- `biz-event-new <ID> --screens <screens> [--title <title>]`: AS-IS/TOBE 화면 색인을 바탕으로 비즈니스 이벤트 분석 문서 골격 생성
+- `api` (확장): `--password` 직접 지정 및 3회 연속 로그인 실패 시 계정 잠금 방지 가드(`--force-login`) 지원
+

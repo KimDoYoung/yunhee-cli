@@ -70,6 +70,19 @@ def _save_session(
     session_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _get_failed_path(user: str, base_url: str, tenant: str | None = None, company: str | None = None) -> Path:
+    parsed = urlparse(base_url)
+    host_part = _safe_name(parsed.netloc or parsed.path or "default")
+    parts = [host_part]
+    if tenant:
+        parts.append(_safe_name(tenant))
+    if company:
+        parts.append(_safe_name(company))
+    parts.append(_safe_name(user))
+    filename = "_".join(parts) + ".failed"
+    return get_sessions_dir() / filename
+
+
 def _clear_session(user: str, base_url: str, tenant: str | None = None, company: str | None = None) -> None:
     session_file = _get_session_path(user, base_url, tenant, company)
     if session_file.exists():
@@ -79,13 +92,29 @@ def _clear_session(user: str, base_url: str, tenant: str | None = None, company:
             pass
 
 
-def resolve_user_credentials(user_or_role: str, db_name: str | None = None) -> tuple[str, str, dict[str, Any]]:
+def resolve_user_credentials(
+    user_or_role: str,
+    db_name: str | None = None,
+    company_code: str | None = None,
+    password: str | None = None,
+) -> tuple[str, str, dict[str, Any]]:
     """admin 또는 사원 ID/로그인 ID를 받아 (username, password, user_info)를 조회한다."""
     role_lower = user_or_role.lower()
     if role_lower == "admin":
-        user = os.getenv("YUNHEE_TEST_ADMIN_USER", config.TEST_ADMIN_USER)
-        pw = os.getenv("YUNHEE_TEST_ADMIN_PASS", config.TEST_ADMIN_PASS)
-        user_info = {"user_id": -28656, "org_id": 0, "company_id": 28000}
+        if company_code == "admin":
+            user = "admin"
+        else:
+            user = os.getenv("YUNHEE_TEST_ADMIN_USER", config.TEST_ADMIN_USER)
+        pw = password or os.getenv("YUNHEE_TEST_ADMIN_PASS", config.TEST_ADMIN_PASS)
+        pw_src = "--password" if password else "YUNHEE_TEST_ADMIN_PASS"
+        user_info = {
+            "user_id": -28656,
+            "org_id": 0,
+            "company_id": 28000,
+            "pw_source": pw_src,
+            "emp_no": user,
+            "company_code": company_code or "admin",
+        }
         return user, pw, user_info
 
     # 1. YUNHEE_TEST_ACCOUNTS 파싱 (format: id:pw,id2:pw2)
@@ -109,27 +138,82 @@ def resolve_user_credentials(user_or_role: str, db_name: str | None = None) -> t
             with psycopg.connect(db_url, autocommit=False) as conn:
                 conn.read_only = True
                 with conn.cursor(row_factory=dict_row) as cur:
-                    cur.execute(
-                        """
-                        SELECT emp01_person_id, emp01_emp_no, TO_DECRYPTS(emp01_password) AS pwd, emp01_company_id
-                        FROM emp01_person
-                        WHERE emp01_person_id::text = %s OR emp01_emp_no = %s
-                        ORDER BY (emp01_company_id = 28000) DESC, emp01_person_id ASC
-                        LIMIT 1;
-                        """,
-                        (user_or_role, user_or_role),
-                    )
-                    row = cur.fetchone()
+                    target_company_id = None
+                    if company_code:
+                        cur.execute(
+                            "SELECT sys01_company_id FROM sys01_company WHERE sys01_loc_nm = %s LIMIT 1;",
+                            (company_code,),
+                        )
+                        comp_row = cur.fetchone()
+                        if comp_row:
+                            target_company_id = int(comp_row["sys01_company_id"])
+                        else:
+                            raise ValueError(f"존재하지 않는 회사 코드입니다: {company_code}")
+
+                    if target_company_id is not None:
+                        cur.execute(
+                            """
+                            SELECT emp01_person_id, emp01_emp_no, TO_DECRYPTS(emp01_password) AS pwd, emp01_company_id
+                            FROM emp01_person
+                            WHERE (emp01_person_id::text = %s OR emp01_emp_no = %s)
+                              AND emp01_company_id = %s
+                            LIMIT 1;
+                            """,
+                            (user_or_role, user_or_role, target_company_id),
+                        )
+                        single = cur.fetchone()
+                        rows = [single] if single else []
+                    else:
+                        cur.execute(
+                            """
+                            SELECT emp01_person_id, emp01_emp_no, TO_DECRYPTS(emp01_password) AS pwd, emp01_company_id
+                            FROM emp01_person
+                            WHERE emp01_person_id::text = %s OR emp01_emp_no = %s
+                            ORDER BY (emp01_company_id = 28000) DESC, emp01_person_id ASC
+                            LIMIT 10;
+                            """,
+                            (user_or_role, user_or_role),
+                        )
+                        rows = cur.fetchall() or []
+
+                    if len(rows) > 1:
+                        distinct_persons = {r["emp01_person_id"] for r in rows if r}
+                        if len(distinct_persons) > 1:
+                            raise ValueError(
+                                f"사번({user_or_role})이 여러 회사에 존재합니다. -c <회사코드> 또는 사원 ID로 -u를 주세요."
+                            )
+
+                    row = rows[0] if rows else None
                     if row:
                         login_u = str(row["emp01_emp_no"])
                         raw_pwd = row.get("pwd")
-                        login_p = (
-                            accounts.get(user_or_role)
-                            or accounts.get(login_u)
-                            or (str(raw_pwd) if raw_pwd is not None else os.getenv("YUNHEE_TEST_ADMIN_PASS", config.TEST_ADMIN_PASS))
-                        )
                         p_id = int(row["emp01_person_id"])
                         c_id = int(row["emp01_company_id"]) if row.get("emp01_company_id") else 28000
+
+                        default_pass = os.getenv("YUNHEE_TEST_DEFAULT_PASS", config.TEST_DEFAULT_PASS)
+                        admin_pass = os.getenv("YUNHEE_TEST_ADMIN_PASS", config.TEST_ADMIN_PASS)
+
+                        if password:
+                            login_p = password
+                            pw_source = "--password"
+                        elif user_or_role in accounts or login_u in accounts:
+                            login_p = accounts.get(user_or_role) or accounts.get(login_u)
+                            pw_source = "YUNHEE_TEST_ACCOUNTS"
+                        elif raw_pwd is not None and str(raw_pwd).strip():
+                            login_p = str(raw_pwd).strip()
+                            pw_source = "emp01_password"
+                        elif default_pass:
+                            login_p = default_pass
+                            pw_source = "YUNHEE_TEST_DEFAULT_PASS"
+                        else:
+                            login_p = admin_pass
+                            pw_source = "YUNHEE_TEST_ADMIN_PASS"
+                            import sys
+                            print(
+                                "경고: 직원에 YUNHEE_TEST_ADMIN_PASS를 사용합니다. YUNHEE_TEST_DEFAULT_PASS 또는 --password를 지정하세요.",
+                                file=sys.stderr,
+                            )
+
                         org_id = 0
                         try:
                             cur.execute(
@@ -152,13 +236,46 @@ def resolve_user_credentials(user_or_role: str, db_name: str | None = None) -> t
                             "user_id": p_id,
                             "org_id": org_id,
                             "company_id": c_id,
+                            "pw_source": pw_source,
+                            "emp_no": login_u,
+                            "company_code": company_code,
                         }
                         return login_u, login_p, user_info
+                    elif company_code:
+                        raise ValueError(f"사원을 찾을 수 없습니다: {user_or_role} (회사: {company_code})")
+    except ValueError:
+        raise
     except Exception:  # noqa: BLE001, S110
         pass
 
+    default_pass = os.getenv("YUNHEE_TEST_DEFAULT_PASS", config.TEST_DEFAULT_PASS)
+    if password:
+        return user_or_role, password, {
+            "user_id": user_or_role,
+            "org_id": 0,
+            "company_id": 28000,
+            "pw_source": "--password",
+            "emp_no": user_or_role,
+            "company_code": company_code,
+        }
     if user_or_role in accounts:
-        return user_or_role, accounts[user_or_role], {"user_id": user_or_role, "org_id": 0, "company_id": 28000}
+        return user_or_role, accounts[user_or_role], {
+            "user_id": user_or_role,
+            "org_id": 0,
+            "company_id": 28000,
+            "pw_source": "YUNHEE_TEST_ACCOUNTS",
+            "emp_no": user_or_role,
+            "company_code": company_code,
+        }
+    if default_pass:
+        return user_or_role, default_pass, {
+            "user_id": user_or_role,
+            "org_id": 0,
+            "company_id": 28000,
+            "pw_source": "YUNHEE_TEST_DEFAULT_PASS",
+            "emp_no": user_or_role,
+            "company_code": company_code,
+        }
 
     raise ValueError(f"로그인 실패: {user_or_role}")
 
@@ -175,10 +292,29 @@ def login(
     company_code: str | None = None,
     tenant: str | None = None,
     user_info: dict[str, Any] | None = None,
+    force_login: bool = False,
 ) -> ToolResult:
     """로그인 엔드포인트를 호출하여 쿠키 및 토큰을 세션 파일에 저장한다."""
     url = f"{base_url.rstrip('/')}/{login_path.lstrip('/')}"
     comp = company_code or config.TEST_COMPANY
+
+    # 5. 안전장치: 직전 실패 횟수가 3 이상이면 계정 잠금 방지를 위해 차단
+    fail_file = _get_failed_path(user, base_url, tenant, comp)
+    if fail_file.exists() and not force_login:
+        try:
+            failed_data = json.loads(fail_file.read_text(encoding="utf-8"))
+            fail_cnt = failed_data.get("fail_count", 0)
+            if fail_cnt >= 3:
+                return ToolResult(
+                    ok=False,
+                    error=(
+                        f"로그인 중단: 직전 로그인 실패 횟수가 {fail_cnt}/5회로 계정 잠금 직전입니다.\n"
+                        "비밀번호를 다시 확인한 후 --force-login 옵션을 붙여 실행하세요.\n"
+                        f"(시도 대상: user={user}, company={comp})"
+                    ),
+                )
+        except Exception:  # noqa: BLE001, S110
+            pass
 
     payload: dict[str, Any] = {"username": user, "password": password}
     if comp:
@@ -200,6 +336,17 @@ def login(
 
     if resp.status_code != 200:
         err_msg = resp.text.strip()
+        m = re.search(r"실패\s*(\d+)\s*/\s*(\d+)\s*회", err_msg)
+        fail_count = int(m.group(1)) if m else None
+        if fail_count is not None:
+            try:
+                fail_file.write_text(
+                    json.dumps({"fail_count": fail_count, "user": user, "company": comp}),
+                    encoding="utf-8",
+                )
+            except Exception:  # noqa: BLE001, S110
+                pass
+
         extra_hint = ""
         if "COMPANY_NOT_FOUND" in err_msg or "company" in err_msg.lower():
             extra_hint = "\n힌트: -c는 회사코드입니다(예: admin, kfstest). 회사 ID가 아닙니다."
@@ -207,10 +354,27 @@ def login(
                 extra_hint += f" ({comp}는 companyId로 오해했나요?)"
         elif comp and comp.isdigit():
             extra_hint = f"\n힌트: -c는 회사코드입니다(예: admin, kfstest). {comp}는 companyId로 오해했나요?"
+
+        u_id = (user_info or {}).get("user_id", user)
+        e_no = (user_info or {}).get("emp_no", user)
+        c_code = comp or (user_info or {}).get("company_code") or "기본"
+        pw_src = (user_info or {}).get("pw_source", "미상")
+        fail_str = f"{fail_count}/5" if fail_count else "불명"
+        attempt_info = (
+            f"\n시도: 사원 {u_id}(사번 {e_no}, 회사 {c_code}) · "
+            f"비밀번호 출처 {pw_src} · 서버 실패 횟수 {fail_str}회 — "
+            "같은 계정으로 다시 부르기 전에 비밀번호를 확인하세요"
+        )
         return ToolResult(
             ok=False,
-            error=f"로그인 실패 (HTTP {resp.status_code}): {err_msg[:400]}{extra_hint}",
+            error=f"로그인 실패 (HTTP {resp.status_code}): {err_msg[:400]}{attempt_info}{extra_hint}",
         )
+
+    if fail_file.exists():
+        try:
+            fail_file.unlink()
+        except Exception:  # noqa: BLE001, S110
+            pass
 
     cookies = dict(resp.cookies)
     headers = dict(req_headers)
@@ -623,6 +787,8 @@ def request_api(
     raw_param: bool = False,
     track: str | list[str] | None = None,
     fresh: bool = False,
+    password: str | None = None,
+    force_login: bool = False,
 ) -> ToolResult:
     """인증 세션을 사용하여 API를 호출하고 결과를 요약 반환한다.
     
@@ -660,8 +826,12 @@ def request_api(
                 break
             time.sleep(1)
 
+    comp = company_code or config.TEST_COMPANY
     try:
-        user, pw, user_info = resolve_user_credentials(as_role)
+        try:
+            user, pw, user_info = resolve_user_credentials(as_role, company_code=comp, password=password)
+        except TypeError:
+            user, pw, user_info = resolve_user_credentials(as_role)
     except ValueError as exc:
         return ToolResult(ok=False, error=str(exc))
 
@@ -700,6 +870,7 @@ def request_api(
             company_code=comp,
             tenant=tenant,
             user_info=user_info,
+            force_login=force_login,
         )
         if not login_res.ok:
             # 로그인 실패 시 실패 메시지를 숨기지 않고 즉시 반환하여 중단!
@@ -763,6 +934,7 @@ def request_api(
             company_code=comp,
             tenant=tenant,
             user_info=user_info,
+            force_login=force_login,
         )
         if not login_res.ok:
             # 재로그인 실패 시 추가 요청을 하지 않고 즉시 실패 반환 (계정 잠금 방지)

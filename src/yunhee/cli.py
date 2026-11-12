@@ -962,6 +962,8 @@ def api(
     wait_deploy: Annotated[float | None, typer.Option("--wait-deploy", help="배포 후 앱 기동 완료까지 대기(초, 기본 60초)")] = None,
     track: Annotated[str | None, typer.Option("--track", help="호출 전후 테이블 행 수 및 신규 PK 추적 (쉼표 구분, 예: biz02_person,biz05_relate_appr)")] = None,
     fresh: Annotated[bool, typer.Option("--fresh", "--no-session", help="기존 로그인 세션을 무시하고 새로 로그인 (기본: 테넌트·계정별 세션 재사용)")] = False,
+    password: Annotated[str | None, typer.Option("--password", help="로그인 비밀번호 (직접 지정, 기본값 및 환경변수보다 우선)")] = None,
+    force_login: Annotated[bool, typer.Option("--force-login", help="로그인 실패 3회 이상으로 잠금 직전인 경우에도 로그인을 강제 시도")] = False,
     fields: Annotated[str | None, typer.Option("--fields", help="출력할 필드 목록 (쉼표 구분 TSV)")] = None,
     where: Annotated[list[str] | None, typer.Option("--where", help="행 필터 key=val (반복 가능)")] = None,
     count_by: Annotated[str | None, typer.Option("--count-by", help="지정 필드의 값별 행 수 집계")] = None,
@@ -1032,6 +1034,8 @@ def api(
         raw_param=raw_param,
         track=track,
         fresh=fresh,
+        password=password,
+        force_login=force_login,
         **kw,
     )
 
@@ -3438,6 +3442,282 @@ def mark_cmd(
         bold=True,
     )
 
+
+@app.command(name="biz-endpoints")
+def biz_endpoints(
+    target: Annotated[str, typer.Argument(help="도메인명 (예: att, pay) 또는 컨트롤러 .java 파일 경로")],
+    path: Annotated[str | None, typer.Option("--path", help="경로 필터링 문자열 (예: annuals)")] = None,
+    output: Annotated[str, typer.Option("-o", "--output", help="출력 형식 (md, json, tsv)")] = "md",
+) -> None:
+    """TOBE API 엔드포인트 목록 및 파라미터·본문 DTO·서비스·권한검사 표 출력"""
+    import json
+
+    from yunhee.tools.biz.endpoints import (
+        collect_endpoints,
+        format_endpoints_json,
+        format_endpoints_md,
+        format_endpoints_tsv,
+    )
+
+    endpoints = collect_endpoints(target, path_filter=path)
+    if not endpoints:
+        typer.secho(f"조회된 엔드포인트가 없습니다: target={target}, path={path}", fg=typer.colors.YELLOW, err=True)
+        return
+
+    fmt = output.lower()
+    if fmt == "json":
+        typer.echo(json.dumps(format_endpoints_json(endpoints), ensure_ascii=False, indent=2))
+    elif fmt == "tsv":
+        typer.echo(format_endpoints_tsv(endpoints))
+    else:
+        typer.echo(format_endpoints_md(endpoints))
+
+
+@app.command(name="biz-authz")
+def biz_authz(
+    target: Annotated[str, typer.Argument(help="도메인명 (예: att, pay) 또는 컨트롤러 .java 파일 경로")],
+    as_user: Annotated[str, typer.Option("--as", "-u", help="낮은 권한 사번/계정 (예: 401)")] = "401",
+    company: Annotated[str, typer.Option("--company", "-c", help="회사 코드 (예: kalpa)")] = "kalpa",
+    password: Annotated[str | None, typer.Option("--password", help="계정 비밀번호")] = None,
+    path: Annotated[str | None, typer.Option("--path", help="경로 필터링 문자열")] = None,
+    param: Annotated[list[str] | None, typer.Option("--param", "-p", help="공통 쿼리 파라미터 key=val (반복 가능)")] = None,
+    probe_write: Annotated[bool, typer.Option("--probe-write", help="쓰기 API에 빈 본문으로 안전하게 인가 검사 프로빙")] = False,
+    probe_delete: Annotated[bool, typer.Option("--probe-delete", help="DELETE API까지 프로빙")] = False,
+    emit_rows: Annotated[bool, typer.Option("--emit-rows", help="보안 의심 마크다운 보고서용 행 목록 출력")] = False,
+    output: Annotated[str, typer.Option("-o", "--output", help="출력 형식 (md, json)")] = "md",
+) -> None:
+    """사원 권한으로 도메인 API 권한 훑기 및 관리자 자료 노출(BOLA/IDOR) 기계적 판정"""
+    import json
+
+    from yunhee.tools.biz.authz import format_authz_md, run_authz
+    from yunhee.tools.biz.endpoints import collect_endpoints
+
+    endpoints = collect_endpoints(target, path_filter=path)
+    if not endpoints:
+        typer.secho(f"조회된 엔드포인트가 없습니다: target={target}, path={path}", fg=typer.colors.YELLOW, err=True)
+        return
+
+    common_params = {}
+    if param:
+        for p in param:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                common_params[k.strip()] = v.strip()
+
+    results = run_authz(
+        endpoints=endpoints,
+        as_user=as_user,
+        company=company,
+        password=password,
+        probe_write=probe_write,
+        probe_delete=probe_delete,
+        common_params=common_params,
+    )
+
+    if output.lower() == "json":
+        typer.echo(json.dumps(results, ensure_ascii=False, indent=2))
+    else:
+        typer.echo(format_authz_md(results, as_user=as_user, emit_rows=emit_rows))
+
+
+@app.command(name="biz-appr")
+def biz_appr(
+    link_code: Annotated[str, typer.Argument(help="전자결재 연동 코드 (예: A74, A73, D01)")],
+    ref: Annotated[int, typer.Option("--ref", help="연동할 업무 데이터 행 ID (refId) 및 링크 대상")],
+    as_user: Annotated[str, typer.Option("--as", "-u", help="상신자 사번/계정 (기본: 401)")] = "401",
+    company: Annotated[str, typer.Option("--company", "-c", help="회사 코드 (기본: kalpa)")] = "kalpa",
+    approver: Annotated[str | None, typer.Option("--approver", help="결재자 사번 목록 (쉼표 구분, 예: 301 또는 201,100)")] = None,
+    password: Annotated[str | None, typer.Option("--password", help="계정 비밀번호")] = None,
+    class_id: Annotated[int | None, typer.Option("--class", help="문서분류 ID (생략 시 dcr30_link에서 자동 조회)")] = None,
+    confirm: Annotated[bool, typer.Option("--confirm", help="상신 후 결재자 승인(30 완료)까지 순서대로 실행")] = False,
+    reject: Annotated[str | None, typer.Option("--reject", help="마지막 결재자가 반려 처리 (반려 사유 입력)")] = None,
+    link_path: Annotated[str | None, typer.Option("--link-path", help="업무 행 연결 API 경로 (예: /api/v1/.../{ref}/appr)")] = None,
+    link_style: Annotated[str | None, typer.Option("--link-style", help="업무 행 연결 파라미터 전달 스타일 (query 또는 body)")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="실제 호출하지 않고 조립된 상신 본문 JSON만 출력")] = False,
+) -> None:
+    """전자결재 상신·업무 행 연결·결재자 승인(또는 반려) 원스톱 자동 실행"""
+    from yunhee.tools.biz.appr import run_appr
+
+    approvers_list = [a.strip() for a in approver.split(",") if a.strip()] if approver else []
+    try:
+        lines = run_appr(
+            link_code=link_code,
+            ref_id=ref,
+            as_user=as_user,
+            company=company,
+            approvers=approvers_list,
+            password=password,
+            class_id=class_id,
+            confirm=confirm,
+            reject=reject,
+            link_path=link_path,
+            link_style=link_style,
+            dry_run=dry_run,
+        )
+        for line in lines:
+            typer.echo(line)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command(name="biz-patch")
+def biz_patch(
+    path: Annotated[str, typer.Argument(help="조회 및 수정할 API 경로 (예: /api/v1/sys/companies/{id}/account)")],
+    set_fields: Annotated[list[str], typer.Option("--set", help="변경할 필드 key=val (반복 가능, 예: commutePopupYn=true)")],
+    where: Annotated[list[str] | None, typer.Option("--where", help="--list 목록 중 특정 행을 고르는 조건 key=val (반복 가능)")] = None,
+    is_list: Annotated[bool, typer.Option("--list", help="GET 응답이 목록 형태인 경우 한 행을 골라 리스트로 감싸 저장")] = False,
+    put_path: Annotated[str | None, typer.Option("--put", help="저장 경로가 GET 경로와 다를 때 지정")] = None,
+    drop_suffix: Annotated[str, typer.Option("--drop-suffix", help="제거할 읽기 전용 필드 접미사 (기본: Nm, 쉼표 구분)")] = "Nm",
+    keep: Annotated[str | None, typer.Option("--keep", help="보존하여 전송할 키 목록 (쉼표 구분)")] = None,
+    method: Annotated[str, typer.Option("--method", help="저장 HTTP 메서드 (기본: PUT)")] = "PUT",
+    as_user: Annotated[str, typer.Option("--as", "-u", help="로그인 계정/사번 (기본: admin)")] = "admin",
+    company: Annotated[str, typer.Option("--company", "-c", help="회사 코드 (기본: kalpa)")] = "kalpa",
+    password: Annotated[str | None, typer.Option("--password", help="계정 비밀번호")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="실제 저장하지 않고 전송할 본문 JSON만 확인")] = False,
+) -> None:
+    """조회(GET)한 데이터의 지정 필드만 안전하게 변경하여 저장(PUT)하고 미변경 칸 소실 검증"""
+    from yunhee.tools.biz.patch import run_patch
+
+    drop_suffixes = [s.strip() for s in drop_suffix.split(",") if s.strip()]
+    keep_keys = [k.strip() for k in keep.split(",") if k.strip()] if keep else None
+
+    try:
+        lines, warnings = run_patch(
+            path=path,
+            sets=set_fields,
+            where=where,
+            is_list=is_list,
+            put_path=put_path,
+            drop_suffixes=drop_suffixes,
+            keep_keys=keep_keys,
+            method=method,
+            as_user=as_user,
+            company=company,
+            password=password,
+            dry_run=dry_run,
+        )
+        for line in lines:
+            typer.echo(line)
+        for w in warnings:
+            typer.secho(f"경고: {w}", fg=typer.colors.YELLOW, err=True)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command(name="biz-code")
+def biz_code(
+    kind_code: Annotated[str | None, typer.Argument(help="공통코드 종류 코드 (예: WorkTypeCode, PaymentTypeCode)")] = None,
+    company: Annotated[str | None, typer.Option("--company", "-c", help="회사 코드 (예: kalpa — 지정 시 회사 행 우선 쓰임 표시)")] = None,
+    like: Annotated[str | None, typer.Option("--like", help="공통코드 종류 이름 또는 코드 검색어")] = None,
+    db: Annotated[str | None, typer.Option("--db", help="데이터베이스 환경변수 이름")] = None,
+) -> None:
+    """공통코드(sys08_code_kind, sys09_code) 조회 및 f_cdnm 규칙 기반 회사별 우선 적용 확인"""
+    from yunhee.tools.biz.code import (
+        format_code_table,
+        get_code_rows,
+        search_code_kinds,
+    )
+
+    if like:
+        results = search_code_kinds(like, db_name=db)
+        if not results:
+            typer.echo(f"검색어 '{like}'에 해당하는 공통코드 종류가 없습니다.")
+            return
+        typer.echo(f"### 검색 결과: '{like}' ({len(results)}건)")
+        typer.echo("| 종류 코드 | 종류 이름 | 시스템 공통 여부 |")
+        typer.echo("|:---|:---|:---|")
+        for r in results:
+            sys_str = "공통(0)" if r["sys08_sys_yn"] == "true" else "회사별"
+            typer.echo(f"| {r['sys08_kind_cd']} | {r.get('sys08_kind_nm', '')} | {sys_str} |")
+        return
+
+    if not kind_code:
+        typer.secho("오류: 코드 종류(예: WorkTypeCode) 또는 --like 검색어를 지정하세요.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        kind_info, rows, similar = get_code_rows(kind_code, company_code=company, db_name=db)
+        if not kind_info:
+            sim_str = ", ".join(similar) if similar else "없음"
+            typer.secho(f"⚠ 코드종류 '{kind_code}' 없음 — 비슷한 종류: {sim_str}", fg=typer.colors.YELLOW, err=True)
+            return
+
+        typer.echo(format_code_table(kind_info, rows))
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command(name="biz-db-write")
+def biz_db_write(
+    file: Annotated[str | None, typer.Option("-f", "--file", help="실행할 SQL 파일 경로")] = None,
+    expr: Annotated[str | None, typer.Option("-e", "--expr", help="직접 실행할 SQL 문장")] = None,
+    db: Annotated[str | None, typer.Option("--db", help="데이터베이스 환경변수 이름")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="커밋하지 않고 전체 롤백 (--rollback)")] = False,
+    no_backup: Annotated[bool, typer.Option("--no-backup", help="실행 전 자동 백업 생략")] = False,
+    allow_ddl: Annotated[bool, typer.Option("--allow-ddl", help="DDL 및 WHERE 절 없는 UPDATE/DELETE 허용")] = False,
+) -> None:
+    """로컬 DB에 한하여 자동 백업 및 안전 가드를 거쳐 안전하게 SQL 쓰기 및 트랜잭션 실행"""
+    from yunhee.tools.biz.dbwrite import execute_db_write
+
+    if not file and not expr:
+        typer.secho("오류: 실행할 SQL 파일(-f) 또는 문장(-e)을 지정하세요.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        lines, _ = execute_db_write(
+            sql_text=expr,
+            file_path=file,
+            db_name=db,
+            dry_run=dry_run,
+            no_backup=no_backup,
+            allow_ddl=allow_ddl,
+        )
+        for line in lines:
+            typer.echo(line)
+    except (ValueError, RuntimeError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command(name="biz-event-new")
+def biz_event_new(
+    event_id: Annotated[str, typer.Argument(help="이벤트 ID (예: PAY-BZ-0004)")],
+    screens: Annotated[str, typer.Option("--screens", help="화면 번호 (쉼표로 구분, 예: 1270,1281)")],
+    title: Annotated[str, typer.Option("--title", help="이벤트 제목")] = "",
+    company: Annotated[str | None, typer.Option("-c", "--company", help="회사 코드 (예: kalpa)")] = None,
+    force: Annotated[bool, typer.Option("--force", help="이미 존재하는 파일 덮어쓰기")] = False,
+    out: Annotated[str | None, typer.Option("--out", help="출력 파일 경로")] = None,
+    db: Annotated[str | None, typer.Option("--db", help="데이터베이스 환경변수 이름")] = None,
+) -> None:
+    """AS-IS/TOBE 화면 색인을 바탕으로 이벤트 분석 문서 틀 생성"""
+    from yunhee.tools.biz.eventdoc import generate_biz_event_doc
+
+    screen_list = [s.strip() for s in re.split(r"[,;\s]+", screens) if s.strip()]
+    if not screen_list:
+        typer.secho("오류: 화면 번호를 1개 이상 지정하세요 (--screens).", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        out_path, _ = generate_biz_event_doc(
+            event_id=event_id,
+            screens=screen_list,
+            title=title,
+            company=company,
+            force=force,
+            out=out,
+            root_dir=config.WORK_DIR,
+            db_name=db,
+        )
+        typer.secho(f"생성됨: {out_path}", fg=typer.colors.GREEN)
+    except FileExistsError as exc:
+        typer.secho(f"오류: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        typer.secho(f"오류: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
 
 
 if __name__ == "__main__":
