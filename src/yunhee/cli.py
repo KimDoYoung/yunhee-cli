@@ -962,6 +962,8 @@ def api(
     wait_deploy: Annotated[float | None, typer.Option("--wait-deploy", help="배포 후 앱 기동 완료까지 대기(초, 기본 60초)")] = None,
     track: Annotated[str | None, typer.Option("--track", help="호출 전후 테이블 행 수 및 신규 PK 추적 (쉼표 구분, 예: biz02_person,biz05_relate_appr)")] = None,
     fresh: Annotated[bool, typer.Option("--fresh", "--no-session", help="기존 로그인 세션을 무시하고 새로 로그인 (기본: 테넌트·계정별 세션 재사용)")] = False,
+    password: Annotated[str | None, typer.Option("--password", help="로그인 비밀번호 (직접 지정, 기본값 및 환경변수보다 우선)")] = None,
+    force_login: Annotated[bool, typer.Option("--force-login", help="로그인 실패 3회 이상으로 잠금 직전인 경우에도 로그인을 강제 시도")] = False,
     fields: Annotated[str | None, typer.Option("--fields", help="출력할 필드 목록 (쉼표 구분 TSV)")] = None,
     where: Annotated[list[str] | None, typer.Option("--where", help="행 필터 key=val (반복 가능)")] = None,
     count_by: Annotated[str | None, typer.Option("--count-by", help="지정 필드의 값별 행 수 집계")] = None,
@@ -1032,6 +1034,8 @@ def api(
         raw_param=raw_param,
         track=track,
         fresh=fresh,
+        password=password,
+        force_login=force_login,
         **kw,
     )
 

@@ -199,6 +199,7 @@ API_DEFAULT_TENANT = (
 API_LOGIN_PATH = os.getenv("YUNHEE_API_LOGIN_PATH", "/api/auth/login")
 TEST_ADMIN_USER = os.getenv("YUNHEE_TEST_ADMIN_USER", "admin")
 TEST_ADMIN_PASS = os.getenv("YUNHEE_TEST_ADMIN_PASS", "1111")
+TEST_DEFAULT_PASS = os.getenv("YUNHEE_TEST_DEFAULT_PASS", "")
 TEST_COMPANY = os.getenv("YUNHEE_TEST_COMPANY")
 API_TENANT_HOST = os.getenv("YUNHEE_API_TENANT_HOST", "{tenant}.localhost")
 
@@ -520,6 +521,13 @@ CONFIG_ITEMS: list[ConfigItem] = [
         aliases=["TEST_ADMIN_PASS", "test-admin-pass", "test_admin_pass"],
         getter=lambda: TEST_ADMIN_PASS,
         description="API 테스트 관리자 비밀번호",
+        secret=True,
+    ),
+    ConfigItem(
+        key="YUNHEE_TEST_DEFAULT_PASS",
+        aliases=["TEST_DEFAULT_PASS", "test-default-pass", "test_default_pass"],
+        getter=lambda: TEST_DEFAULT_PASS,
+        description="API 테스트 직원 기본 비밀번호",
         secret=True,
     ),
     ConfigItem(
