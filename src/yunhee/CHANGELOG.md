@@ -2,6 +2,28 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.9.1] - 2026-11-12
+수정사항 058 반영: `mark` 캡처 PNG 위에 번호 원·강조 상자·화살표·말풍선·마스킹 렌더링 (A-Man 매뉴얼 이미지 자동 제작)
+- **A-Man 호환 매뉴얼 이미지 마킹 도구 (`src/yunhee/tools/marker.py`, `src/yunhee/cli.py`)**:
+  - `yunhee mark <png> <draw.json> [--boxes <boxes.json>] [--out <png>] [--json]` 신설.
+  - A-Man 이미지 편집기(`CanvasItem`, `SYSTEM_ITEM_DEFAULTS`, `drawArrow`, `traceSpeechRectPath`)와 100% 동일한 렌더링 어휘 및 모양 지원.
+  - `boxes.json` 요소 이름 기반 위치 참조(`target`, `anchor`, `padding`, `side`, `gap`, `from`/`to` 변 중앙 자동 연결).
+  - 유효성 검사 및 유사 이름 추천: 존재하지 않는 `target` 시 `difflib` 기반 비슷한 후보 목록 출력 및 에러 차단.
+  - 렌더링 순서 보장: `mask` (실데이터 가림 단색 fill) $\to$ 일반 요소 $\to$ `crop` (영역 잘라내기).
+  - 원본 PNG 보존 및 안전 가드: 원본 이미지를 덮어쓰지 않고 `<이름>-alpha.png`로 저장.
+  - Playwright Chromium Canvas 2D 기반으로 외부 무거운 의존성 없이 정밀 픽셀 렌더링.
+
+## [0.8.9] - 2026-11-12
+수정사항 057 반영: `screen-capture --boxes` 화면 요소 좌표 파일(`*.boxes.json`) 함께 저장
+- **DOM 요소 좌표 일괄 수집 및 `.boxes.json` 생성 (`src/yunhee/tools/screen_capture.py`, `src/yunhee/cli.py`)**:
+  - `yunhee screen-capture`에 `--boxes` 플래그 추가 (기본 꺼짐, 지정 시 PNG마다 동일 이름의 `.boxes.json` 생성).
+  - 브라우저 단 1회의 `page.evaluate` JS 실행으로 화면에 보이는 16종 UI 요소(`button`, `icon-button`, `input`, `select`, `date`, `checkbox`, `radio`, `label`, `tab`, `grid`, `grid-header`, `grid-row`, `grid-cell`, `grid-icon`, `grid-check`, `modal`, `modal-title`) 좌표 및 메타데이터 일괄 수집.
+  - 좌표 변환: 브라우저 CSS 픽셀을 실제 PNG 이미지 픽셀 기준으로 변환(`((rect - origin) * scale)`), 경계 밖 요소 클리핑, 정수 반올림.
+  - `--modal-only` 지원: 잘라낸 모달의 border-box `(left, top)`을 `origin`으로 삼아 모달 내부 요소의 상대 좌표 자동 보정.
+  - 유일한 이름 명명: 화면 노출 글자 우선 적용, 중복 이름 발생 시 DOM 순서 기반 `이름#2`, `이름#3` 번호 매김.
+  - 그리드 계층 명명: `grid1`, `헤더:컬럼`, `grid1.행1`, `grid1.행1.컬럼`, `grid1.행1.수정`, `grid1.행1.체크` 등 구조화 및 가시 영역 최대 20행·첫 5행 셀 제한으로 파일 경량화.
+  - 리포트 연동: `report.json`의 `captures` 항목에 `boxes` 키로 해당 JSON 파일명 기록 및 콘솔 출력 연동.
+
 ## [0.8.8] - 2026-11-11
 수정사항 055 반영: `drift-done` 대장 칸 동적 매핑, `확인` 칸 지원 및 검증, 파일 기준선 범위 정상화 / `drift-diff` SQL statement 블록 격리 diff
 - **대장 표 머리줄 기반 열 동적 위치 매핑 (`src/yunhee/tools/as_is/drift_ops.py`, `src/yunhee/cli.py`)**:

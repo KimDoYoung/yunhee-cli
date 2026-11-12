@@ -3160,6 +3160,10 @@ def screen_capture_cmd(
         bool,
         typer.Option("--modal-only", help="팝업/Lookup 캡처 시 전체 화면 대신 모달 영역(.ant-modal-content)만 잘라서 저장"),
     ] = False,
+    boxes: Annotated[
+        bool,
+        typer.Option("--boxes", help="캡처 이미지에 보이는 요소의 좌표 파일(*.boxes.json) 함께 저장"),
+    ] = False,
     click_all: Annotated[
         bool,
         typer.Option("--click-all", help="팝업 순회 시 기본 제외되는 일반/위험 버튼도 클릭 시도 (네트워크 CUD 차단 가드는 유지)"),
@@ -3203,6 +3207,7 @@ def screen_capture_cmd(
         include_popups=not no_popups,
         modal_only=modal_only,
         click_all=click_all,
+        boxes=boxes,
         range_opt=range_opt,
         set_opts=set_opts,
         headed=headed,
@@ -3297,7 +3302,8 @@ def screen_capture_cmd(
         typer.secho("  🔎 품질 이상 신호: 없음 (정상)", fg=typer.colors.GREEN)
 
     for c in data["captures"]:
-        typer.secho(f"    ✔ {c['filename']:<32} — {c['description']}", fg=typer.colors.GREEN)
+        boxes_info = f" (+{c['boxes']})" if c.get("boxes") else ""
+        typer.secho(f"    ✔ {c['filename']:<32} — {c['description']}{boxes_info}", fg=typer.colors.GREEN)
 
     if data.get("console_errors"):
         typer.secho(f"  ⚠ Console Errors ({len(data['console_errors'])}):", fg=typer.colors.YELLOW)
@@ -3373,6 +3379,65 @@ def screen_desc_cmd(
         typer.echo(render_screen_desc_json(data))
     else:
         typer.echo(render_screen_desc_md(data, summary=summary, section=section).rstrip())
+
+
+@app.command(name="mark")
+def mark_cmd(
+    png: Annotated[
+        Path,
+        typer.Argument(help="마킹할 대상 원본 PNG 이미지 파일 경로"),
+    ],
+    draw: Annotated[
+        Path,
+        typer.Argument(help="그릴 요소 명세 파일 (draw.json)"),
+    ],
+    boxes: Annotated[
+        Path | None,
+        typer.Option("--boxes", "-b", help="요소 좌표 파일 (*.boxes.json, 생략 시 <png>.boxes.json 자동 탐색)"),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", "-o", help="마킹 결과 저장 파일 경로 (기본: <이름>-alpha.png)"),
+    ] = None,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="해석된 최종 요소 목록을 JSON으로 출력"),
+    ] = False,
+) -> None:
+    """캡처 PNG 위에 번호 원·강조 상자·화살표·말풍선·마스킹을 그려 매뉴얼 이미지를 만든다"""
+    import json as json_mod
+
+    from yunhee.tools.marker import mark_image
+
+    res = mark_image(
+        png_path=png,
+        draw_spec=draw,
+        boxes_path=boxes,
+        out_path=out,
+    )
+
+    if not res.ok:
+        typer.secho(f"오류: {res.error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    data = res.data
+    if as_json:
+        typer.echo(json_mod.dumps(data, ensure_ascii=False, indent=2))
+        return
+
+    for w in data.get("warnings") or []:
+        typer.secho(f"  ⚠ {w}", fg=typer.colors.YELLOW)
+
+    in_size = f"{data['input_size'][0]}x{data['input_size'][1]}"
+    out_size = f"{data['output_size'][0]}x{data['output_size'][1]}"
+    size_str = in_size if in_size == out_size else f"{in_size} → {out_size} (crop)"
+
+    typer.secho(
+        f"🎨 Mark: {data['output_png']} ({data['item_count']}개 요소 마킹 · {size_str})",
+        fg=typer.colors.CYAN,
+        bold=True,
+    )
+
 
 
 if __name__ == "__main__":

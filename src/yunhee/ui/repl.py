@@ -68,6 +68,8 @@ HYBRID_COMMANDS = [
     "/rag-status",
     "/rag-search",
     "/screen-desc",
+    "/screen-capture",
+    "/mark",
 ]
 
 ALL_AUTOCOMPLETE_COMMANDS = BUILTIN_COMMANDS + HYBRID_COMMANDS
@@ -99,6 +101,8 @@ def _help_text() -> str:
   [cyan]/rag-search <질의>[/cyan]  학습된 TOBE 카탈로그 및 벡터에서 지식 카드 조회
   [cyan]/rag-reset[/cyan]          TOBE RAG 컬렉션 및 스냅샷 완전 초기화 후 재학습
   [cyan]/screen-desc <번호...>[/cyan] 화면번호(쉼표·공백 복수 지정) 관련 메뉴·파일·팝업·API·SQL·테이블 일괄 조회
+  [cyan]/screen-capture <번호> [login=...][/cyan] TOBE 화면 자동 로그인·순회 캡처 (--boxes 좌표 파일 지원)
+  [cyan]/mark <png> <draw.json>[/cyan]     캡처 이미지에 번호 원·강조 상자·화살표·말풍선 마킹 렌더링
   [cyan]/table <테이블명>[/cyan]   특정 테이블 스키마 DBML 즉시 조회
   [cyan]/outline <경로>[/cyan]     소스 파일 구조 및 메서드 목록 즉시 조회
   [cyan]/log errors[/cyan]          최근 서버 에러 로그 즉시 조회

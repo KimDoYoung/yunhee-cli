@@ -151,3 +151,16 @@ def test_is_safe_popup_button_click_all():
     assert is_safe_popup_button("조회", click_all=True) is False
     assert is_safe_popup_button("거래처 관리 바로가기", click_all=True) is False
 
+
+def test_cli_screen_capture_help_has_boxes():
+    from typer.testing import CliRunner
+
+    from yunhee.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["screen-capture", "--help"])
+    assert result.exit_code == 0
+    assert "--boxes" in result.output
+    assert "boxes.json" in result.output
+
+

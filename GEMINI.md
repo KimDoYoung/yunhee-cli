@@ -54,7 +54,8 @@ uv run yunhee log trace <traceId>                     # 단일 요청 trace의 �
 uv run yunhee log req GET /api/v1/emp/others          # 접근 로그에서 최근 요청 목록 검색
 uv run yunhee log errors                              # WARN/ERROR 묶음 요약
 uv run yunhee log tail                                # 최근 전체 로그 흐름을 trace 단위로 접어서 요약
-uv run yunhee screen-capture 1029 login=kfstest/104/1111 # TOBE 화면 자동 로그인·겸직선택·오픈 및 조회/행선택/탭/팝업 순회 캡처 (--url, --out 지원)
+uv run yunhee screen-capture 1029 login=kfstest/104/1111 # TOBE 화면 자동 로그인·겸직선택·오픈 및 조회/행선택/탭/팝업 순회 캡처 (--boxes 요소 좌표 json, --modal-only, --url, --out 지원)
+uv run yunhee mark 01_initial.png draw.json --out 01_initial-alpha.png # 캡처 이미지에 번호 원·강조 상자·화살표·말풍선·마스킹 렌더링 (A-Man 매뉴얼용, --boxes 자동 탐색)
 uv run yunhee screen-desc 1002,1029, 1085 --format=md # 쉼표·공백 복수 화면번호의 메뉴명·파일명·사용 팝업·하위 컴포넌트·그리드·버튼·API·SQL·테이블·ASIS 종합 조회 (--format=json,md, --summary, --section 지원)
 uv run yunhee trace-crud --screen '#1353,#1404,#1298' # 화면별 C/R/U/D 테이블 작업 매트릭스 일괄 대조 (디스크 캐시 기반 고속 분석)
 
@@ -130,6 +131,8 @@ uv tool install --force --reinstall . # yunhee 안정 버전을 전역 PATH에 �
 - `src/yunhee/tools/outliner.py`: Java, MyBatis XML, TypeScript/TSX, Python 소스의 시그니처와 줄 번호를 추출하는 순수 정적 파서. Java의 여러 줄 파라미터, 점(`.`)이 포함된 제네릭 반환형(`List<MenuRes.Level1>`), 인터페이스 메서드(`SysRoleMapper.java`), TSX 객체 리터럴 함수(`export const sysApi = { ... }`), React.FC 컴포넌트, TS 제네릭 함수(`useTreeGrid<T>`, `editableCol = <T,>`), Java enum 상수 요약(`constants(N): ...`), record 파라미터 구성요소 인라인 및 본문 메서드 보존을 완벽히 지원.
 - `src/yunhee/tools/api_client.py`: 자동 로그인, Host 헤더 기반 테넌트 분리(`_tenant_headers`), 테넌트/회사별 세션 격리(`WORK_DIR/.yunhee/sessions/<host>_<tenant>_<user>_<company>.json`), `companyCode` 지원, 공통 응답 봉투(success·code·data) 언래핑 및 숫자/문자/객체 Data 표기, 로그인 실패 시 즉시 중단(계정 잠금 5회 락 방지) API 스모크 테스트 도구.
 - `src/yunhee/tools/page_style.py`: 화면 파일(.tsx, .java)의 구조적 특징(조회 툴바, 그리드/트리 수, 폼 유형 view/edit, 편집 팝업 여부, split layout 방향, 툴바 전폭 여부, 직접 편집 그리드)을 정적으로 추출하여 페이지 스타일 ID(SID)를 결정적으로 분류하는 판별기.
+- `src/yunhee/tools/screen_capture.py`: Playwright(Chromium) 기반 TOBE 화면 자동 로그인, 겸직 선택, 탭/팝업 순회 스크린샷 캡처 및 화면 품질 신호 수집. `--boxes` 지정 시 보이는 DOM 요소(버튼, 인풋, 그리드, 모달 등 16종)의 픽셀 좌표(`*.boxes.json`) 함께 저장 (`--modal-only` 상대 좌표 보정 지원).
+- `src/yunhee/tools/marker.py`: A-Man 이미지 편집기 호환 매뉴얼 이미지 마킹 도구. `boxes.json`의 요소 이름(`target`, `from`/`to`)을 참조하여 캡처 이미지 위에 번호 원·강조 상자·화살표·말풍선·마스킹을 Playwright Canvas 2D로 렌더링.
 - `src/yunhee/tools/as_is/`: AS-IS 마이그레이션 전용 결정적 정적 분석 및 검증 도구 모음 (LLM 미개입, 100% 결정적).
   - `dbml_indexer.py` (`yunhee index-db`): 수 MB에 달하는 DBML 마크다운을 도메인별 소형 마크다운(`tables/{domain}.md`, `functions/{name}.md`, `views.md`, `triggers.md`)으로 분할 색인하고 pgcrypto 암호키를 자동 마스킹.
   - `src_indexer.py` (`yunhee index-src`): GXT 프레임워크 호출 구조(`MenuOpener`/`menus.tsv` → `ServiceRequest` → `ServerMethod` → `MyBatis mapper XML` → `tables`)를 완전 추적하여 `docs/as-is/src/` 아래 도메인/화면별 색인 생성. GXT 위젯, GridBuilder 컬럼, 이벤트 핸들러 및 처리 로직 줄 범위를 정적 추출. `UpdateDataModel` 동적 SQL/사이드이펙트 추적 지원.

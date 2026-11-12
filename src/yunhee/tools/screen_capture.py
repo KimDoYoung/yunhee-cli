@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -127,6 +128,7 @@ class CaptureItem:
     filename: str
     path: str
     description: str
+    boxes: str | None = None
 
 
 @dataclass
@@ -1679,6 +1681,551 @@ _COLLECT_SIGNALS_JS = """
 """
 
 
+def get_png_dimensions(path: Path) -> tuple[int, int]:
+    """PNG 파일의 너비와 높이를 바이트 헤더(IHDR)에서 직접 읽어 반환한다."""
+    try:
+        with path.open("rb") as f:
+            header = f.read(24)
+            if len(header) >= 24 and header[:8] == b"\x89PNG\r\n\x1a\n":
+                w, h = struct.unpack(">II", header[16:24])
+                return (int(w), int(h))
+    except Exception:  # noqa: BLE001, S110
+        pass
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            return (int(img.width), int(img.height))
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return (0, 0)
+
+
+COLLECT_BOXES_JS = r"""
+(clipElem) => {
+    const scale = window.devicePixelRatio || 1;
+    const vpW = window.innerWidth;
+    const vpH = window.innerHeight;
+
+    let originX = 0;
+    let originY = 0;
+    let boundW = vpW;
+    let boundH = vpH;
+
+    if (clipElem && typeof clipElem.getBoundingClientRect === 'function') {
+        const cr = clipElem.getBoundingClientRect();
+        originX = cr.left;
+        originY = cr.top;
+        boundW = cr.width;
+        boundH = cr.height;
+    }
+
+    function isVisible(el) {
+        if (!el || !(el instanceof Element)) return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) === 0) {
+            return false;
+        }
+        if (el.closest('.ant-tabs-tabpane-hidden')) return false;
+        return true;
+    }
+
+    function computeBox(rect) {
+        if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+        const relX = rect.left - originX;
+        const relY = rect.top - originY;
+        const relW = rect.width;
+        const relH = rect.height;
+
+        const left = Math.max(0, relX);
+        const top = Math.max(0, relY);
+        const right = Math.min(boundW, relX + relW);
+        const bottom = Math.min(boundH, relY + relH);
+
+        if (right <= left || bottom <= top) return null;
+
+        return [
+            Math.round(left * scale),
+            Math.round(top * scale),
+            Math.round((right - left) * scale),
+            Math.round((bottom - top) * scale),
+        ];
+    }
+
+    function cleanText(txt) {
+        if (!txt) return "";
+        return txt.replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+    }
+
+    // 1. Identify active visible modals
+    const modalContentEls = Array.from(document.querySelectorAll('.ant-modal-content')).filter(isVisible);
+    const modalMap = new Map();
+    const modalNamesCount = new Map();
+
+    for (const mEl of modalContentEls) {
+        const titleEl = mEl.querySelector('.ant-modal-title, .ant-modal-header');
+        let t = cleanText(titleEl ? titleEl.innerText : "");
+        if (!t) t = "모달";
+
+        let c = (modalNamesCount.get(t) || 0) + 1;
+        modalNamesCount.set(t, c);
+        const modalName = c > 1 ? `${t}#${c}` : t;
+
+        const isLookup = Boolean(
+            mEl.closest('.lookup-modal') ||
+            mEl.closest('[class*="Lookup"]') ||
+            /lookup|검색/i.test(t)
+        );
+        modalMap.set(mEl, {
+            name: modalName,
+            isLookup: isLookup,
+            titleEl: titleEl,
+            titleText: t,
+        });
+    }
+
+    function getElementModalInfo(el) {
+        const mEl = el.closest('.ant-modal-content');
+        if (mEl && modalMap.has(mEl)) {
+            return modalMap.get(mEl);
+        }
+        return null;
+    }
+
+    function findLabelForInput(el) {
+        const formItem = el.closest('.ant-form-item');
+        if (formItem) {
+            const lbl = formItem.querySelector('.ant-form-item-label label');
+            if (lbl) {
+                const t = cleanText(lbl.innerText).replace(/^[*\s]+|[*\s:]+$/g, '');
+                if (t) return t;
+            }
+        }
+        const aria = el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('placeholder');
+        if (aria) return cleanText(aria);
+
+        let parent = el.parentElement;
+        while (parent && parent !== document.body) {
+            const prev = parent.previousElementSibling;
+            if (prev && prev.innerText && prev.innerText.trim().length < 20) {
+                const t = cleanText(prev.innerText).replace(/^[*\s]+|[*\s:]+$/g, '');
+                if (t) return t;
+            }
+            if (parent.classList.contains('ant-space') || parent.classList.contains('ant-row') || parent.classList.contains('ant-form-item')) break;
+            parent = parent.parentElement;
+        }
+        return "";
+    }
+
+    const rawElements = [];
+
+    // --- A. Modals & Modal Titles ---
+    for (const [mEl, mInfo] of modalMap.entries()) {
+        const mBox = computeBox(mEl.getBoundingClientRect());
+        if (mBox) {
+            rawElements.push({
+                name: mInfo.name,
+                kind: "modal",
+                text: mInfo.titleText,
+                box: mBox,
+                area: mInfo.isLookup ? "lookup" : "modal",
+            });
+        }
+        if (mInfo.titleEl && isVisible(mInfo.titleEl)) {
+            const tBox = computeBox(mInfo.titleEl.getBoundingClientRect());
+            if (tBox) {
+                rawElements.push({
+                    name: `${mInfo.name}:제목`,
+                    kind: "modal-title",
+                    text: mInfo.titleText,
+                    box: tBox,
+                    area: mInfo.isLookup ? "lookup" : "modal",
+                    parent: mInfo.name,
+                });
+            }
+        }
+    }
+
+    // --- B. Tabs ---
+    const tabEls = Array.from(document.querySelectorAll('.ant-tabs-tab')).filter(isVisible);
+    for (const tEl of tabEls) {
+        const tBox = computeBox(tEl.getBoundingClientRect());
+        if (!tBox) continue;
+        const text = cleanText(tEl.innerText);
+        const mInfo = getElementModalInfo(tEl);
+        rawElements.push({
+            name: text || "tab",
+            kind: "tab",
+            text: text,
+            box: tBox,
+            area: mInfo ? (mInfo.isLookup ? "lookup" : "modal") : "main",
+            parent: mInfo ? mInfo.name : undefined,
+            disabled: tEl.classList.contains('ant-tabs-tab-disabled'),
+        });
+    }
+
+    // --- C. Buttons & Icon-Buttons ---
+    const btnEls = Array.from(document.querySelectorAll('button, .ant-btn, [role="button"]')).filter(isVisible);
+    for (const btn of btnEls) {
+        if (btn.closest('.ag-cell')) continue;
+        if (btn.closest('.ant-tabs-tab')) continue;
+        if (btn.closest('.ant-picker-header')) continue;
+
+        const box = computeBox(btn.getBoundingClientRect());
+        if (!box) continue;
+
+        const mInfo = getElementModalInfo(btn);
+        const area = mInfo ? (mInfo.isLookup ? "lookup" : "modal") : "main";
+        const parent = mInfo ? mInfo.name : undefined;
+        const disabled = btn.disabled || btn.classList.contains('ant-btn-disabled') || btn.getAttribute('aria-disabled') === 'true';
+
+        const isClose = btn.classList.contains('ant-modal-close') || btn.closest('.ant-modal-close');
+        if (isClose) {
+            rawElements.push({
+                name: "닫기",
+                kind: "button",
+                text: "닫기",
+                box: box,
+                area: area,
+                parent: parent,
+                disabled: disabled,
+            });
+            continue;
+        }
+
+        const text = cleanText(btn.innerText);
+        if (text) {
+            rawElements.push({
+                name: text,
+                kind: "button",
+                text: text,
+                box: box,
+                area: area,
+                parent: parent,
+                disabled: disabled,
+            });
+        } else {
+            let iconName = "";
+            const aria = btn.getAttribute('aria-label') || btn.getAttribute('title');
+            if (aria) {
+                iconName = cleanText(aria);
+            } else {
+                const iconSvg = btn.querySelector('.anticon, svg');
+                if (iconSvg) {
+                    const cls = (typeof iconSvg.className === 'string') ? iconSvg.className : (iconSvg.getAttribute('class') || "");
+                    const m = cls.match(/anticon-([a-z0-9-]+)/);
+                    if (m) {
+                        const it = m[1];
+                        if (it.includes('search')) iconName = "search";
+                        else if (it.includes('edit')) iconName = "edit";
+                        else if (it.includes('delete')) iconName = "delete";
+                        else if (it.includes('close')) iconName = "닫기";
+                        else if (it.includes('plus')) iconName = "추가";
+                        else if (it.includes('calendar')) iconName = "calendar";
+                        else iconName = it;
+                    }
+                }
+            }
+            if (!iconName) iconName = "icon";
+            rawElements.push({
+                name: iconName,
+                kind: "icon-button",
+                box: box,
+                area: area,
+                parent: parent,
+                disabled: disabled,
+            });
+        }
+    }
+
+    // --- D. Form Labels ---
+    const labelEls = Array.from(document.querySelectorAll('.ant-form-item-label label')).filter(isVisible);
+    for (const lbl of labelEls) {
+        const box = computeBox(lbl.getBoundingClientRect());
+        if (!box) continue;
+        const text = cleanText(lbl.innerText).replace(/^[*\s]+|[*\s:]+$/g, '');
+        if (!text) continue;
+        const mInfo = getElementModalInfo(lbl);
+        rawElements.push({
+            name: text,
+            kind: "label",
+            text: text,
+            box: box,
+            area: mInfo ? (mInfo.isLookup ? "lookup" : "modal") : "main",
+            parent: mInfo ? mInfo.name : undefined,
+        });
+    }
+
+    // --- E. Inputs ---
+    const inpEls = Array.from(document.querySelectorAll('input.ant-input, textarea.ant-input, input.ant-input-number-input')).filter(isVisible);
+    for (const inp of inpEls) {
+        if (inp.closest('.ant-picker-input') || inp.closest('.ant-select') || inp.closest('.ag-cell')) continue;
+        const box = computeBox(inp.getBoundingClientRect());
+        if (!box) continue;
+        const mInfo = getElementModalInfo(inp);
+        const name = findLabelForInput(inp) || "input";
+        rawElements.push({
+            name: name,
+            kind: "input",
+            box: box,
+            area: mInfo ? (mInfo.isLookup ? "lookup" : "modal") : "main",
+            parent: mInfo ? mInfo.name : undefined,
+            disabled: inp.disabled || inp.readOnly,
+        });
+    }
+
+    // --- F. Selects ---
+    const selEls = Array.from(document.querySelectorAll('.ant-select')).filter(isVisible);
+    for (const sel of selEls) {
+        if (sel.closest('.ag-cell')) continue;
+        const box = computeBox(sel.getBoundingClientRect());
+        if (!box) continue;
+        const mInfo = getElementModalInfo(sel);
+        const name = findLabelForInput(sel) || "select";
+        rawElements.push({
+            name: name,
+            kind: "select",
+            box: box,
+            area: mInfo ? (mInfo.isLookup ? "lookup" : "modal") : "main",
+            parent: mInfo ? mInfo.name : undefined,
+            disabled: sel.classList.contains('ant-select-disabled'),
+        });
+    }
+
+    // --- G. Date Pickers ---
+    const pickerEls = Array.from(document.querySelectorAll('.ant-picker')).filter(isVisible);
+    for (const p of pickerEls) {
+        if (p.closest('.ag-cell')) continue;
+        const box = computeBox(p.getBoundingClientRect());
+        if (!box) continue;
+        const mInfo = getElementModalInfo(p);
+        const name = findLabelForInput(p) || "date";
+        rawElements.push({
+            name: name,
+            kind: "date",
+            box: box,
+            area: mInfo ? (mInfo.isLookup ? "lookup" : "modal") : "main",
+            parent: mInfo ? mInfo.name : undefined,
+            disabled: p.classList.contains('ant-picker-disabled'),
+        });
+    }
+
+    // --- H. Checkboxes & Radios ---
+    const chkEls = Array.from(document.querySelectorAll('.ant-checkbox-wrapper')).filter(isVisible);
+    for (const chk of chkEls) {
+        if (chk.closest('.ag-cell')) continue;
+        const box = computeBox(chk.getBoundingClientRect());
+        if (!box) continue;
+        const text = cleanText(chk.innerText);
+        const mInfo = getElementModalInfo(chk);
+        rawElements.push({
+            name: text || "checkbox",
+            kind: "checkbox",
+            text: text,
+            box: box,
+            area: mInfo ? (mInfo.isLookup ? "lookup" : "modal") : "main",
+            parent: mInfo ? mInfo.name : undefined,
+            disabled: chk.classList.contains('ant-checkbox-wrapper-disabled'),
+        });
+    }
+
+    const radEls = Array.from(document.querySelectorAll('.ant-radio-wrapper')).filter(isVisible);
+    for (const rad of radEls) {
+        if (rad.closest('.ag-cell')) continue;
+        const box = computeBox(rad.getBoundingClientRect());
+        if (!box) continue;
+        const text = cleanText(rad.innerText);
+        const mInfo = getElementModalInfo(rad);
+        rawElements.push({
+            name: text || "radio",
+            kind: "radio",
+            text: text,
+            box: box,
+            area: mInfo ? (mInfo.isLookup ? "lookup" : "modal") : "main",
+            parent: mInfo ? mInfo.name : undefined,
+            disabled: rad.classList.contains('ant-radio-wrapper-disabled'),
+        });
+    }
+
+    // --- I. AG Grids ---
+    const allGridRoots = Array.from(document.querySelectorAll('.ag-root-wrapper, .ag-root')).filter(isVisible);
+    const uniqueGrids = [];
+    for (const g of allGridRoots) {
+        if (g.classList.contains('ag-root')) {
+            uniqueGrids.push(g);
+        } else if (!g.querySelector('.ag-root')) {
+            uniqueGrids.push(g);
+        }
+    }
+
+    let gridIdx = 1;
+    for (const grid of uniqueGrids) {
+        const gridName = uniqueGrids.length > 1 ? `grid${gridIdx}` : `grid1`;
+        gridIdx++;
+        const gBox = computeBox(grid.getBoundingClientRect());
+        const mInfo = getElementModalInfo(grid);
+        const area = mInfo ? (mInfo.isLookup ? "lookup" : "modal") : "main";
+        const parent = mInfo ? mInfo.name : undefined;
+
+        if (gBox) {
+            rawElements.push({
+                name: gridName,
+                kind: "grid",
+                box: gBox,
+                area: area,
+                parent: parent,
+            });
+        }
+
+        // Header cells
+        const headerCells = Array.from(grid.querySelectorAll('.ag-header-cell')).filter(isVisible);
+        const colHeaderMap = new Map();
+        for (const hc of headerCells) {
+            const hBox = computeBox(hc.getBoundingClientRect());
+            const colId = hc.getAttribute('col-id') || "";
+            const textEl = hc.querySelector('.ag-header-cell-text');
+            let colName = cleanText(textEl ? textEl.innerText : hc.innerText);
+            if (!colName) {
+                colName = hc.getAttribute('title') || colId || "col";
+            }
+            if (colId) colHeaderMap.set(colId, colName);
+
+            if (hBox) {
+                rawElements.push({
+                    name: `헤더:${colName}`,
+                    kind: "grid-header",
+                    text: colName,
+                    col: colName,
+                    box: hBox,
+                    area: area,
+                    parent: parent,
+                });
+            }
+        }
+
+        // Rows
+        const rowEls = Array.from(grid.querySelectorAll('.ag-row:not(.ag-row-hidden)')).filter(isVisible);
+        rowEls.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+        const limitedRows = rowEls.slice(0, 20);
+
+        let rowNum = 1;
+        for (const rEl of limitedRows) {
+            const currentRow = rowNum++;
+            const rBox = computeBox(rEl.getBoundingClientRect());
+            if (rBox) {
+                rawElements.push({
+                    name: `${gridName}.행${currentRow}`,
+                    kind: "grid-row",
+                    row: currentRow,
+                    box: rBox,
+                    area: area,
+                    parent: parent,
+                });
+            }
+
+            const cells = Array.from(rEl.querySelectorAll('.ag-cell')).filter(isVisible);
+            for (const cell of cells) {
+                const colId = cell.getAttribute('col-id') || "";
+                const colName = colHeaderMap.get(colId) || colId || "col";
+                const cBox = computeBox(cell.getBoundingClientRect());
+                if (!cBox) continue;
+
+                // Checkbox inside cell
+                const chk = cell.querySelector('.ag-selection-checkbox, .ant-checkbox, input[type="checkbox"]');
+                if (chk && isVisible(chk)) {
+                    const chkBox = computeBox(chk.getBoundingClientRect());
+                    if (chkBox) {
+                        rawElements.push({
+                            name: `${gridName}.행${currentRow}.체크`,
+                            kind: "grid-check",
+                            row: currentRow,
+                            box: chkBox,
+                            area: area,
+                            parent: parent,
+                        });
+                    }
+                }
+
+                // Icon button inside cell
+                const iconBtn = cell.querySelector('button, .ant-btn, .anticon, .ag-icon');
+                if (iconBtn && isVisible(iconBtn)) {
+                    const iBox = computeBox(iconBtn.getBoundingClientRect());
+                    if (iBox) {
+                        let iconName = cleanText(iconBtn.innerText) || iconBtn.getAttribute('title') || iconBtn.getAttribute('aria-label');
+                        if (!iconName) {
+                            const cls = (typeof iconBtn.className === 'string') ? iconBtn.className : "";
+                            if (cls.includes('edit')) iconName = "수정";
+                            else if (cls.includes('delete')) iconName = "삭제";
+                            else iconName = colName;
+                        }
+                        rawElements.push({
+                            name: `${gridName}.행${currentRow}.${iconName}`,
+                            kind: "grid-icon",
+                            row: currentRow,
+                            col: colName,
+                            box: iBox,
+                            area: area,
+                            parent: parent,
+                        });
+                    }
+                }
+
+                // Regular cell (first 5 rows only)
+                if (currentRow <= 5) {
+                    const cellText = cleanText(cell.innerText);
+                    rawElements.push({
+                        name: `${gridName}.행${currentRow}.${colName}`,
+                        kind: "grid-cell",
+                        row: currentRow,
+                        col: colName,
+                        text: cellText,
+                        box: cBox,
+                        area: area,
+                        parent: parent,
+                    });
+                }
+            }
+        }
+    }
+
+    // --- J. Deduplicate names & Build final elements ---
+    const nameCounts = new Map();
+    const finalElements = [];
+
+    for (const item of rawElements) {
+        const baseName = item.name;
+        const count = (nameCounts.get(baseName) || 0) + 1;
+        nameCounts.set(baseName, count);
+
+        const finalName = count > 1 ? `${baseName}#${count}` : baseName;
+
+        const outItem = {
+            name: finalName,
+            kind: item.kind,
+            box: item.box,
+        };
+        if (item.text !== undefined && item.text !== "") outItem.text = item.text;
+        if (item.area) outItem.area = item.area;
+        if (item.parent) outItem.parent = item.parent;
+        if (item.row !== undefined) outItem.row = item.row;
+        if (item.col !== undefined && item.col !== "") outItem.col = item.col;
+        if (item.disabled) outItem.disabled = true;
+
+        finalElements.push(outItem);
+    }
+
+    return {
+        viewport: [vpW, vpH],
+        scale: scale,
+        origin: [Math.round(originX), Math.round(originY)],
+        elements: finalElements,
+    };
+}
+"""
+
+
 def capture_screen(
     screen_id: str,
     login_spec: LoginSpec,
@@ -1688,6 +2235,7 @@ def capture_screen(
     include_popups: bool = True,
     modal_only: bool = False,
     click_all: bool = False,
+    boxes: bool = False,
     range_opt: str | None = None,
     set_opts: list[str] | None = None,
     headed: bool = False,
@@ -1774,12 +2322,48 @@ def capture_screen(
                 saved = False
         if not saved:
             page.screenshot(path=str(img_path), full_page=False)
+
+        boxes_filename: str | None = None
+        if boxes:
+            try:
+                boxes_filename = filename.rsplit(".", 1)[0] + ".boxes.json"
+                boxes_path = screen_out_dir / boxes_filename
+                clip_handle = None
+                if clip_locator is not None and saved:
+                    try:
+                        clip_handle = clip_locator.first.element_handle()
+                    except Exception:  # noqa: BLE001
+                        clip_handle = None
+
+                boxes_data = page.evaluate(COLLECT_BOXES_JS, clip_handle)
+                img_w, img_h = get_png_dimensions(img_path)
+                if img_w <= 0 or img_h <= 0:
+                    img_w, img_h = boxes_data.get("viewport", [viewport_width, viewport_height])
+
+                boxes_payload = {
+                    "version": 1,
+                    "image": filename,
+                    "image-size": [img_w, img_h],
+                    "viewport": boxes_data.get("viewport", [viewport_width, viewport_height]),
+                    "scale": float(boxes_data.get("scale", 1.0)),
+                    "origin": boxes_data.get("origin", [0, 0]),
+                    "screen": str(screen_id),
+                    "elements": boxes_data.get("elements", []),
+                }
+                boxes_path.write_text(
+                    json.dumps(boxes_payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception:  # noqa: BLE001
+                boxes_filename = None
+
         report.captures.append(
             CaptureItem(
                 step=step_code,
                 filename=filename,
                 path=str(img_path),
                 description=description,
+                boxes=boxes_filename,
             )
         )
 
@@ -2416,6 +3000,7 @@ def capture_screen(
                 "filename": c.filename,
                 "path": c.path,
                 "description": c.description,
+                **({"boxes": c.boxes} if c.boxes else {}),
             }
             for c in report.captures
         ],
