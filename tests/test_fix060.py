@@ -252,3 +252,149 @@ class TestBizEndpoints:
         assert len(j_data) == 4
         assert set(j_data[0].keys()) >= {"method", "path", "query", "body", "service", "guards", "file", "line"}
 
+
+class TestBizAuthz:
+    """수정사항060 #3: biz-authz 권한 훑기 및 판정 테스트."""
+
+    def test_authz_probe_and_judge(self, monkeypatch):
+        from yunhee.tools.base import ToolResult
+        from yunhee.tools.biz.authz import run_authz
+
+        # 1. request_api 모킹
+        def mock_request_api(method, path, **kwargs):
+            m = method.upper()
+            if m == "GET" and path == "/api/v1/foo/admin":
+                return ToolResult(
+                    ok=True,
+                    data={"summary": "HTTP 200 (0.01s)\nRows: 10\nFields: [id, name]"},
+                )
+            if m == "GET" and path == "/api/v1/foo/my":
+                return ToolResult(
+                    ok=True,
+                    data={"summary": "HTTP 200 (0.01s)\nRows: 2\nFields: [id, name]"},
+                )
+            if m == "PUT" and path == "/api/v1/foo/bars/0/time":
+                # 빈 본문으로 호출되었는지 검증
+                assert kwargs.get("json_body") == {}
+                return ToolResult(
+                    ok=True,
+                    data={"summary": "HTTP 200 (0.01s)\nData: 0"},
+                )
+            if m == "PUT" and path == "/api/v1/pay/work-times":
+                return ToolResult(
+                    ok=False,
+                    error="HTTP 403 (0.01s)\nError: ACCESS_DENIED",
+                    data={"summary": "HTTP 403 (0.01s)\nError: ACCESS_DENIED"},
+                )
+            return ToolResult(ok=False, error=f"Unhandled: {m} {path}")
+
+        monkeypatch.setattr("yunhee.tools.api_client.request_api", mock_request_api)
+
+        # 2. 가짜 엔드포인트 목록
+        fake_endpoints = [
+            {
+                "method": "GET",
+                "path": "/api/v1/foo/admin",
+                "query": [],
+                "query_str": "—",
+                "body": {"type": None, "list": False, "fields": []},
+                "body_str": "—",
+                "service": "FooService.searchAdmin",
+                "guards": ["회사"],
+                "guard_str": "회사",
+                "file": "FooController.java:10",
+                "line": 10,
+            },
+            {
+                "method": "GET",
+                "path": "/api/v1/foo/my",
+                "query": [],
+                "query_str": "—",
+                "body": {"type": None, "list": False, "fields": []},
+                "body_str": "—",
+                "service": "FooService.searchMy",
+                "guards": ["회사", "본인"],
+                "guard_str": "회사·본인",
+                "file": "FooController.java:20",
+                "line": 20,
+            },
+            {
+                "method": "PUT",
+                "path": "/api/v1/foo/bars/{id}/time",
+                "query": [],
+                "query_str": "—",
+                "body": {"type": "FooReq", "list": False, "fields": []},
+                "body_str": "FooReq{...}",
+                "service": "FooService.updateTime",
+                "guards": ["회사"],
+                "guard_str": "회사",
+                "file": "FooController.java:30",
+                "line": 30,
+            },
+            {
+                "method": "PUT",
+                "path": "/api/v1/pay/work-times",
+                "query": [],
+                "query_str": "—",
+                "body": {"type": "List<PayReq>", "list": True, "fields": []},
+                "body_str": "List<PayReq>",
+                "service": "PayService.save",
+                "guards": ["KFS관리자"],
+                "guard_str": "KFS관리자",
+                "file": "PayController.java:40",
+                "line": 40,
+            },
+            {
+                "method": "DELETE",
+                "path": "/api/v1/foo/bars",
+                "query": [],
+                "query_str": "—",
+                "body": {"type": "List<Long>", "list": True, "fields": []},
+                "body_str": "List<Long>",
+                "service": "FooService.deleteList",
+                "guards": ["회사"],
+                "guard_str": "회사",
+                "file": "FooController.java:50",
+                "line": 50,
+            },
+        ]
+
+        # 3. URL -> 메뉴 번호 매핑 및 사원 메뉴 모킹
+        # /api/v1/foo/admin -> 메뉴 1002 (관리자 화면, 사원 권한 없음)
+        # /api/v1/foo/my -> 메뉴 1001 (사원 화면, 사원 권한 있음)
+        url_menus = {
+            "/api/v1/foo/admin": {"1002"},
+            "/api/v1/foo/my": {"1001"},
+        }
+        user_menus = {"1001"}
+
+        results = run_authz(
+            endpoints=fake_endpoints,
+            as_user="401",
+            company="kalpa",
+            probe_write=True,
+            probe_delete=False,
+            url_menu_map=url_menus,
+            user_menu_set=user_menus,
+        )
+
+        # 검증: DELETE는 probe_delete=False 이므로 제외되어 4개 결과
+        assert len(results) == 4
+
+        # 1) /api/v1/foo/admin -> 메뉴 1002(미보유)인데 200 반환 -> ⚠ 관리자 화면 자료를 사원이 받음
+        r_admin = next(r for r in results if r["path"] == "/api/v1/foo/admin")
+        assert "⚠" in r_admin["verdict"]
+
+        # 2) /api/v1/foo/my -> 메뉴 1001(보유)이고 200 반환 -> 본인 자료(정상)
+        r_my = next(r for r in results if r["path"] == "/api/v1/foo/my")
+        assert "정상" in r_my["verdict"]
+
+        # 3) /api/v1/foo/bars/{id}/time -> 빈 본문 200 -> ⚠ 검사 없이 서비스까지 들어감
+        r_time = next(r for r in results if "{id}" in r["path"])
+        assert "⚠" in r_time["verdict"]
+
+        # 4) /api/v1/pay/work-times -> 403 ACCESS_DENIED -> 막힘(정상)
+        r_pay = next(r for r in results if r["path"] == "/api/v1/pay/work-times")
+        assert "막힘(정상)" in r_pay["verdict"]
+
+

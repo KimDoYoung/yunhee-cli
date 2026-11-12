@@ -3409,5 +3409,52 @@ def biz_endpoints(
         typer.echo(format_endpoints_md(endpoints))
 
 
+@app.command(name="biz-authz")
+def biz_authz(
+    target: Annotated[str, typer.Argument(help="도메인명 (예: att, pay) 또는 컨트롤러 .java 파일 경로")],
+    as_user: Annotated[str, typer.Option("--as", "-u", help="낮은 권한 사번/계정 (예: 401)")] = "401",
+    company: Annotated[str, typer.Option("--company", "-c", help="회사 코드 (예: kalpa)")] = "kalpa",
+    password: Annotated[str | None, typer.Option("--password", help="계정 비밀번호")] = None,
+    path: Annotated[str | None, typer.Option("--path", help="경로 필터링 문자열")] = None,
+    param: Annotated[list[str] | None, typer.Option("--param", "-p", help="공통 쿼리 파라미터 key=val (반복 가능)")] = None,
+    probe_write: Annotated[bool, typer.Option("--probe-write", help="쓰기 API에 빈 본문으로 안전하게 인가 검사 프로빙")] = False,
+    probe_delete: Annotated[bool, typer.Option("--probe-delete", help="DELETE API까지 프로빙")] = False,
+    emit_rows: Annotated[bool, typer.Option("--emit-rows", help="보안 의심 마크다운 보고서용 행 목록 출력")] = False,
+    output: Annotated[str, typer.Option("-o", "--output", help="출력 형식 (md, json)")] = "md",
+) -> None:
+    """사원 권한으로 도메인 API 권한 훑기 및 관리자 자료 노출(BOLA/IDOR) 기계적 판정"""
+    import json
+
+    from yunhee.tools.biz.authz import format_authz_md, run_authz
+    from yunhee.tools.biz.endpoints import collect_endpoints
+
+    endpoints = collect_endpoints(target, path_filter=path)
+    if not endpoints:
+        typer.secho(f"조회된 엔드포인트가 없습니다: target={target}, path={path}", fg=typer.colors.YELLOW, err=True)
+        return
+
+    common_params = {}
+    if param:
+        for p in param:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                common_params[k.strip()] = v.strip()
+
+    results = run_authz(
+        endpoints=endpoints,
+        as_user=as_user,
+        company=company,
+        password=password,
+        probe_write=probe_write,
+        probe_delete=probe_delete,
+        common_params=common_params,
+    )
+
+    if output.lower() == "json":
+        typer.echo(json.dumps(results, ensure_ascii=False, indent=2))
+    else:
+        typer.echo(format_authz_md(results, as_user=as_user, emit_rows=emit_rows))
+
+
 if __name__ == "__main__":
     app()
