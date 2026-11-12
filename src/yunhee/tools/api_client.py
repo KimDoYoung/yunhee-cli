@@ -828,7 +828,10 @@ def request_api(
 
     comp = company_code or config.TEST_COMPANY
     try:
-        user, pw, user_info = resolve_user_credentials(as_role, company_code=comp, password=password)
+        try:
+            user, pw, user_info = resolve_user_credentials(as_role, company_code=comp, password=password)
+        except TypeError:
+            user, pw, user_info = resolve_user_credentials(as_role)
     except ValueError as exc:
         return ToolResult(ok=False, error=str(exc))
 
