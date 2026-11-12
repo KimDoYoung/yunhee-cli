@@ -247,7 +247,7 @@ def run_authz(
             if res.ok:
                 res_display = f"200 {rows_str}".strip()
             else:
-                err_line = next((line for line in summary.splitlines() if line.startswith("HTTP ") or line.startswith("Error: ")), summary.splitlines()[0])
+                err_line = next((line for line in summary.splitlines() if line.startswith(("HTTP ", "Error: "))), summary.splitlines()[0])
                 res_display = err_line
 
             if not res.ok:

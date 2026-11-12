@@ -398,3 +398,143 @@ class TestBizAuthz:
         assert "막힘(정상)" in r_pay["verdict"]
 
 
+class TestBizAppr:
+    """수정사항060 #4: biz-appr 결재 상신·승인 자동화 테스트."""
+
+    def test_biz_appr_flow_success(self, monkeypatch):
+        from yunhee.tools.base import ToolResult
+        from yunhee.tools.biz.appr import run_appr
+
+        called_requests = []
+
+        def mock_request_api(method, path, **kwargs):
+            called_requests.append((method, path, kwargs))
+            m = method.upper()
+            if m == "GET" and path == "/api/v1/apr/apprs/new":
+                return ToolResult(
+                    ok=True,
+                    data={"data": {"apprId": 99901, "steps": [{"apprStepId": 88801}]}},
+                )
+            if m == "GET" and path == "/api/v1/apr/apprs/link-seed":
+                return ToolResult(
+                    ok=True,
+                    data={
+                        "data": {
+                            "title": "연장근무 신청서",
+                            "content": "<p>내용</p>",
+                            "effectDate": "2026-11-19T00:00:00",
+                            "regDate": "2026-11-12T10:00:00",
+                            "signCompany": "kalpa",
+                        }
+                    },
+                )
+            if m == "PUT" and path == "/api/v1/apr/apprs/99901":
+                # 상신 페이로드 검증
+                body = kwargs.get("json_body", {})
+                assert body["title"] == "연장근무 신청서"
+                assert len(body["steps"]) == 2
+                assert body["steps"][0]["stepTypeCode"] == "00"
+                assert body["steps"][1]["stepTypeCode"] == "10"
+                return ToolResult(ok=True, data={"success": True})
+            if m == "PUT" and "/api/v1/att/overtime-reqs/me/12345/appr" in path:
+                # A74 쿼리 파라미터 스타일 검증
+                params = kwargs.get("params", {})
+                assert params.get("apprId") == "99901"
+                return ToolResult(ok=True, data={"success": True})
+            if m == "POST" and path == "/api/v1/apr/apprs/99901/confirm":
+                # 승인 액션 검증
+                body = kwargs.get("json_body", {})
+                assert body.get("action") == "confirm"
+                return ToolResult(ok=True, data={"success": True})
+            return ToolResult(ok=True, data={})
+
+        monkeypatch.setattr("yunhee.tools.api_client.request_api", mock_request_api)
+
+        # resolve_user_credentials 모킹
+        def mock_resolve(user_or_role, company_code=None, **kwargs):
+            if user_or_role == "401":
+                return "401", "1111", {"user_id": 40100, "company_id": 100}
+            if user_or_role == "301":
+                return "301", "1111", {"user_id": 30100, "company_id": 100}
+            return user_or_role, "1111", {"user_id": 99999, "company_id": 100}
+
+        monkeypatch.setattr("yunhee.tools.api_client.resolve_user_credentials", mock_resolve)
+
+        # mock class id lookup
+        monkeypatch.setattr("yunhee.tools.biz.appr.get_class_tree_id", lambda link_cd, comp_id, db=None: 202611109047109)
+
+        result_lines = run_appr(
+            link_code="A74",
+            ref_id=12345,
+            as_user="401",
+            company="kalpa",
+            approvers=["301"],
+            confirm=True,
+        )
+
+        assert any("상신 apprId=99901" in line for line in result_lines)
+        assert any("연결 PUT /api/v1/att/overtime-reqs/me/12345/appr" in line for line in result_lines)
+        assert any("승인 301 → 30 완료" in line for line in result_lines)
+
+    def test_biz_appr_missing_class_raises(self, monkeypatch):
+        from yunhee.tools.biz.appr import run_appr
+
+        monkeypatch.setattr(
+            "yunhee.tools.api_client.resolve_user_credentials",
+            lambda *args, **kwargs: ("401", "1111", {"user_id": 40100, "company_id": 100}),
+        )
+        monkeypatch.setattr("yunhee.tools.biz.appr.get_class_tree_id", lambda link_cd, comp_id, db=None: None)
+
+        with pytest.raises(ValueError, match="문서분류지정"):
+            run_appr(
+                link_code="A74",
+                ref_id=12345,
+                as_user="401",
+                company="kalpa",
+                approvers=["301"],
+            )
+
+    def test_biz_appr_reject(self, monkeypatch):
+        from yunhee.tools.base import ToolResult
+        from yunhee.tools.biz.appr import run_appr
+
+        sent_post_bodies = []
+
+        def mock_request_api(method, path, **kwargs):
+            m = method.upper()
+            if m == "GET" and path == "/api/v1/apr/apprs/new":
+                return ToolResult(ok=True, data={"data": {"apprId": 99902, "steps": [{"apprStepId": 88802}]}})
+            if m == "GET" and path == "/api/v1/apr/apprs/link-seed":
+                return ToolResult(ok=True, data={"data": {"title": "오후근무", "content": "내용"}})
+            if m == "PUT" and path == "/api/v1/apr/apprs/99902":
+                return ToolResult(ok=True, data={"success": True})
+            if m == "PUT" and "/api/v1/att/pm-works/12345/appr" in path:
+                return ToolResult(ok=True, data={"success": True})
+            if m == "POST" and path == "/api/v1/apr/apprs/99902/confirm":
+                sent_post_bodies.append(kwargs.get("json_body", {}))
+                return ToolResult(ok=True, data={"success": True})
+            return ToolResult(ok=True, data={})
+
+        monkeypatch.setattr("yunhee.tools.api_client.request_api", mock_request_api)
+        monkeypatch.setattr(
+            "yunhee.tools.api_client.resolve_user_credentials",
+            lambda *args, **kwargs: ("402", "1111", {"user_id": 40200, "company_id": 100}),
+        )
+        monkeypatch.setattr("yunhee.tools.biz.appr.get_class_tree_id", lambda link_cd, comp_id, db=None: 1001)
+
+        result_lines = run_appr(
+            link_code="A73",
+            ref_id=12345,
+            as_user="402",
+            company="kalpa",
+            approvers=["302"],
+            reject="사유 부족",
+        )
+
+        assert any("반려 302 → 반려 완료" in line for line in result_lines)
+        assert len(sent_post_bodies) == 1
+        assert sent_post_bodies[0]["action"] == "reject"
+        assert sent_post_bodies[0]["message"] == "사유 부족"
+
+
+

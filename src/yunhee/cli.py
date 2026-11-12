@@ -3456,5 +3456,46 @@ def biz_authz(
         typer.echo(format_authz_md(results, as_user=as_user, emit_rows=emit_rows))
 
 
+@app.command(name="biz-appr")
+def biz_appr(
+    link_code: Annotated[str, typer.Argument(help="전자결재 연동 코드 (예: A74, A73, D01)")],
+    ref: Annotated[int, typer.Option("--ref", help="연동할 업무 데이터 행 ID (refId) 및 링크 대상")],
+    as_user: Annotated[str, typer.Option("--as", "-u", help="상신자 사번/계정 (기본: 401)")] = "401",
+    company: Annotated[str, typer.Option("--company", "-c", help="회사 코드 (기본: kalpa)")] = "kalpa",
+    approver: Annotated[str | None, typer.Option("--approver", help="결재자 사번 목록 (쉼표 구분, 예: 301 또는 201,100)")] = None,
+    password: Annotated[str | None, typer.Option("--password", help="계정 비밀번호")] = None,
+    class_id: Annotated[int | None, typer.Option("--class", help="문서분류 ID (생략 시 dcr30_link에서 자동 조회)")] = None,
+    confirm: Annotated[bool, typer.Option("--confirm", help="상신 후 결재자 승인(30 완료)까지 순서대로 실행")] = False,
+    reject: Annotated[str | None, typer.Option("--reject", help="마지막 결재자가 반려 처리 (반려 사유 입력)")] = None,
+    link_path: Annotated[str | None, typer.Option("--link-path", help="업무 행 연결 API 경로 (예: /api/v1/.../{ref}/appr)")] = None,
+    link_style: Annotated[str | None, typer.Option("--link-style", help="업무 행 연결 파라미터 전달 스타일 (query 또는 body)")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="실제 호출하지 않고 조립된 상신 본문 JSON만 출력")] = False,
+) -> None:
+    """전자결재 상신·업무 행 연결·결재자 승인(또는 반려) 원스톱 자동 실행"""
+    from yunhee.tools.biz.appr import run_appr
+
+    approvers_list = [a.strip() for a in approver.split(",") if a.strip()] if approver else []
+    try:
+        lines = run_appr(
+            link_code=link_code,
+            ref_id=ref,
+            as_user=as_user,
+            company=company,
+            approvers=approvers_list,
+            password=password,
+            class_id=class_id,
+            confirm=confirm,
+            reject=reject,
+            link_path=link_path,
+            link_style=link_style,
+            dry_run=dry_run,
+        )
+        for line in lines:
+            typer.echo(line)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
 if __name__ == "__main__":
     app()
