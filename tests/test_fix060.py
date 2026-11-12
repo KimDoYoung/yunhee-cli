@@ -821,6 +821,93 @@ class TestBizDbWrite:
         assert not mock_conn.commit.called
 
 
+class TestBizEventNew:
+    """수정사항060 #8: biz-event-new 단위 테스트."""
+
+    def test_generate_biz_event_doc_snapshot(self, monkeypatch, tmp_path):
+        import shutil
+
+        from yunhee.tools.biz.eventdoc import generate_biz_event_doc
+
+        fixture_dir = Path(__file__).parent / "fixtures" / "biz060"
+        # tmp_path로 fixture 복사
+        root_dir = tmp_path / "project"
+        shutil.copytree(fixture_dir, root_dir)
+
+        # company menu 모킹 (1489는 없음)
+        monkeypatch.setattr(
+            "yunhee.tools.biz.eventdoc._check_company_menus",
+            lambda comp, nos, db=None: set(),
+        )
+
+        out_path, content = generate_biz_event_doc(
+            event_id="PAY-BZ-9999",
+            screens=["1489"],
+            title="시험",
+            company="kalpa",
+            force=False,
+            root_dir=root_dir,
+        )
+
+        assert out_path.exists()
+        assert out_path.name == "PAY-BZ-9999-시험.md"
+
+        # 메뉴 줄 확인
+        assert "#1489 기초자료 > 30. 자산&경영 > 근로시간기준관리 (kalpa 메뉴 없음)" in content
+
+        # 따라 하기 확인
+        assert "| 1 | TODO | #1489 | [조회] | TODO |" in content
+        assert "| 2 | TODO | #1489 | [등록] | TODO |" in content
+        assert "| 3 | TODO | #1489 | [저장] | TODO |" in content
+        assert "| 4 | TODO | #1489 | [삭제] | TODO |" in content
+
+        # DB 테이블 확인
+        assert "| `pay34_work_time_config` | TODO | TODO |" in content
+
+        # yaml 확인
+        assert "api: GET /api/v1/pay/work-times" in content
+        assert "api: PUT /api/v1/pay/work-times" in content
+        assert "api: DELETE /api/v1/pay/work-times" in content
+
+        # 근거 절 확인
+        assert "Pay34_Tab_WorkTimeConfig(E0~E5" in content
+        assert "PayWorkTimeController" in content
+        assert "Pay34_Tab_WorkTimeConfig.tsx" in content
+
+    def test_generate_biz_event_file_exists_raises(self, monkeypatch, tmp_path):
+        from yunhee.tools.biz.eventdoc import generate_biz_event_doc
+
+        fixture_dir = Path(__file__).parent / "fixtures" / "biz060"
+        target_file = tmp_path / "test.md"
+        target_file.write_text("existing content", encoding="utf-8")
+
+        monkeypatch.setattr(
+            "yunhee.tools.biz.eventdoc._check_company_menus",
+            lambda *args, **kwargs: set(),
+        )
+
+        with pytest.raises(FileExistsError, match="이미 존재"):
+            generate_biz_event_doc(
+                event_id="PAY-BZ-9999",
+                screens=["1489"],
+                out=str(target_file),
+                force=False,
+                root_dir=fixture_dir,
+            )
+
+        # force=True 덮어쓰기 성공
+        out_p, content = generate_biz_event_doc(
+            event_id="PAY-BZ-9999",
+            screens=["1489"],
+            out=str(target_file),
+            force=True,
+            root_dir=fixture_dir,
+        )
+        assert out_p == target_file
+        assert "PAY-BZ-9999" in content
+
+
+
 
 
 

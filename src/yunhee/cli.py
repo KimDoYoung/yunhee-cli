@@ -3618,5 +3618,43 @@ def biz_db_write(
         raise typer.Exit(code=1) from exc
 
 
+@app.command(name="biz-event-new")
+def biz_event_new(
+    event_id: Annotated[str, typer.Argument(help="이벤트 ID (예: PAY-BZ-0004)")],
+    screens: Annotated[str, typer.Option("--screens", help="화면 번호 (쉼표로 구분, 예: 1270,1281)")],
+    title: Annotated[str, typer.Option("--title", help="이벤트 제목")] = "",
+    company: Annotated[str | None, typer.Option("-c", "--company", help="회사 코드 (예: kalpa)")] = None,
+    force: Annotated[bool, typer.Option("--force", help="이미 존재하는 파일 덮어쓰기")] = False,
+    out: Annotated[str | None, typer.Option("--out", help="출력 파일 경로")] = None,
+    db: Annotated[str | None, typer.Option("--db", help="데이터베이스 환경변수 이름")] = None,
+) -> None:
+    """AS-IS/TOBE 화면 색인을 바탕으로 이벤트 분석 문서 틀 생성"""
+    from yunhee.tools.biz.eventdoc import generate_biz_event_doc
+
+    screen_list = [s.strip() for s in re.split(r"[,;\s]+", screens) if s.strip()]
+    if not screen_list:
+        typer.secho("오류: 화면 번호를 1개 이상 지정하세요 (--screens).", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        out_path, _ = generate_biz_event_doc(
+            event_id=event_id,
+            screens=screen_list,
+            title=title,
+            company=company,
+            force=force,
+            out=out,
+            root_dir=config.WORK_DIR,
+            db_name=db,
+        )
+        typer.secho(f"생성됨: {out_path}", fg=typer.colors.GREEN)
+    except FileExistsError as exc:
+        typer.secho(f"오류: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        typer.secho(f"오류: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
 if __name__ == "__main__":
     app()
