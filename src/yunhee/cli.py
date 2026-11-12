@@ -3542,5 +3542,49 @@ def biz_patch(
         raise typer.Exit(code=1) from exc
 
 
+@app.command(name="biz-code")
+def biz_code(
+    kind_code: Annotated[str | None, typer.Argument(help="공통코드 종류 코드 (예: WorkTypeCode, PaymentTypeCode)")] = None,
+    company: Annotated[str | None, typer.Option("--company", "-c", help="회사 코드 (예: kalpa — 지정 시 회사 행 우선 쓰임 표시)")] = None,
+    like: Annotated[str | None, typer.Option("--like", help="공통코드 종류 이름 또는 코드 검색어")] = None,
+    db: Annotated[str | None, typer.Option("--db", help="데이터베이스 환경변수 이름")] = None,
+) -> None:
+    """공통코드(sys08_code_kind, sys09_code) 조회 및 f_cdnm 규칙 기반 회사별 우선 적용 확인"""
+    from yunhee.tools.biz.code import (
+        format_code_table,
+        get_code_rows,
+        search_code_kinds,
+    )
+
+    if like:
+        results = search_code_kinds(like, db_name=db)
+        if not results:
+            typer.echo(f"검색어 '{like}'에 해당하는 공통코드 종류가 없습니다.")
+            return
+        typer.echo(f"### 검색 결과: '{like}' ({len(results)}건)")
+        typer.echo("| 종류 코드 | 종류 이름 | 시스템 공통 여부 |")
+        typer.echo("|:---|:---|:---|")
+        for r in results:
+            sys_str = "공통(0)" if r["sys08_sys_yn"] == "true" else "회사별"
+            typer.echo(f"| {r['sys08_kind_cd']} | {r.get('sys08_kind_nm', '')} | {sys_str} |")
+        return
+
+    if not kind_code:
+        typer.secho("오류: 코드 종류(예: WorkTypeCode) 또는 --like 검색어를 지정하세요.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        kind_info, rows, similar = get_code_rows(kind_code, company_code=company, db_name=db)
+        if not kind_info:
+            sim_str = ", ".join(similar) if similar else "없음"
+            typer.secho(f"⚠ 코드종류 '{kind_code}' 없음 — 비슷한 종류: {sim_str}", fg=typer.colors.YELLOW, err=True)
+            return
+
+        typer.echo(format_code_table(kind_info, rows))
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
 if __name__ == "__main__":
     app()

@@ -650,5 +650,87 @@ class TestBizPatch:
         assert any("important" in w for w in warnings)
 
 
+class TestBizCode:
+    """수정사항060 #6: biz-code 공통코드 조회 및 유사 추천 테스트."""
+
+    def test_biz_code_found(self, monkeypatch):
+        from yunhee.tools.biz.code import format_code_table, get_code_rows
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+
+        def fake_execute(query, params=None):
+            q = query.strip()
+            if "FROM sys08_code_kind" in q and "sys08_kind_cd = %s" in q:
+                mock_cur.fetchone.return_value = {
+                    "sys08_code_kind_id": 10,
+                    "sys08_kind_cd": "WorkTypeCode",
+                    "sys08_kind_nm": "근무형태구분",
+                    "sys08_sys_yn": "true",
+                }
+            elif "FROM sys09_code" in q:
+                mock_cur.fetchall.return_value = [
+                    {
+                        "sys09_company_id": 0,
+                        "sys09_code": "10",
+                        "sys09_name": "연장근무",
+                        "sys09_seq": "001",
+                        "sys09_close_yn": "false",
+                        "sys09_apply_date": "2020-01-01",
+                    },
+                    {
+                        "sys09_company_id": 0,
+                        "sys09_code": "20",
+                        "sys09_name": "야간근무",
+                        "sys09_seq": "002",
+                        "sys09_close_yn": "false",
+                        "sys09_apply_date": "2020-01-01",
+                    },
+                ]
+
+        mock_cur.execute.side_effect = fake_execute
+        monkeypatch.setattr("psycopg.connect", lambda *args, **kwargs: mock_conn)
+        monkeypatch.setattr("yunhee.tools.sql_runner.get_connection_string", lambda *args: "postgresql://fake")
+
+        kind_info, rows, _similar = get_code_rows("WorkTypeCode")
+        assert kind_info is not None
+        assert len(rows) == 2
+        assert rows[0]["sys09_name"] == "연장근무"
+
+        table_str = format_code_table(kind_info, rows)
+        assert "| 0(공통) | 10 | 연장근무 |" in table_str
+        assert "| 0(공통) | 20 | 야간근무 |" in table_str
+
+    def test_biz_code_not_found_suggests_similar(self, monkeypatch):
+        from yunhee.tools.biz.code import get_code_rows
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+
+        def fake_execute(query, params=None):
+            q = query.strip()
+            if "sys08_kind_cd = %s" in q:
+                mock_cur.fetchone.return_value = None
+            elif "ILIKE" in q:
+                mock_cur.fetchall.return_value = [
+                    {"sys08_kind_cd": "PaymentMethodCode", "sys08_kind_nm": "지급방법"},
+                    {"sys08_kind_cd": "PayTypeCode", "sys08_kind_nm": "급여유형"},
+                ]
+
+        mock_cur.execute.side_effect = fake_execute
+        monkeypatch.setattr("psycopg.connect", lambda *args, **kwargs: mock_conn)
+        monkeypatch.setattr("yunhee.tools.sql_runner.get_connection_string", lambda *args: "postgresql://fake")
+
+        kind_info, _rows, similar = get_code_rows("PaymentTypeCode")
+        assert kind_info is None
+        assert len(similar) == 2
+        assert "PaymentMethodCode" in similar
+
+
+
 
 
