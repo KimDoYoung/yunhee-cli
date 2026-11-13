@@ -2,6 +2,39 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.9.4] - 2026-11-13
+수정사항 061, 062, 063 통합 반영: `compare` 정합성 및 파라미터 보완 · `biz-appr` 결재 연동 확장 · `api` / `sql` / `analysis` 유틸리티 강화 · `biz-endpoints` & `biz-authz` 진단 도구 고도화 · `biz-event-new` 문서 자동 생성 지능화 · `grep` & `drift` 편의성 개선
+- **`compare`: URL 쿼리 파라미터 보존, 사원 정보 자동 보충 및 0 바인딩 경고 (`src/yunhee/tools/comparator.py`)**:
+  - API 경로에 포함된 쿼리 스트링(`?k=v`)을 `api_params`에 자동 병합하여 누락 방지 및 `API params:` 라인 출력 (`061 #8`).
+  - 로그인 사원 정보(`userId`, `personId`, `orgId`, `companyId`)를 미입력 SQL 파라미터에 자동 채우고 불일치 수동 입력 시 경고 (`062 #2`).
+  - 파라미터 값이 0일 때 MyBatis dynamic SQL `!= null` 검사 경고 출력 (`062 #1 방안 2`).
+- **`biz-appr`: 전자결재 연동 코드 확장, 선행 데이터 자동 생성 및 복수 ref 지원 (`src/yunhee/tools/biz/appr.py`, `src/yunhee/cli.py`)**:
+  - `A02`, `A05`, `X01`, `A63`, `A64` 연동 코드 기본 등록 및 미등록 시 안내 후 차단 (`061 #3, #9`).
+  - `--pre '<METHOD> <path> <json>'` 옵션 추가로 상신 전 선행 업무 데이터 자동 생성 후 결재 연동 (`061 #4`).
+  - 복수 `--ref` 지정 및 `ids-body` 스타일 지원, 커스텀 `--link-path`, `--seed-arg` 지원.
+- **`api --get` 및 SQL 읽기전용 함수 반환 경고 (`src/yunhee/cli.py`, `src/yunhee/tools/sql_runner.py`)**:
+  - `yunhee api --get <path>`: 응답 JSON에서 특정 키/경로의 값만 머리말 없이 단일 텍스트로 추출 (스크립트 바인딩용, `062 #4`).
+  - read-only 쿼리에서 `nextval`, `f_create_seq` 등 쓰기 함수가 NULL을 반환할 때 원인 안내 경고 메시지 출력 (`062 #3`).
+- **`analysis function` 신설 (`src/yunhee/tools/analysis/function.py`, `src/yunhee/cli.py`)**:
+  - 색인된 PostgreSQL DB 함수(SP) 마크다운 및 본문 소스 정밀 추출 (`-o md|code`, `--lines A-B`, `--grep 패턴`, `062 #5`).
+- **`biz-endpoints` & `biz-authz` 고도화 (`src/yunhee/tools/biz/endpoints.py`, `src/yunhee/tools/biz/authz.py`, `src/yunhee/cli.py`)**:
+  - 컨트롤러 클래스명 직접 지원(`AstRelateApprController`), 요약에 `⚠없음 N개(쓰기 a·조회 b)` 명시 (`062 #6`).
+  - `--path` 복수/쉼표 지원 및 `--screen <번호>` 연관 API 자동 필터링 (`063 #5`).
+  - 선택 파라미터 기본값 채우기, 404 DATA_NOT_FOUND 처리, rows=0 항목은 `⚠?(0행)`으로 분류하여 ⚠ 카운트 제외 (`061 #5`).
+  - `--probe-appr`: 결재 ID 바꿔치기(apprId=1) 시험 및 try/finally 원복 보장 (`061 #6`).
+- **`biz-event-new` 문서 자동 생성 지능화 (`src/yunhee/tools/biz/eventdoc.py`)**:
+  - "따라 하기" 단계에서 비버튼 위젯 잡음 제거, 확인창 `(확인창 [예])` 결합, 팝업 단계명(`#{screen} → {popup}`) 표기 (`063 #4`).
+  - 앞선 관련 이벤트(`> 관련 이벤트: ...`) 및 `<!-- 다음 의심 번호: #N -->` 자동 삽입 (`061 #7`).
+  - 업무 규칙에 화면 쓰기 API 표 및 biz-authz 후속 검사 안내 자동 연동 (`063 #4`).
+- **`grep` 옵션 편의성 개선 (`src/yunhee/tools/outliner.py`, `src/yunhee/cli.py`)**:
+  - `yunhee grep -c/--count`: 파일별 일치 줄 수(`파일:건수`) 출력 (`063 #1`).
+  - `-n`(줄 번호), `-r`(재귀) no-op 호환 옵션 추가 (`063 #1`).
+  - 모르는 옵션 입력 시 사용 가능한 옵션 안내 가이드 출력 (`063 #1`).
+- **`drift` 줄바꿈(CRLF) 판별 및 대장 해당없음 공유 변경 단위 제외 (`src/yunhee/tools/as_is/drift.py`, `src/yunhee/cli.py`)**:
+  - `--strict` 미지정 시 줄바꿈(CRLF) 및 끝 공백 차이를 기본 무시하여 `+0/-0 (줄바꿈만)`으로 동일 판정 (`063 #2`).
+  - `drift --record`: 줄바꿈만 바뀐 경우 `--force` 없이 `줄바꿈만 바뀜 → 기준 이동`으로 자동 기록 (`063 #2`).
+  - `drift --done-only`: 대장에 `해당없음`/`반영` 처리된 공유 변경 단위를 호출하지 않는 화면을 변경 목록에서 제외하고 `판단 끝난 공유 변경 n건 제외` 요약 표시 (`063 #3`).
+
 ## [0.9.3] - 2026-11-13
 수정사항 060 반영: 업무분석용 `biz-*` 명령 묶음 및 API 로그인 계정 보호 강화
 - **TOBE API 엔드포인트 목록 및 DTO 분석 (`yunhee biz-endpoints`)**:

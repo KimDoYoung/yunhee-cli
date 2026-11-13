@@ -136,10 +136,18 @@ def build_url_menu_map(root_dir: Path) -> dict[str, set[str]]:
     return url_to_menus
 
 
-def _make_dummy_param(p_type: str) -> str:
+def _make_dummy_param(p_type: str, p_name: str = "") -> str:
+    name_l = p_name.lower()
+    now_dt = datetime.datetime.now(tz=datetime.UTC)
+    if "year" in name_l:
+        return str(now_dt.year)
+    if "month" in name_l:
+        return now_dt.strftime("%Y.%m")
+    if name_l in ("paycode", "pay_code"):
+        return "01"
     t = p_type.lower()
-    if "date" in t:
-        return datetime.datetime.now(tz=datetime.UTC).date().isoformat()
+    if "date" in t or "date" in name_l:
+        return now_dt.date().isoformat()
     if "int" in t or "long" in t:
         return "1"
     return ""
@@ -152,6 +160,7 @@ def run_authz(
     password: str | None = None,
     probe_write: bool = False,
     probe_delete: bool = False,
+    probe_appr: bool = False,
     common_params: dict[str, str] | None = None,
     url_menu_map: dict[str, set[str]] | None = None,
     user_menu_set: set[str] | None = None,
@@ -177,7 +186,8 @@ def run_authz(
 
         # 1. 쓰기 엔드포인트 필터링
         is_write = verb in ("POST", "PUT", "DELETE", "PATCH")
-        if is_write and not probe_write:
+        is_appr_put = verb == "PUT" and raw_path.endswith(("/appr-id", "/appr"))
+        if is_write and not probe_write and not (probe_appr and is_appr_put):
             continue
         if verb == "DELETE" and not probe_delete:
             continue
@@ -202,8 +212,10 @@ def run_authz(
                 q_name = q["name"]
                 if q_name in common_params:
                     req_params[q_name] = common_params[q_name]
-                elif q["required"] or "date" in q["type"].lower() or "date" in q_name.lower():
-                    req_params[q_name] = _make_dummy_param(q["type"])
+                else:
+                    val = _make_dummy_param(q.get("type", "String"), q_name)
+                    if val or q.get("required"):
+                        req_params[q_name] = val or "1"
         else:
             b_info = ep.get("body", {})
             if b_info.get("list"):
@@ -211,7 +223,57 @@ def run_authz(
             else:
                 json_body = {}
 
-        # 4. API 요청
+        # 4. 결재 ID 바꿔치기 프로빙 (--probe-appr, 061 #6)
+        if probe_appr and verb == "PUT" and raw_path.endswith(("/appr-id", "/appr")):
+            list_path = re.sub(r"/\{[^}/]*\}/appr(?:-id)?$", "", raw_path)
+            curr_year = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=9))).year
+            res_list = api_client.request_api("GET", list_path, as_role=as_user, company_code=company, password=password, params={"stdYear": str(curr_year)})
+            items = []
+            if res_list.ok and isinstance(res_list.data, dict):
+                d = res_list.data.get("data")
+                if isinstance(d, list):
+                    items = d
+                elif isinstance(d, dict) and isinstance(d.get("rows"), list):
+                    items = d["rows"]
+
+            target_row = next((r for r in items if isinstance(r, dict) and (r.get("apprId") or r.get("statusCode") in (30, "30"))), None)
+            if not target_row and items:
+                target_row = items[0]
+
+            if target_row and isinstance(target_row, dict):
+                ref_id_val = target_row.get("id") or next((v for k, v in target_row.items() if k.endswith("Id")), 1)
+                orig_appr_id = target_row.get("apprId", 1)
+                call_put_path = raw_path.replace("{ref}", str(ref_id_val)).replace("{id}", str(ref_id_val))
+                if re.search(r"\{[^}]+\}", call_put_path):
+                    call_put_path = re.sub(r"\{[^}]+\}", str(ref_id_val), call_put_path)
+
+                try:
+                    res_tamper = api_client.request_api("PUT", call_put_path, as_role=as_user, company_code=company, password=password, json_body={"apprId": 1})
+                    if res_tamper.ok:
+                        res_display = "apprId=1 허용 (되돌림 완료)"
+                        verdict = "⚠ 결재 ID 검사 없음"
+                    else:
+                        res_display = f"apprId=1 차단 ({res_tamper.error or '오류'})"
+                        verdict = "막힘(정상)"
+                finally:
+                    if orig_appr_id is not None:
+                        api_client.request_api("PUT", call_put_path, as_role=as_user, company_code=company, password=password, json_body={"apprId": orig_appr_id})
+            else:
+                res_display = "건너뜀(완료 행 없음)"
+                verdict = "건너뜀"
+
+            results.append({
+                "method": verb,
+                "path": raw_path,
+                "call_path": call_path,
+                "guard_str": guards_str,
+                "result_str": res_display,
+                "verdict": verdict,
+                "associated_menus": [],
+            })
+            continue
+
+        # 4. 일반 API 요청
         kw: dict[str, Any] = {
             "as_role": as_user,
             "company_code": company,
@@ -241,9 +303,10 @@ def run_authz(
         verdict = ""
 
         if not is_write:
-            # GET 판정
+            # GET 판정 (061 #5)
             rows_m = re.search(r"Rows:\s*(\d+)", summary)
-            rows_str = f"rows={rows_m.group(1)}" if rows_m else ""
+            row_cnt = int(rows_m.group(1)) if rows_m else None
+            rows_str = f"rows={row_cnt}" if row_cnt is not None else ""
             if res.ok:
                 res_display = f"200 {rows_str}".strip()
             else:
@@ -251,21 +314,27 @@ def run_authz(
                 res_display = err_line
 
             if not res.ok:
-                if "403" in summary or "ACCESS_DENIED" in summary:
+                if "403" in summary or "ACCESS_DENIED" in summary or "권한이 없습니다" in summary:
                     verdict = "막힘(정상)"
+                elif "404" in summary or "DATA_NOT_FOUND" in summary:
+                    verdict = "자료없음(더미 ID) — 판정 못 함"
                 else:
                     verdict = "오류"
             else:
                 # 200 성공인 경우
+                is_common_ref = any(k in raw_path for k in ("tax-calc", "tax-deduct", "common-code", "codes"))
                 if "본인" in ep.get("guards", []):
                     verdict = "본인 자료(정상)"
+                elif is_common_ref or "KFS관리자" in ep.get("guards", []):
+                    verdict = "공통 기준표(참고)"
+                elif row_cnt == 0:
+                    verdict = "⚠?(0행 — 자료 없음)"
                 elif associated_menus and not (associated_menus & user_menu_set):
-                    # 화면 메뉴는 존재하는데 사원 메뉴 목록에 없는 경우 -> 관리자 화면 자료 노출!
                     verdict = "⚠ 관리자 화면 자료를 사원이 받음"
                 elif associated_menus and (associated_menus & user_menu_set):
                     verdict = "본인 자료(정상)"
                 else:
-                    verdict = "⚠"
+                    verdict = "⚠?(미분류)"
         else:
             # 쓰기 판정 (--probe-write)
             if "ACCESS_DENIED" in summary or "403" in summary or "권한이 없습니다" in summary:
@@ -311,7 +380,7 @@ def format_authz_md(
     emit_lines: list[str] = []
 
     for r in results:
-        is_suspect = "⚠" in r["verdict"]
+        is_suspect = r["verdict"].startswith("⚠ ") and not r["verdict"].startswith("⚠?")
         if is_suspect:
             suspect_count += 1
             emit_lines.append(f"| … | {as_user} {r['method']} {r['path']} → {r['result_str']} |")

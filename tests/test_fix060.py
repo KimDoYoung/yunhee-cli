@@ -245,7 +245,7 @@ class TestBizEndpoints:
         md = format_endpoints_md(endpoints)
         assert "| GET | /api/v1/foo/bars |" in md
         assert "FooReq{ids(List<Long>), checkIn(LocalDate), checkInStr}" in md
-        assert "엔드포인트 4개 · 쓰기 3개 · 쓰기 중 'KFS관리자' 1 · '본인' 0 · '회사'만 1 ← biz-authz 후보" in md
+        assert "엔드포인트 4개 · 쓰기 3개 · ⚠없음 1개(쓰기 1·조회 0) · 쓰기 중 'KFS관리자' 1 · '본인' 0 · '회사'만 1 ← biz-authz 후보" in md
 
         # JSON 포맷 키 구조 검증
         j_data = format_endpoints_json(endpoints)
@@ -859,7 +859,7 @@ class TestBizEventNew:
         assert "| 1 | TODO | #1489 | [조회] | TODO |" in content
         assert "| 2 | TODO | #1489 | [등록] | TODO |" in content
         assert "| 3 | TODO | #1489 | [저장] | TODO |" in content
-        assert "| 4 | TODO | #1489 | [삭제] | TODO |" in content
+        assert "| 4 | TODO | #1489 | [삭제] (확인창 [예]) | TODO |" in content
 
         # DB 테이블 확인
         assert "| `pay34_work_time_config` | TODO | TODO |" in content

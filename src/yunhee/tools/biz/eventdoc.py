@@ -131,14 +131,31 @@ def _parse_screen_doc(doc_path: Path, meta: ScreenMeta) -> None:
                 event_max = max(event_max, e_num)
 
                 if e_num > 0:
-                    # 버튼 레이블 추출 ([조회], [등록] 등)
                     btn_m = re.findall(r"\[([^E\d][^\]]*)\]", rest)
-                    label = f"[{btn_m[0]}]" if btn_m else rest.split(".")[0].strip()
-                    meta.events.append({
-                        "code": f"E{e_num}",
-                        "label": label,
-                        "text": rest,
-                    })
+                    raw_label = btn_m[0].strip() if btn_m else rest.split(".")[0].strip()
+
+                    # 확인창이나 다이얼로그 닫기인 경우 직전 단계에 결합 (061 #7)
+                    if any(c in raw_label.upper() for c in ("YES", "OK", "확인", "DIALOGHIDE")):
+                        if meta.events and "(확인창 [예])" not in meta.events[-1]["label"]:
+                            meta.events[-1]["label"] += " (확인창 [예])"
+                        continue
+
+                    # 버튼/클릭/선택 이벤트만 필터링 (061 #7, 063 #4)
+                    is_btn_event = (
+                        ".Select" in rest
+                        or "Button" in rest
+                        or "btn" in rest.lower()
+                        or any(b in raw_label for b in ("조회", "저장", "등록", "추가", "삭제", "상신", "수정", "승인", "반려", "출력", "발급", "계산", "확정", "마감"))
+                    )
+                    is_noise = any(noise in raw_label for noise in ("Text", "Field", ">", "<", "==", "!=", "DialogHide"))
+
+                    if is_btn_event and not is_noise:
+                        label = f"[{raw_label}]" if not raw_label.startswith("[") else raw_label
+                        meta.events.append({
+                            "code": f"E{e_num}",
+                            "label": label,
+                            "text": rest,
+                        })
 
         elif section == "메서드":
             # | public retrieve() | L130-141 | 생성자,E1 | 서비스 ... | 업무 |
@@ -176,11 +193,58 @@ def _parse_screen_doc(doc_path: Path, meta: ScreenMeta) -> None:
         meta.methods_line_range = f"L{min(all_lines)}-{max(all_lines)}"
 
 
+def _find_related_events(root_dir: Path, menu_nos: list[str], cur_event_id: str) -> list[str]:
+    """앞선 이벤트 문서들에서 동일 화면번호(#1271 등)가 언급된 관련 이벤트를 탐색한다 (061 #7)."""
+    related: list[str] = []
+    seen: set[str] = set()
+
+    for p in root_dir.glob("docs/2-업무분석/biz-event/**/*.md"):
+        fname = p.stem
+        ev_m = re.match(r"^([A-Z]+-BZ-\d+)", fname)
+        if not ev_m:
+            continue
+        ev_id = ev_m.group(1)
+        if ev_id == cur_event_id or ev_id in seen:
+            continue
+
+        try:
+            txt = p.read_text(encoding="utf-8", errors="replace")
+            for m_no in menu_nos:
+                if f"#{m_no}" in txt:
+                    seen.add(ev_id)
+                    related.append(f"{ev_id}(#{m_no})")
+                    break
+        except OSError:
+            continue
+
+    return sorted(related)
+
+
+def _find_next_suspect_number(root_dir: Path) -> int | None:
+    """보안_및_버그_의심.md 에서 가장 큰 의심 번호를 찾아 다음 번호를 반환한다 (061 #7)."""
+    cand = root_dir / "docs" / "2-업무분석" / "보안_및_버그_의심.md"
+    if not cand.is_file():
+        # 하위 디렉터리 탐색
+        cands = list(root_dir.glob("docs/**/보안*의심*.md"))
+        if cands:
+            cand = cands[0]
+        else:
+            return None
+
+    try:
+        txt = cand.read_text(encoding="utf-8", errors="replace")
+        nums = [int(m.group(1)) for m in re.finditer(r"(?:#|의심\s*#?)(\d+)", txt)]
+        if nums:
+            return max(nums) + 1
+    except OSError:
+        pass
+    return None
+
+
 def _find_tobe_page(root_dir: Path, class_name: str) -> Path | None:
     """frontend/src/pages/**/<클래스>.tsx 파일을 검색한다."""
     layout = find_layout(root_dir)
     if not layout.pages_dir.is_dir():
-        # 루트 기준 fallback
         cands = list(root_dir.rglob(f"{class_name}.tsx"))
         return cands[0] if cands else None
 
@@ -287,16 +351,20 @@ def generate_biz_event_doc(
         menu_items.append(m_item)
     menu_line = ", ".join(menu_items)
 
-    # 3. 따라 하기 (이벤트 E1..En)
+    # 3. 따라 하기 (이벤트 E1..En, 061 #7, 063 #4)
     steps_lines: list[str] = []
     step_no = 1
     for sm in screens_meta:
+        is_popup = any(p in sm.class_name for p in ("Lookup", "Dialog", "Popup", "Window"))
+        scr_cell = f"#{sm.menu_no} → {sm.class_name}" if is_popup else f"#{sm.menu_no}"
         for ev in sm.events:
-            steps_lines.append(f"| {step_no} | TODO | #{sm.menu_no} | {ev['label']} | TODO |")
+            steps_lines.append(f"| {step_no} | TODO | {scr_cell} | {ev['label']} | TODO |")
             step_no += 1
     if not steps_lines:
         for sm in screens_meta:
-            steps_lines.append(f"| {step_no} | TODO | #{sm.menu_no} | TODO | TODO |")
+            is_popup = any(p in sm.class_name for p in ("Lookup", "Dialog", "Popup", "Window"))
+            scr_cell = f"#{sm.menu_no} → {sm.class_name}" if is_popup else f"#{sm.menu_no}"
+            steps_lines.append(f"| {step_no} | TODO | {scr_cell} | TODO | TODO |")
             step_no += 1
 
     # 4. DB에 남는 것
@@ -345,17 +413,19 @@ def generate_biz_event_doc(
                     seen_eps.add(key)
                     matched_endpoints.append(ep)
 
-    # 6. 업무 규칙 · 주의 (권한 검사 확인)
-    warn_lines: list[str] = []
-    for ep in matched_endpoints:
-        if ep["method"] in ("POST", "PUT", "DELETE", "PATCH"):
-            guards = ep.get("guards", [])
-            # ⚠없음 이거나 회사 단독인 경우
-            if guards == ["⚠없음"] or guards == ["회사"]:
-                warn_lines.append(f"- 권한 검사 확인: {ep['method']} {ep['path']} (서비스 {ep['service']})")
-
-    rule_lines = ["- TODO"]
-    rule_lines.extend(warn_lines)
+    # 6. 업무 규칙 · 주의 (쓰기 API 표 및 biz-authz 연동, 063 #4)
+    write_eps = [ep for ep in matched_endpoints if ep["method"] in ("POST", "PUT", "DELETE", "PATCH")]
+    rule_lines: list[str] = []
+    if write_eps:
+        rule_lines.append("### 화면 쓰기 API 및 권한 검사 현황")
+        rule_lines.append("| 메서드 | 경로 | 서비스 | 검사 |")
+        rule_lines.append("|:---|:---|:---|:---|")
+        for wep in write_eps:
+            rule_lines.append(f"| {wep['method']} | {wep['path']} | {wep.get('service', '—')} | {wep.get('guard_str', '—')} |")
+        p_parts = [p for p in write_eps[0]["path"].split("/") if p and p not in ("api", "v1", dom_lower)]
+        first_p = p_parts[0] if p_parts else dom_lower
+        rule_lines.append(f"\n> 다음: `yunhee biz-authz {dom_lower} --path {first_p} -u 401 -c {company or 'kalpa'} --probe-write`")
+    rule_lines.append("\n- TODO")
 
     # 7. 시나리오 데이터 (YAML steps)
     yaml_steps: list[str] = []
@@ -402,7 +472,6 @@ def generate_biz_event_doc(
         as_is_parts.append(part)
     as_is_evidence = ", ".join(as_is_parts) if as_is_parts else "TODO"
 
-    # TOBE 컨트롤러, 서비스, tsx
     ctrl_map: dict[str, list[str]] = {}
     services_set: list[str] = []
     for ep in matched_endpoints:
@@ -416,7 +485,6 @@ def generate_biz_event_doc(
 
     ctrl_parts: list[str] = []
     for c_name, paths in ctrl_map.items():
-        # path별 method 묶기
         p_to_m: dict[str, list[str]] = {}
         for item in paths:
             p, m = item.rsplit(" ", 1)
@@ -436,10 +504,20 @@ def generate_biz_event_doc(
 
     tobe_evidence = ", ".join(tobe_components) if tobe_components else "TODO"
 
+    # 관련 이벤트 및 다음 의심 번호 연동 (061 #7)
+    related_events = _find_related_events(root_dir, screens, event_id)
+    next_suspect_no = _find_next_suspect_number(root_dir)
+
     # 9. 최종 마크다운 조립
     doc_lines = [
         f"# {event_id} {title}".strip(),
         "",
+    ]
+    if next_suspect_no:
+        doc_lines.append(f"<!-- 다음 의심 번호: #{next_suspect_no} -->")
+    if related_events:
+        doc_lines.append(f"> 관련 이벤트: {', '.join(related_events)}")
+    doc_lines.extend([
         "> **한 줄 요약** — TODO",
         "",
         "| 항목 | 내용 |",
@@ -479,7 +557,7 @@ def generate_biz_event_doc(
         f"- TOBE: {tobe_evidence}",
         "</details>",
         "",
-    ]
+    ])
 
     content = "\n".join(doc_lines)
 

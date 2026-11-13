@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from typing import Annotated
 
+import click
 import typer
 
 from yunhee import config, project
@@ -903,7 +904,28 @@ def cat_cmd(
     print("\n\n".join(out_sections))
 
 
-@app.command(name="grep")
+try:
+    from typer._click.exceptions import NoSuchOption as TyperNoSuchOption
+except ImportError:
+    TyperNoSuchOption = click.NoSuchOption
+
+
+class GrepCommand(typer.core.TyperCommand):
+    """없는 옵션 입력 시 사용법 안내를 덧붙이는 커스텀 Command."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        try:
+            return super().parse_args(ctx, args)
+        except (click.NoSuchOption, TyperNoSuchOption) as exc:
+            orig_msg = exc.format_message()
+            exc.format_message = lambda: (
+                f"{orig_msg}\n"
+                "사용 가능한 옵션: -l(파일 이름만) -m(파일당 최대 N줄) -C(앞뒤 문맥) -c(건수) · 패턴은 ERE(a|b)"
+            )
+            raise
+
+
+@app.command(name="grep", cls=GrepCommand)
 def grep_cmd(
     pattern: Annotated[str, typer.Argument(help="검색할 정규식(ERE) 또는 고정 문자열(-F)")],
     paths: Annotated[list[str], typer.Argument(help="검색할 파일 또는 폴더 경로 (하나 이상)")],
@@ -914,6 +936,9 @@ def grep_cmd(
     fixed_strings: Annotated[bool, typer.Option("-F", "--fixed-strings", help="정규식 대신 고정 문자열 검색")] = False,
     ignore_case: Annotated[bool, typer.Option("-i", "--ignore-case", help="대소문자 무시")] = False,
     files_with_matches: Annotated[bool, typer.Option("-l", "--files-with-matches", help="일치 내용 대신 일치 파일 목록만 출력")] = False,
+    count: Annotated[bool, typer.Option("-c", "--count", help="파일별 일치 줄 수 출력")] = False,
+    _line_number: Annotated[bool, typer.Option("-n", "--line-number", help="줄 번호 출력 (기본 지원, 호환용)")] = False,
+    _recursive: Annotated[bool, typer.Option("-r", "-R", "--recursive", help="재귀 탐색 (폴더는 기본 재귀, 호환용)")] = False,
 ):
     """문맥 출력 전용 안전 grep (출력 상한 80줄, 파일:줄: 내용 형식)"""
     from yunhee.tools.outliner import grep_files
@@ -928,6 +953,7 @@ def grep_cmd(
         fixed_strings=fixed_strings,
         ignore_case=ignore_case,
         files_with_matches=files_with_matches,
+        count=count,
     )
     if not res.ok:
         typer.echo(f"오류: {res.error}", err=True)
@@ -967,6 +993,7 @@ def api(
     fields: Annotated[str | None, typer.Option("--fields", help="출력할 필드 목록 (쉼표 구분 TSV)")] = None,
     where: Annotated[list[str] | None, typer.Option("--where", help="행 필터 key=val (반복 가능)")] = None,
     count_by: Annotated[str | None, typer.Option("--count-by", help="지정 필드의 값별 행 수 집계")] = None,
+    get: Annotated[str | None, typer.Option("--get", help="응답 JSON에서 특정 키/경로의 값만 머리말 없이 단일 텍스트로 출력 (예: data, data.0.id)")] = None,
 ):
     """자동 로그인 기반 API 호출 및 응답(상태·행수·필드) 요약
 
@@ -1042,6 +1069,40 @@ def api(
     if not res.ok and not res.data:
         typer.echo(f"오류: {res.error}", err=True)
         raise typer.Exit(code=1)
+
+    if get:
+        if not res.ok:
+            typer.echo(f"오류: {res.error}", err=True)
+            raise typer.Exit(code=1)
+        raw_text = (res.data or {}).get("text", "")
+        try:
+            parsed = json.loads(raw_text)
+        except (json.JSONDecodeError, ValueError) as e:
+            typer.echo(f"오류: 응답 JSON 파싱 실패: {e}", err=True)
+            raise typer.Exit(code=1)
+
+        import re
+        tokens = re.findall(r"[^.\[\]]+", get)
+        curr = parsed
+        for token in tokens:
+            if isinstance(curr, dict):
+                if token in curr:
+                    curr = curr[token]
+                else:
+                    typer.echo(f"오류: 키 '{token}'를 찾을 수 없습니다.", err=True)
+                    raise typer.Exit(code=1)
+            elif isinstance(curr, (list, tuple)):
+                try:
+                    curr = curr[int(token)]
+                except (ValueError, IndexError):
+                    typer.echo(f"오류: 인덱스 '{token}' 접근 실패.", err=True)
+                    raise typer.Exit(code=1)
+            else:
+                typer.echo(f"오류: '{token}' 접근 대상이 객체/리스트가 아닙니다.", err=True)
+                raise typer.Exit(code=1)
+
+        typer.echo(str(curr))
+        return
 
     if raw and not (fields or where or count_by):
         print(res.data.get("text", ""))
@@ -1759,6 +1820,10 @@ def drift_cmd(
         bool,
         typer.Option("--ignore-space", help="공백/개행(CRLF) 차이 무시 (git diff -w)"),
     ] = False,
+    strict: Annotated[
+        bool,
+        typer.Option("--strict", help="줄바꿈(CRLF) 및 끝 공백 차이도 엄격하게 변경으로 취급 (기본: CRLF 차이 무시)"),
+    ] = False,
     record: Annotated[
         bool,
         typer.Option("--record", help="화면의 현재 색인 기준을 완성 기준선(baseline)으로 기록"),
@@ -1868,6 +1933,7 @@ def drift_cmd(
             task_id=unit_id,
             note_file=note_file,
             force=force,
+            strict=strict,
             work_dir=WORK_DIR,
         )
         if code != 0:
@@ -1889,6 +1955,7 @@ def drift_cmd(
         show_new=new_flag,
         fail_on_drift=fail_on_drift,
         ignore_space=ignore_space,
+        strict=strict,
         work_dir=WORK_DIR,
     )
     for w in warnings:
@@ -2759,6 +2826,10 @@ def analysis_cmd(
         bool,
         typer.Option("--all-overloads", help="오버로드된 모든 메서드를 한 번에 출력 (method 분석)"),
     ] = False,
+    lines: Annotated[
+        str | None,
+        typer.Option("--lines", help="출력할 줄 번호 범위 (예: 1-50, function 분석 등)"),
+    ] = None,
 ):
     """AS-IS·TOBE 통합 분석 (method/sql/model/grid/screen/ui/tobe/run)
 
@@ -2864,6 +2935,7 @@ def analysis_cmd(
         "extra_targets": extra_targets or [],
         "raw": raw,
         "layout": layout_flag,
+        "lines": lines,
     }
 
     try:
@@ -3445,8 +3517,9 @@ def mark_cmd(
 
 @app.command(name="biz-endpoints")
 def biz_endpoints(
-    target: Annotated[str, typer.Argument(help="도메인명 (예: att, pay) 또는 컨트롤러 .java 파일 경로")],
-    path: Annotated[str | None, typer.Option("--path", help="경로 필터링 문자열 (예: annuals)")] = None,
+    target: Annotated[str, typer.Argument(help="도메인명 (예: att, pay, ast) 또는 컨트롤러 클래스명/경로 (예: AstRelateApprController)")],
+    path: Annotated[list[str] | None, typer.Option("--path", help="경로 필터링 문자열 (반복 또는 쉼표 구분 가능, 예: annuals)")] = None,
+    screen: Annotated[str | None, typer.Option("--screen", help="화면 번호 기반 연관 API 경로 자동 필터링 (예: 1299)")] = None,
     output: Annotated[str, typer.Option("-o", "--output", help="출력 형식 (md, json, tsv)")] = "md",
 ) -> None:
     """TOBE API 엔드포인트 목록 및 파라미터·본문 DTO·서비스·권한검사 표 출력"""
@@ -3459,9 +3532,9 @@ def biz_endpoints(
         format_endpoints_tsv,
     )
 
-    endpoints = collect_endpoints(target, path_filter=path)
+    endpoints = collect_endpoints(target, path_filter=path, screen=screen)
     if not endpoints:
-        typer.secho(f"조회된 엔드포인트가 없습니다: target={target}, path={path}", fg=typer.colors.YELLOW, err=True)
+        typer.secho(f"조회된 엔드포인트가 없습니다: target={target}, path={path}, screen={screen}", fg=typer.colors.YELLOW, err=True)
         return
 
     fmt = output.lower()
@@ -3475,14 +3548,16 @@ def biz_endpoints(
 
 @app.command(name="biz-authz")
 def biz_authz(
-    target: Annotated[str, typer.Argument(help="도메인명 (예: att, pay) 또는 컨트롤러 .java 파일 경로")],
+    target: Annotated[str, typer.Argument(help="도메인명 (예: att, pay, ast) 또는 컨트롤러 클래스명/경로")],
     as_user: Annotated[str, typer.Option("--as", "-u", help="낮은 권한 사번/계정 (예: 401)")] = "401",
     company: Annotated[str, typer.Option("--company", "-c", help="회사 코드 (예: kalpa)")] = "kalpa",
     password: Annotated[str | None, typer.Option("--password", help="계정 비밀번호")] = None,
-    path: Annotated[str | None, typer.Option("--path", help="경로 필터링 문자열")] = None,
+    path: Annotated[list[str] | None, typer.Option("--path", help="경로 필터링 문자열 (반복 또는 쉼표 구분 가능)")] = None,
+    screen: Annotated[str | None, typer.Option("--screen", help="화면 번호 기반 연관 API 경로 자동 필터링")] = None,
     param: Annotated[list[str] | None, typer.Option("--param", "-p", help="공통 쿼리 파라미터 key=val (반복 가능)")] = None,
     probe_write: Annotated[bool, typer.Option("--probe-write", help="쓰기 API에 빈 본문으로 안전하게 인가 검사 프로빙")] = False,
     probe_delete: Annotated[bool, typer.Option("--probe-delete", help="DELETE API까지 프로빙")] = False,
+    probe_appr: Annotated[bool, typer.Option("--probe-appr", help="결재 완료 행의 결재 ID 바꿔치기(apprId=1) BOLA 취약점 시험")] = False,
     emit_rows: Annotated[bool, typer.Option("--emit-rows", help="보안 의심 마크다운 보고서용 행 목록 출력")] = False,
     output: Annotated[str, typer.Option("-o", "--output", help="출력 형식 (md, json)")] = "md",
 ) -> None:
@@ -3492,9 +3567,9 @@ def biz_authz(
     from yunhee.tools.biz.authz import format_authz_md, run_authz
     from yunhee.tools.biz.endpoints import collect_endpoints
 
-    endpoints = collect_endpoints(target, path_filter=path)
+    endpoints = collect_endpoints(target, path_filter=path, screen=screen)
     if not endpoints:
-        typer.secho(f"조회된 엔드포인트가 없습니다: target={target}, path={path}", fg=typer.colors.YELLOW, err=True)
+        typer.secho(f"조회된 엔드포인트가 없습니다: target={target}, path={path}, screen={screen}", fg=typer.colors.YELLOW, err=True)
         return
 
     common_params = {}
@@ -3511,6 +3586,7 @@ def biz_authz(
         password=password,
         probe_write=probe_write,
         probe_delete=probe_delete,
+        probe_appr=probe_appr,
         common_params=common_params,
     )
 
@@ -3522,8 +3598,9 @@ def biz_authz(
 
 @app.command(name="biz-appr")
 def biz_appr(
-    link_code: Annotated[str, typer.Argument(help="전자결재 연동 코드 (예: A74, A73, D01)")],
-    ref: Annotated[int, typer.Option("--ref", help="연동할 업무 데이터 행 ID (refId) 및 링크 대상")],
+    link_code: Annotated[str, typer.Argument(help="전자결재 연동 코드 (예: A74, A73, D01, A02, A63)")],
+    ref: Annotated[str | None, typer.Option("--ref", help="연동할 업무 데이터 행 ID (쉼표로 복수 지정 가능, 예: 101,102)")] = None,
+    pre: Annotated[str | None, typer.Option("--pre", help="상신 전 사전 행 생성 API (예: 'POST /path {\"k\":\"v\"}')")] = None,
     as_user: Annotated[str, typer.Option("--as", "-u", help="상신자 사번/계정 (기본: 401)")] = "401",
     company: Annotated[str, typer.Option("--company", "-c", help="회사 코드 (기본: kalpa)")] = "kalpa",
     approver: Annotated[str | None, typer.Option("--approver", help="결재자 사번 목록 (쉼표 구분, 예: 301 또는 201,100)")] = None,
@@ -3532,7 +3609,8 @@ def biz_appr(
     confirm: Annotated[bool, typer.Option("--confirm", help="상신 후 결재자 승인(30 완료)까지 순서대로 실행")] = False,
     reject: Annotated[str | None, typer.Option("--reject", help="마지막 결재자가 반려 처리 (반려 사유 입력)")] = None,
     link_path: Annotated[str | None, typer.Option("--link-path", help="업무 행 연결 API 경로 (예: /api/v1/.../{ref}/appr)")] = None,
-    link_style: Annotated[str | None, typer.Option("--link-style", help="업무 행 연결 파라미터 전달 스타일 (query 또는 body)")] = None,
+    link_style: Annotated[str | None, typer.Option("--link-style", help="업무 행 연결 파라미터 전달 스타일 (query, body, ids-body)")] = None,
+    seed_arg: Annotated[list[str] | None, typer.Option("--seed-arg", help="링크 시드 쿼리 파라미터 추가 key=val (반복 가능)")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="실제 호출하지 않고 조립된 상신 본문 JSON만 출력")] = False,
 ) -> None:
     """전자결재 상신·업무 행 연결·결재자 승인(또는 반려) 원스톱 자동 실행"""
@@ -3553,6 +3631,8 @@ def biz_appr(
             link_path=link_path,
             link_style=link_style,
             dry_run=dry_run,
+            pre=pre,
+            seed_args=seed_arg,
         )
         for line in lines:
             typer.echo(line)

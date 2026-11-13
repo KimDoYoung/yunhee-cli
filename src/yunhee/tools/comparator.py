@@ -537,6 +537,7 @@ def compare_api_sql(
 ) -> ToolResult:
     """조회 API와 AS-IS SQL의 결과 행 수 및 필드 커버리지를 비교 검증한다."""
     import sys
+    from urllib.parse import parse_qs, urlsplit
 
     from yunhee.tools.as_is.mybatis_render import (
         extract_branch_condition_vars,
@@ -547,8 +548,21 @@ def compare_api_sql(
     )
     from yunhee.tools.as_is.mybatis_render import render as mr_render
 
-    if not api_params:
-        api_params = {}
+    # URL 경로에 포함된 쿼리 파라미터 분리 및 통합 (061 #8)
+    parsed_url = urlsplit(path)
+    clean_path = parsed_url.path
+    path_params: dict[str, Any] = {}
+    if parsed_url.query:
+        qs = parse_qs(parsed_url.query, keep_blank_values=True)
+        for qk, qvs in qs.items():
+            path_params[qk] = qvs[-1] if len(qvs) == 1 else qvs
+
+    effective_api_params = dict(path_params)
+    if api_params:
+        effective_api_params.update(api_params)
+    api_params = effective_api_params
+    path = clean_path
+
     sql_params = dict(sql_params) if sql_params else {}
 
     # --param에 없는 파라미터는 동일한 이름의 -p 값으로 자동 보충
@@ -664,29 +678,77 @@ def compare_api_sql(
         pass
 
     user_info = (api_res.data or {}).get("user_info") or {}
+    warn_msgs: list[str] = []
+
+    node_text_all = ""
+    node_tests: list[str] = []
+    if target_st and hasattr(target_st, "node"):
+        def _gather_node_info(n: Any) -> None:
+            if isinstance(n, str):
+                nonlocal node_text_all
+                node_text_all += " " + n
+                return
+            if hasattr(n, "attrs"):
+                for ak, av in n.attrs.items():
+                    node_text_all += f" {ak}={av}"
+                    if ak == "test":
+                        node_tests.append(str(av))
+            if hasattr(n, "children"):
+                for c in n.children:
+                    _gather_node_info(c)
+
+        _gather_node_info(target_st.node)
+
     if user_info:
         is_admin_user = as_user.lower() == "admin"
         uid_val = user_info.get("user_id")
         oid_val = user_info.get("org_id")
         cid_val = user_info.get("company_id")
-        if (
-            "empId" not in sql_params
-            and not is_admin_user
-            and uid_val is not None
-            and str(uid_val) not in ("", "0")
-            and "empId" not in branch_vars
-        ):
-            sql_params["empId"] = str(uid_val)
-        if (
-            "orgId" not in sql_params
-            and not is_admin_user
-            and oid_val is not None
-            and str(oid_val) not in ("", "0")
-            and "orgId" not in branch_vars
-        ):
-            sql_params["orgId"] = str(oid_val)
+
+        # 손으로 준 값이 로그인 정보와 다르면 경고 (062 #2)
+        if oid_val is not None and "orgId" in sql_params and str(sql_params["orgId"]) != str(oid_val):
+            warn_msgs.append(f"⚠ orgId={sql_params['orgId']} (로그인 사원 {as_user}의 조직은 {oid_val})")
+        if uid_val is not None:
+            for uk in ("userId", "personId", "empId", "loginPersonId"):
+                if uk in sql_params and str(sql_params[uk]) != str(uid_val):
+                    warn_msgs.append(f"⚠ {uk}={sql_params[uk]} (로그인 사원 {as_user}의 ID는 {uid_val})")
+        if cid_val is not None and "companyId" in sql_params and str(sql_params["companyId"]) != str(cid_val):
+            warn_msgs.append(f"⚠ companyId={sql_params['companyId']} (로그인 회사는 {cid_val})")
+
+        if uid_val is not None and str(uid_val) not in ("", "0") and not is_admin_user:
+            for uk in ("empId", "userId", "personId", "loginPersonId"):
+                if (
+                    uk not in sql_params
+                    and uk not in branch_vars
+                    and (uk == "empId" or (node_text_all and uk in node_text_all))
+                ):
+                    sql_params[uk] = str(uid_val)
+
+        if oid_val is not None and str(oid_val) not in ("", "0") and not is_admin_user:
+            for ok in ("orgId", "orgCodeId"):
+                if (
+                    ok not in sql_params
+                    and ok not in branch_vars
+                    and (ok == "orgId" or (node_text_all and ok in node_text_all))
+                ):
+                    sql_params[ok] = str(oid_val)
+
         if "companyId" not in sql_params and cid_val is not None and str(cid_val) != "":
             sql_params["companyId"] = str(cid_val)
+
+    # 0 전달 시 dynamic SQL != null 조건 경고 (062 #1 방안 2)
+    if target_st and hasattr(target_st, "node"):
+        import re
+        for cond in node_tests:
+            for m in re.finditer(r'(\b\w+)\s*!=\s*null', cond):
+                vname = m.group(1)
+                if sql_params.get(vname) in ("0", 0):
+                    warn_msgs.append(
+                        f"⚠ {vname}=0 전달됨: AS-IS 원본 서버에서 0을 null로 변환하는지 확인하세요 (analysis method -o code)"
+                    )
+
+    for w_msg in warn_msgs:
+        sys.stderr.write(f"{w_msg}\n")
 
     # --from-log 처리
     used_params_msg = ""
@@ -741,6 +803,11 @@ def compare_api_sql(
         b_str = f" (branch: {', '.join(branch_log)})" if branch_log else ""
         m_str = f" (-- 필요: {', '.join(missing)})" if missing else ""
         sql_params_line = f"SQL params: {p_str}{b_str}{m_str}"
+
+    api_params_line = ""
+    if api_params:
+        api_p_items = [f"{k}={v}" for k, v in sorted(api_params.items())]
+        api_params_line = f"API params: {', '.join(api_p_items)}"
 
     raw_data = raw_json.get("data") if isinstance(raw_json, dict) and "data" in raw_json else raw_json
     if raw_data is None and isinstance(raw_json, list):
@@ -922,6 +989,8 @@ def compare_api_sql(
     grid_info = find_screen_grid_info(sql_ref, src_root, grid_class=grid, api_fields=api_fields, src_index=src_index) if not no_grid else {}
     if no_grid or grid_info.get("skip"):
         summary_line = f"{count_part}  grid: -"
+        if api_params_line:
+            summary_line += f"\n{api_params_line}"
         if sql_params_line:
             summary_line += f"\n{sql_params_line}"
         if used_params_msg:
@@ -946,6 +1015,8 @@ def compare_api_sql(
         search_dir = grid_info.get("search_dir", "")
         search_suffix = f" (탐색 폴더: {search_dir})" if search_dir else ""
         summary_line = f"{count_part}  ⚠ 그리드 못 찾음: {grid_info['class_name']}{search_suffix}"
+        if api_params_line:
+            summary_line += f"\n{api_params_line}"
         if sql_params_line:
             summary_line += f"\n{sql_params_line}"
         if used_params_msg:
@@ -1015,6 +1086,8 @@ def compare_api_sql(
             summary_parts.append(f"(missing: {', '.join(sorted(missing_fields))})")
         summary_line = "  ".join(summary_parts)
 
+    if api_params_line:
+        summary_line += f"\n{api_params_line}"
     if sql_params_line:
         summary_line += f"\n{sql_params_line}"
     if used_params_msg:

@@ -5,6 +5,7 @@ from typing import Any
 
 from yunhee.tools.analysis import (
     callers,
+    function,
     grid,
     method,
     model,
@@ -31,6 +32,8 @@ REGISTRY: dict[str, ModuleType] = {
     "servlet": servlet,
     "callers": callers,
     "caller": callers,
+    "function": function,
+    "func": function,
 }
 
 

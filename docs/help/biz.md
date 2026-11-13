@@ -8,14 +8,14 @@
 
 | 명령어 | 주요 기능 | 주요 옵션 |
 | :--- | :--- | :--- |
-| `biz-endpoints <target>` | Spring Boot 컨트롤러 엔드포인트·DTO·서비스·권한 가드 정적 분석 | `-o md\|json\|tsv`, `--path` |
-| `biz-authz <target>` | API URL과 메뉴 인가를 대조하여 허용 여부 판정 및 취약 엔드포인트 진단 | `-u`, `-c`, `--probe-write`, `--dry-run` |
-| `biz-appr <link_code>` | 업무 문서와 결재 연동 상신·연결·승인/반려 단계 자동화 | `--ref`, `-u`, `-c`, `--approver`, `--confirm`, `--reject` |
-| `biz-patch <method> <path>` | 조회된 API 데이터를 수정하여 저장하고 필드 누락 검증 | `-d '{"k": v}'`, `--where "k=v"`, `--list`, `--drop-suffix` |
+| `biz-endpoints <target>` | Spring Boot 컨트롤러 엔드포인트·DTO·서비스·권한 가드 정적 분석 (클래스명 직접 지원) | `-o md\|json\|tsv`, `--path` (반복/쉼표), `--screen` |
+| `biz-authz <target>` | API URL과 메뉴 인가를 대조하여 허용 여부 판정 및 취약 엔드포인트 진단 | `-u`, `-c`, `--probe-write`, `--probe-appr`, `--path`, `--screen`, `--dry-run` |
+| `biz-appr <link_code>` | 업무 문서와 결재 연동 상신·연결·승인/반려 단계 자동화 | `--ref` (반복), `--pre`, `--link-path`, `--seed-arg`, `-u`, `-c`, `--approver`, `--confirm`, `--reject` |
+| `biz-patch <method> <path>` | 조회된 API 데이터를 수정하여 저장하고 필드 누락 검증 | `--set key=val`, `-b/--raw-body`, `--where "k=v"`, `--list`, `--drop-suffix` |
 | `biz-code [kind]` | 공통코드 종류(종류명/코드값) 및 상세 코드 목록 조회 (회사별 명칭 지원) | `--like`, `-c`, `--db` |
 | `biz-db-write` | 로컬 DB 대상 안전한 쓰기 실행 (자동 `pg_dump` 백업 및 되돌리기 안내) | `-f`, `-e`, `--no-backup`, `--dry-run` |
-| `biz-event-new <ID>` | AS-IS/TOBE 화면 색인을 바탕으로 비즈니스 이벤트 분석 문서 골격 생성 | `--screens`, `--title`, `-c`, `--force`, `--out` |
-| `api` (확장) | 계정 보호(3회 실패 잠금 방지) 및 수동 비밀번호 지정 지원 | `--password`, `--force-login` |
+| `biz-event-new <ID>` | AS-IS/TOBE 화면 색인을 바탕으로 비즈니스 이벤트 분석 문서 골격 생성 (정제된 단계, 관련 이벤트/의심번호 연동) | `--screens`, `--title`, `-c`, `--force`, `--out` |
+| `api` (확장) | 계정 보호(3회 실패 잠금 방지) 및 수동 비밀번호 지정 지원, 단일 텍스트 값 추출 | `--password`, `--force-login`, `--get` |
 
 ---
 
@@ -24,12 +24,16 @@
 Spring Boot 컨트롤러, DTO, 서비스 소스를 정적으로 분석하여 HTTP 메서드, 경로, 본문 DTO 필드, 호출 서비스, 권한 검사(Guards)를 추출합니다.
 
 ```bash
-# 특정 도메인(pay, att 등) 전체 엔드포인트 분석
+# 특정 도메인(pay, att 등) 또는 컨트롤러 클래스명 직접 분석
 yunhee biz-endpoints pay
+yunhee biz-endpoints AstRelateApprController
 
-# 특정 경로 필터링 및 출력 형식 지정 (md, json, tsv)
+# 특정 경로 필터링 (복수 지정 및 쉼표 구분 가능) 및 출력 형식 지정 (md, json, tsv)
 yunhee biz-endpoints pay --path work-times -o json
-yunhee biz-endpoints att --path commutes -o md
+yunhee biz-endpoints ast --path owner-capitals --path invest-limits
+
+# 화면 번호 연관 API 자동 필터링
+yunhee biz-endpoints ast --screen 1299
 ```
 
 - **권한 가드(Guards) 판정**:
@@ -37,7 +41,7 @@ yunhee biz-endpoints att --path commutes -o md
   - `메뉴/역할`: `@PreAuthorize`, `@Secured`, 역할 검사
   - `본인`: 세션 사용자 본인 ID 일치 검사 (`requireSelf` 등)
   - `회사`: 세션 회사 ID 조건 (`companyId` 매핑)
-  - `⚠없음`: 컨트롤러 및 서비스에 권한 검사 로직이 감지되지 않음
+  - `⚠없음`: 컨트롤러 및 서비스에 권한 검사 로직이 감지되지 않음 (쓰기 a·조회 b 요약 표시)
 
 ---
 
@@ -49,8 +53,12 @@ yunhee biz-endpoints att --path commutes -o md
 # 사원(401) 계정으로 pay 도메인의 인가 상태 분석 (안전 GET 프로브 포함)
 yunhee biz-authz pay -u 401 -c kalpa
 
-# 특정 경로에 대해 빈 페이로드({})로 쓰기 권한 검사 프로브
+# 특정 경로 또는 화면 번호에 대해 빈 페이로드({})로 쓰기 권한 검사 프로브
 yunhee biz-authz pay --path work-times -u 401 -c kalpa --probe-write
+yunhee biz-authz ast --screen 1299 -u 401 -c kalpa --probe-write
+
+# 결재 ID 바꿔치기(apprId=1) 프로브 시험 (원복 보장)
+yunhee biz-authz pay --probe-appr -u 401 -c kalpa
 
 # 프로브 없이 정적 메뉴 인가만 대조
 yunhee biz-authz att -u 401 -c kalpa --dry-run
@@ -60,11 +68,17 @@ yunhee biz-authz att -u 401 -c kalpa --dry-run
 
 ## 3. `biz-appr` — 전자결재 상신·연결·승인 자동화
 
-업무 화면 연동 결재(A74 연장근무, A73 휴가, D01 지출 등)의 상신(Draft), 업무 테이블 연결(Link), 결재선 승인(Confirm) 또는 반려(Reject) 과정을 한 번에 수행합니다.
+업무 화면 연동 결재(A74 연장근무, A73 휴가, D01 지출, A02/A05/X01/A63/A64 등)의 상신(Draft), 업무 테이블 연결(Link), 결재선 승인(Confirm) 또는 반려(Reject) 과정을 한 번에 수행합니다.
 
 ```bash
 # 연장근무 신청(A74) 건(ref_id=12345)에 대해 401 사원이 상신하고 301 과장이 승인 완료
 yunhee biz-appr A74 --ref 12345 -u 401 -c kalpa --approver 301 --confirm
+
+# 상신 전 선행 업무 데이터 자동 생성 후 결재 연동
+yunhee biz-appr A02 --pre 'POST /api/v1/fnd/funds {"fundCode": "F01"}' -u 401 -c kalpa --confirm
+
+# 복수 ref 건 지정 및 커스텀 연결 경로/시드 인자 전달
+yunhee biz-appr A64 --ref 101 --ref 102 --link-path /api/v1/ast/relate-apprs --seed-arg "relateType=1" -u 401 -c kalpa
 
 # 반려 처리
 yunhee biz-appr A74 --ref 12345 -u 401 -c kalpa --approver 301 --reject
@@ -80,12 +94,12 @@ yunhee biz-appr A74 --ref 12345 -u 401 -c kalpa --approver 301
 현재 API 응답 데이터를 읽어와서 지정한 필드만 변경한 뒤 PUT/POST로 다시 저장합니다. 저장 시 원본 필드가 소실되는지(`wiped_fields`) 자동으로 검증합니다.
 
 ```bash
-# 단일 객체 API의 특정 플래그 값 수정
-yunhee biz-patch PUT /api/v1/att/work-policies/current -u 401 -c kalpa -d '{"commutePopupYn": false}'
+# 단일 객체 API의 특정 플래그 값 수정 (--set key=value 지원)
+yunhee biz-patch PUT /api/v1/att/work-policies/current -u 401 -c kalpa --set commutePopupYn=false
 
 # 목록형 API에서 특정 조건 행만 수정하여 저장
 yunhee biz-patch PUT /api/v1/pay/work-times -u admin -c admin \
-  --list --where "startDate=2026-01-01" -d '{"weekMaxAddHours": 16}'
+  --list --where "startDate=2026-01-01" --set weekMaxAddHours=16
 ```
 
 ---
@@ -123,12 +137,12 @@ YUNHEE_DB_WRITE=1 yunhee biz-db-write -e "UPDATE att01_work_policy SET att01_not
 
 ## 7. `biz-event-new` — 비즈니스 이벤트 분석 문서 틀 생성
 
-AS-IS `menus.md` 및 화면 색인(이벤트 E0~En, 서비스, 메서드, 테이블)과 TOBE 컨트롤러/API 엔드포인트를 결합하여 이벤트 분석 마크다운 문서를 기계적으로 생성합니다.
+AS-IS `menus.md` 및 화면 색인(이벤트 E0~En, 서비스, 메서드, 테이블)과 TOBE 컨트롤러/API 엔드포인트를 결합하여 이벤트 분석 마크다운 문서를 기계적으로 생성합니다. 버튼 이벤트만 단계로 정제하고, 확인창 결합, 팝업 단계명(`#{screen} → {popup}`) 표기, 관련 이벤트/의심 번호 연동, 화면 쓰기 API 표 및 biz-authz 후속 안내를 자동 삽입합니다.
 
 ```bash
 # 1489 화면에 대한 비즈니스 이벤트 문서 뼈대 생성
 yunhee biz-event-new PAY-BZ-0004 --screens 1489 --title "근로시간 기준 설정" --company kalpa
-# 생성 경로: docs/2-업무분석/biz-event/PAY/PAY-BZ-0004-근로시간기준설.md
+# 생성 경로: docs/2-업무분석/biz-event/PAY/PAY-BZ-0004-근로시간기준설정.md
 
 # 복수 화면 번호 지정
 yunhee biz-event-new ATT-BZ-0005 --screens 1270,1281,1285 --title "근태관리 관리자" --company kalpa
@@ -136,7 +150,8 @@ yunhee biz-event-new ATT-BZ-0005 --screens 1270,1281,1285 --title "근태관리 
 
 ---
 
-## 8. `api` 명령 확장 (계정 보호)
+## 8. `api` 명령 확장 (계정 보호 및 값 추출)
 
 - `--password <비밀번호>`: DB 조회나 환경변수 기본값을 타지 않고 명시적으로 비밀번호 전달.
 - `--force-login`: 3회 이상 로그인 실패로 인한 계정 잠금 가드를 무시하고 강제 로그인 시도.
+- `--get <path>`: 응답 JSON에서 특정 키/경로의 값만 단일 텍스트로 출력 (예: `data.trId`, `data.items[0].id`). 스크립트 변수 바인딩용.

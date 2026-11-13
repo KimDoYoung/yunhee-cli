@@ -12,11 +12,16 @@ from typing import Any
 
 from yunhee.tools import api_client
 
-# 기본 링크코드별 업무 행 연결 API 매핑
+# 기본 링크코드별 업무 행 연결 API 매핑 (061 #3, #9)
 DEFAULT_LINK_APIS: dict[str, dict[str, str]] = {
     "A74": {"path": "/api/v1/att/overtime-reqs/me/{ref}/appr", "style": "query"},
     "A73": {"path": "/api/v1/att/pm-works/{ref}/appr", "style": "query"},
     "D01": {"path": "/api/v1/pay/annuals/{ref}/appr-id", "style": "body"},
+    "A02": {"path": "/api/v1/pay/relate-apprs/{ref}/appr-id", "style": "body"},
+    "A05": {"path": "/api/v1/pay/relate-apprs/{ref}/appr-id", "style": "body"},
+    "X01": {"path": "/api/v1/pay/tax-withholdings/{ref}/appr-id", "style": "body"},
+    "A63": {"path": "/api/v1/pay/expenses/appr-id", "style": "ids-body"},
+    "A64": {"path": "/api/v1/pay/expenses/settle-appr-id", "style": "ids-body"},
 }
 
 
@@ -54,10 +59,10 @@ def get_class_tree_id(link_code: str, company_id: int | str, db_name: str | None
 
 def run_appr(
     link_code: str,
-    ref_id: int | str,
-    as_user: str,
-    company: str,
-    approvers: list[str],
+    ref_id: int | str | None = None,
+    as_user: str = "401",
+    company: str = "kalpa",
+    approvers: list[str] | None = None,
     password: str | None = None,
     class_id: int | str | None = None,
     confirm: bool = False,
@@ -65,9 +70,69 @@ def run_appr(
     link_path: str | None = None,
     link_style: str | None = None,
     dry_run: bool = False,
+    pre: str | None = None,
+    seed_args: list[str] | None = None,
 ) -> list[str]:
     """전자결재 상신 및 승인/반려 전체 흐름을 실행하고 결과 요약 라인 목록을 반환한다."""
+    if approvers is None:
+        approvers = []
     output_lines: list[str] = []
+
+    # 0. --pre 처리 (061 #4: 상신 전 업무 행 생성 API 호출)
+    if pre:
+        parts = pre.strip().split(maxsplit=2)
+        if len(parts) < 2:
+            raise ValueError("오류: --pre 형식은 '<METHOD> <path> [<json>]' 이어야 합니다.")
+        pre_method = parts[0].upper()
+        pre_path = parts[1]
+        pre_body = json.loads(parts[2]) if len(parts) > 2 else None
+
+        if dry_run:
+            output_lines.append(f"사전 호출(dry-run): {pre_method} {pre_path} 본문 {json.dumps(pre_body, ensure_ascii=False) if pre_body else '{}'}")
+            if not ref_id:
+                ref_id = 999999
+        else:
+            res_pre = api_client.request_api(
+                method=pre_method,
+                path=pre_path,
+                as_role=as_user,
+                company_code=company,
+                password=password,
+                json_body=pre_body,
+            )
+            if not res_pre.ok:
+                raise ValueError(f"사전 호출 실패 ({pre_method} {pre_path}): {res_pre.error}")
+            pre_data = (res_pre.data or {}).get("data")
+            if pre_data is None and isinstance(res_pre.data, dict) and "text" in res_pre.data:
+                try:
+                    pre_data = json.loads(res_pre.data["text"]).get("data")
+                except Exception:  # noqa: BLE001, S110
+                    pass
+            if pre_data is None:
+                raise ValueError(f"사전 호출 응답에 data(행 ID)가 없습니다: {res_pre.data}")
+            ref_id = pre_data
+            output_lines.append(f"사전 생성 성공: ref={ref_id}")
+
+    if not ref_id:
+        raise ValueError("오류: --ref 또는 --pre 중 하나를 지정해야 합니다.")
+
+    # 복수 ref_id 처리 (061 #9)
+    ids: list[int] = []
+    if isinstance(ref_id, (list, tuple)):
+        ids = [int(x) for x in ref_id]
+    elif isinstance(ref_id, str) and "," in ref_id:
+        ids = [int(x.strip()) for x in ref_id.split(",") if x.strip()]
+    else:
+        ids = [int(ref_id)]
+    primary_ref = ids[0]
+
+    # 연결 경로 확인
+    link_info = DEFAULT_LINK_APIS.get(link_code, {})
+    l_path = link_path or link_info.get("path")
+    l_style = link_style or link_info.get("style", "query")
+
+    if not l_path:
+        raise ValueError(f"⚠ 링크코드 {link_code}의 연결 API를 모릅니다 — --link-path로 주세요")
 
     # 1. 상신자 계정 정보 조회
     _user, _pw, user_info = api_client.resolve_user_credentials(as_user, company_code=company, password=password)
@@ -107,7 +172,6 @@ def run_appr(
 
     appr_id = new_data.get("apprId")
     if not appr_id:
-        # text 파싱 시도
         try:
             txt_obj = json.loads(res_new.data.get("text", "{}"))
             new_data = txt_obj.get("data", {})
@@ -123,14 +187,23 @@ def run_appr(
         first_step_id = new_data["steps"][0].get("apprStepId", 0)
 
     # 4. link-seed 조회
+    seed_params: dict[str, str] = {
+        "classTreeId": str(class_tree_id),
+        "linkCode": link_code,
+        "refId": str(primary_ref),
+    }
+    if len(ids) > 1 or l_style == "ids-body":
+        seed_params["ids"] = ",".join(str(i) for i in ids)
+    if seed_args:
+        for sa in seed_args:
+            if "=" in sa:
+                sak, sav = sa.split("=", 1)
+                seed_params[sak.strip()] = sav.strip()
+
     res_seed = api_client.request_api(
         "GET",
         "/api/v1/apr/apprs/link-seed",
-        params={
-            "classTreeId": str(class_tree_id),
-            "linkCode": link_code,
-            "refId": str(ref_id),
-        },
+        params=seed_params,
         as_role=as_user,
         company_code=company,
         password=password,
@@ -193,8 +266,17 @@ def run_appr(
         "steps": steps,
     }
 
+    target_path = l_path.replace("{ref}", str(primary_ref)).replace("{id}", str(primary_ref))
+    if l_style == "ids-body":
+        link_body_desc = f"{target_path} (본문: {json.dumps({'ids': ids, 'apprId': appr_id})})"
+    elif l_style == "body":
+        link_body_desc = f"{target_path} (본문: {json.dumps({'apprId': appr_id})})"
+    else:
+        link_body_desc = f"{target_path}?apprId={appr_id}"
+
     if dry_run:
         output_lines.append(f"드라이런 페이로드 (PUT /api/v1/apr/apprs/{appr_id}):\n" + json.dumps(payload, ensure_ascii=False, indent=2))
+        output_lines.append(f"연결 PUT {link_body_desc}")
         return output_lines
 
     # 6. 상신 PUT 호출
@@ -212,43 +294,44 @@ def run_appr(
     output_lines.append(f"상신 apprId={appr_id} 「{title}」 상태 10")
 
     # 7. 업무 행에 결재 ID 연결
-    link_info = DEFAULT_LINK_APIS.get(link_code, {})
-    l_path = link_path or link_info.get("path")
-    l_style = link_style or link_info.get("style", "query")
-
-    if l_path:
-        target_path = l_path.replace("{ref}", str(ref_id)).replace("{id}", str(ref_id))
-        if l_style == "body":
-            res_link = api_client.request_api(
-                "PUT",
-                target_path,
-                as_role=as_user,
-                company_code=company,
-                password=password,
-                json_body={"apprId": appr_id},
-            )
-        else:
-            res_link = api_client.request_api(
-                "PUT",
-                target_path,
-                as_role=as_user,
-                company_code=company,
-                password=password,
-                params={"apprId": str(appr_id)},
-            )
-        if not res_link.ok:
-            output_lines.append(f"⚠ 업무 행 연결 실패 (PUT {target_path}): {res_link.error}")
-        else:
-            output_lines.append(f"연결 PUT {target_path} → 200")
+    if l_style == "ids-body":
+        res_link = api_client.request_api(
+            "PUT",
+            target_path,
+            as_role=as_user,
+            company_code=company,
+            password=password,
+            json_body={"ids": ids, "apprId": appr_id},
+        )
+    elif l_style == "body":
+        res_link = api_client.request_api(
+            "PUT",
+            target_path,
+            as_role=as_user,
+            company_code=company,
+            password=password,
+            json_body={"apprId": appr_id},
+        )
     else:
-        output_lines.append(f"연결 API를 찾지 못했습니다. --link-path '/api/v1/.../{ref_id}/appr' --link-style query|body 로 지정하세요.")
+        res_link = api_client.request_api(
+            "PUT",
+            target_path,
+            as_role=as_user,
+            company_code=company,
+            password=password,
+            params={"apprId": str(appr_id)},
+        )
+
+    if not res_link.ok:
+        output_lines.append(f"⚠ 업무 행 연결 실패 (PUT {target_path}): {res_link.error}")
+    else:
+        output_lines.append(f"연결 PUT {target_path} → 200")
 
     # 8. 결재자 승인 또는 반려
     if confirm or reject:
         for i, apr_u in enumerate(approvers):
             is_last = (i == len(approvers) - 1)
             if reject and is_last:
-                # 마지막 결재자가 반려
                 confirm_body = {"action": "reject", "message": reject}
                 res_act = api_client.request_api(
                     "POST",

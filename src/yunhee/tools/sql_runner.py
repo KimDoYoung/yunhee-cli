@@ -527,6 +527,29 @@ def run_sql(
 
     warnings: list[str] = []
 
+    # 062 #3: 읽기 전용 실행에서 쓰기 함수(f_create_seq 등)가 조용히 NULL을 반환할 때 경고
+    if not rollback and last_table_data:
+        import os
+        custom_write_funcs = [
+            f.strip().lower()
+            for f in os.getenv("YUNHEE_WRITE_FUNCS", "").split(",")
+            if f.strip()
+        ]
+        write_funcs = ["nextval(", "f_create_seq(", "setval("] + [
+            f"{fn}(" if not fn.endswith("(") else fn for fn in custom_write_funcs
+        ]
+        clean_scr = raw_script.lower()
+        if any(fn in clean_scr for fn in write_funcs):
+            p_rows = last_table_data.get("rows") or []
+            cols = last_table_data.get("columns") or []
+            all_null = False
+            if p_rows:
+                all_null = all(r.get(c) is None for r in p_rows for c in cols)
+            if all_null or not p_rows:
+                warn_text = "⚠ 읽기 전용 실행: nextval/f_create_seq는 실패해 NULL일 수 있음 — 같은 값을 보려면 --rollback"
+                warnings.append(warn_text)
+                output_lines.append(warn_text)
+
     if scalar:
         cols = last_table_data["columns"] if last_table_data else []
         p_rows = last_table_data["rows"] if last_table_data else []

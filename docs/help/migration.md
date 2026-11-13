@@ -126,11 +126,12 @@ TOBE MyBatis 매퍼 statement를 직접 실행하고 AS-IS SQL 결과와 건수/
   ```
 
 ### `yunhee drift [screens...]`
-소스 색인 또는 기준선(baseline) 대비 AS-IS 화면 및 의존 파일의 변경(drift)을 감지합니다.
+소스 색인 또는 기준선(baseline) 대비 AS-IS 화면 및 의존 파일의 변경(drift)을 감지합니다. 줄바꿈(CRLF) 및 끝 공백 차이는 기본적으로 무시되어 `+0/-0 (줄바꿈만)`으로 동일 처리되며, `--record` 시 `--force` 없이 기준 이동이 허용됩니다. 또한 대장에서 `해당없음`/`반영` 처리된 공유 변경 단위는 호출하지 않는 화면의 카운트에서 자동 제외됩니다.
 - **주요 옵션**:
   - `--all`: 색인된 전체 화면 검사
   - `--base <BASE>`: 비교 기준 (`index`, `baseline`, `prev-index`, `<커밋해시>`)
-  - `--done-only`: 완성 기준선(baseline)에 등록된 화면만 검사
+  - `--done-only`: 완성 기준선(baseline)에 등록된 화면만 검사 (판단 끝난 공유 변경 건수 제외 표시)
+  - `--strict`: 줄바꿈(CRLF) 및 공백 차이도 엄격하게 변경으로 취급
   - `--record`: 특정 화면의 현재 색인 기준을 완성 기준선(baseline)으로 기록
   - `-o, --output <FORMAT>`: 출력 형식 (`table`, `diff`, `full`, `json`)
 - **예시**:

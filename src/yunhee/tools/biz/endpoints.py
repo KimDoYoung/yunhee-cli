@@ -23,9 +23,21 @@ def _find_controller_files(target: str | Path, root_dir: Path) -> list[Path]:
     if p.is_dir():
         return sorted(p.rglob("*Controller.java"))
 
-    # target이 도메인명(예: att, pay)인 경우
     target_str = str(target).strip()
     java_root = root_dir / "backend" / "src" / "main" / "java"
+
+    # target이 컨트롤러 클래스명(예: AstRelateApprController)인 경우 (062 #6)
+    clean_target = target_str.removesuffix(".java")
+    if clean_target.endswith("Controller"):
+        if java_root.is_dir():
+            matched = sorted(java_root.rglob(f"{clean_target}.java"))
+            if matched:
+                return matched
+        matched = sorted(root_dir.rglob(f"{clean_target}.java"))
+        if matched:
+            return matched
+
+    # target이 도메인명(예: att, pay, ast)인 경우
     if not java_root.is_dir():
         # fixture 또는 테스트 경로 fallback
         if (root_dir / "controller").is_dir():
@@ -261,14 +273,50 @@ def _match_parens(text: str, open_pos: int) -> tuple[str, int]:
     return text[open_pos + 1 :], len(text)
 
 
+def _extract_screen_api_paths(screen_num: str | int, root_dir: Path) -> list[str]:
+    """화면 번호(예: 1299)와 관련된 TSX 또는 화면 색인 문서에서 API 경로 패턴을 추출한다 (063 #5)."""
+    s_str = str(screen_num).strip().lstrip("#")
+    found_paths: set[str] = set()
+
+    for doc in root_dir.glob(f"docs/as-is/src/**/screens/*{s_str}*.md"):
+        txt = doc.read_text(encoding="utf-8", errors="replace")
+        for m in re.finditer(r"/api/v1/([a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-]+)", txt):
+            found_paths.add(m.group(1))
+
+    for tsx in root_dir.glob(f"frontend/src/pages/**/*{s_str}*.tsx"):
+        txt = tsx.read_text(encoding="utf-8", errors="replace")
+        for m in re.finditer(r"/api/v1/([a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-]+)", txt):
+            found_paths.add(m.group(1))
+
+    return sorted(found_paths)
+
+
 def collect_endpoints(
     target: str | Path,
-    path_filter: str | None = None,
+    path_filter: str | list[str] | None = None,
+    screen: str | int | None = None,
     root_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     """지정된 도메인 또는 컨트롤러 파일에서 엔드포인트 목록을 정적 분석하여 반환한다."""
     if root_dir is None:
         root_dir = find_layout().root
+
+    filters: list[str] = []
+    if path_filter:
+        if isinstance(path_filter, str):
+            for part in path_filter.split(","):
+                if part.strip():
+                    filters.append(part.strip())
+        else:
+            for item in path_filter:
+                if isinstance(item, str):
+                    for part in item.split(","):
+                        if part.strip():
+                            filters.append(part.strip())
+
+    if screen:
+        screen_paths = _extract_screen_api_paths(screen, root_dir)
+        filters.extend(screen_paths)
 
     ctrl_files = _find_controller_files(target, root_dir)
     endpoints: list[dict[str, Any]] = []
@@ -300,7 +348,7 @@ def collect_endpoints(
             if not full_path.startswith("/"):
                 full_path = "/" + full_path
 
-            if path_filter and path_filter not in full_path:
+            if filters and not any(f in full_path for f in filters):
                 continue
 
             # 메서드 선언부 탐색 (최대 15줄 아래까지)
@@ -451,9 +499,12 @@ def format_endpoints_md(endpoints: list[dict[str, Any]]) -> str:
     kfs_cnt = 0
     mine_cnt = 0
     company_only_cnt = 0
+    no_guard_write = 0
+    no_guard_read = 0
 
     for ep in endpoints:
         is_write = ep["method"] in ("POST", "PUT", "DELETE", "PATCH")
+        has_no_guard = "⚠없음" in ep["guards"]
         if is_write:
             writes += 1
             if "KFS관리자" in ep["guards"]:
@@ -462,14 +513,22 @@ def format_endpoints_md(endpoints: list[dict[str, Any]]) -> str:
                 mine_cnt += 1
             if ep["guards"] == ["회사"]:
                 company_only_cnt += 1
+            if has_no_guard:
+                no_guard_write += 1
+        else:
+            if has_no_guard:
+                no_guard_read += 1
 
         lines.append(
             f"| {ep['method']} | {ep['path']} | {ep['query_str']} | {ep['body_str']} | "
             f"{ep['service']} | {ep['guard_str']} | {ep['file']} |"
         )
 
+    no_guard_total = no_guard_write + no_guard_read
+    no_guard_str = f" · ⚠없음 {no_guard_total}개(쓰기 {no_guard_write}·조회 {no_guard_read})" if no_guard_total > 0 else ""
+
     summary = (
-        f"\n엔드포인트 {len(endpoints)}개 · 쓰기 {writes}개 · "
+        f"\n엔드포인트 {len(endpoints)}개 · 쓰기 {writes}개{no_guard_str} · "
         f"쓰기 중 'KFS관리자' {kfs_cnt} · '본인' {mine_cnt} · '회사'만 {company_only_cnt} ← biz-authz 후보"
     )
     return "\n".join(lines) + "\n" + summary

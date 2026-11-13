@@ -733,6 +733,7 @@ def record_baseline(
     task_id: str | None = None,
     note_file: Path | None = None,
     force: bool = False,
+    strict: bool = False,
     work_dir: Path | None = None,
 ) -> tuple[int, str]:
     """화면의 현재 색인 기준을 baseline.json에 기록하고, 선택적으로 --note-file 머리에 AS-IS 기준 줄을 갱신한다.
@@ -804,14 +805,35 @@ def record_baseline(
         s_files = dict(sc_info["source_files"])
         total_files_last = len(s_files)
         prev_entry = baseline_data.get(matched_key)
+        crlf_only = False
         if isinstance(prev_entry, dict) and not force:
             if prev_entry.get("files") == s_files:
                 unchanged_msgs.append(matched_key)
                 continue
-            return (
-                2,
-                f"오류: {matched_key} — 기준 변경: 원본이 바뀜 — drift로 먼저 확인 (덮어쓰려면 --force)",
-            )
+
+            # 063 #2: 줄바꿈만 바뀐 경우 --force 없이 기준 이동 허용
+            if not strict:
+                diff_files = [
+                    rp for rp, h in s_files.items()
+                    if prev_entry.get("files", {}).get(rp) != h
+                ]
+                if diff_files:
+                    all_crlf = True
+                    prev_c = prev_entry.get("commit")
+                    c_reach = bool(is_git_repo(src_root) and prev_c and _commit_object_exists(src_root, prev_c))
+                    for df in diff_files:
+                        old_hash = prev_entry.get("files", {}).get(df, "")
+                        if not _is_crlf_only_diff(src_root, df, prev_c, old_hash, c_reach):
+                            all_crlf = False
+                            break
+                    if all_crlf:
+                        crlf_only = True
+
+            if not crlf_only:
+                return (
+                    2,
+                    f"오류: {matched_key} — 기준 변경: 원본이 바뀜 — drift로 먼저 확인 (덮어쓰려면 --force)",
+                )
 
         history: list[dict[str, Any]] = []
         if isinstance(prev_entry, dict):
@@ -842,7 +864,10 @@ def record_baseline(
             new_entry["id"] = task_id
 
         baseline_data[matched_key] = new_entry
-        recorded_msgs.append(f"{matched_key} @ {commit_short} (의존 {len(s_files)}개)")
+        if crlf_only:
+            recorded_msgs.append(f"{matched_key} (줄바꿈만 바뀜 → 기준 이동 @ {commit_short})")
+        else:
+            recorded_msgs.append(f"{matched_key} @ {commit_short} (의존 {len(s_files)}개)")
 
     if note_file:
         asis_line = (
@@ -1188,6 +1213,37 @@ def _build_current_blob_index(src_root: Path, git_mode: bool) -> dict[str, list[
     return blob_to_paths
 
 
+def _diff_ignore_args(ignore_space: bool = False, strict: bool = False) -> list[str]:
+    """공통 git diff 공백/개행 무시 플래그 생성. strict가 False이면 줄 끝 CRLF와 공백을 기본 무시."""
+    args = []
+    if not strict:
+        args.extend(["--ignore-cr-at-eol", "--ignore-space-at-eol"])
+    if ignore_space:
+        args.append("-w")
+    return args
+
+
+def _is_crlf_only_diff(
+    src_root: Path,
+    rel_path: str,
+    base_commit: str | None,
+    base_hash: str,
+    commit_exists: bool,
+) -> bool:
+    """줄바꿈(CRLF) 또는 줄 끝 공백만 바뀐 파일인지 판정."""
+    ignore_args = ["--ignore-cr-at-eol", "--ignore-space-at-eol"]
+    if base_commit and commit_exists:
+        rc, out, _ = _run_git(src_root, ["diff", *ignore_args, base_commit, "--", rel_path])
+        return rc == 0 and not out.strip()
+    if not base_hash.startswith("sha256:") and len(base_hash) >= 7:
+        abs_p = src_root / rel_path
+        if abs_p.is_file():
+            curr_blob = compute_git_blob_file(abs_p)
+            rc, out, _ = _run_git(src_root, ["diff", *ignore_args, base_hash, curr_blob])
+            return rc == 0 and not out.strip()
+    return False
+
+
 def _file_numstat(
     src_root: Path,
     rel_path: str,
@@ -1195,11 +1251,12 @@ def _file_numstat(
     base_hash: str,
     ignore_space: bool,
     commit_exists: bool,
+    strict: bool = False,
 ) -> tuple[int, int]:
     """git diff --numstat으로 단일 파일의 (+added, -removed) 줄 수를 구한다."""
-    w_args = ["-w"] if ignore_space else []
+    diff_args = _diff_ignore_args(ignore_space=ignore_space, strict=strict)
     if base_commit and commit_exists:
-        rc, out, _ = _run_git(src_root, ["diff", "--numstat", *w_args, base_commit, "--", rel_path])
+        rc, out, _ = _run_git(src_root, ["diff", "--numstat", *diff_args, base_commit, "--", rel_path])
         if rc == 0 and out.strip():
             parts = out.strip().splitlines()[0].split("\t")
             if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
@@ -1209,7 +1266,7 @@ def _file_numstat(
         abs_p = src_root / rel_path
         if abs_p.is_file():
             curr_blob = compute_git_blob_file(abs_p)
-            rc, out, _ = _run_git(src_root, ["diff", "--numstat", *w_args, base_hash, curr_blob])
+            rc, out, _ = _run_git(src_root, ["diff", "--numstat", *diff_args, base_hash, curr_blob])
             if rc == 0 and out.strip():
                 parts = out.strip().splitlines()[0].split("\t")
                 if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
@@ -1291,6 +1348,7 @@ def run_drift(
     show_new: bool = False,
     fail_on_drift: bool = False,
     ignore_space: bool = False,
+    strict: bool = False,
     work_dir: Path | None = None,
 ) -> tuple[int, str, list[str]]:
     """yunhee drift 실행 본체.
@@ -1442,6 +1500,48 @@ def run_drift(
     units_baseline: dict[str, Any] = baseline_data.get("__units__", {}) if isinstance(baseline_data.get("__units__"), dict) else {}
     files_baseline: dict[str, Any] = baseline_data.get("__files__", {}) if isinstance(baseline_data.get("__files__"), dict) else {}
 
+    # 063 #3: 대장 및 baseline __units__에서 판단 끝난 공유 변경 단위 수집
+    from yunhee.tools.as_is.drift_ops import (
+        build_unit_screens_map,
+        parse_ledger_header,
+        resolve_ledger_path,
+        split_table_row,
+    )
+
+    sql_screens, method_screens, _ = build_unit_screens_map(src_index)
+    done_shared_units: dict[str, set[str]] = defaultdict(set)
+    for u_key, u_val in units_baseline.items():
+        if (
+            isinstance(u_val, dict)
+            and u_val.get("status") in ("해당없음", "반영", "완료", "넘김", "보류")
+            and " · " in u_key
+        ):
+            f_part, u_part = u_key.split(" · ", 1)
+            f_clean = re.sub(r"[`*]", "", f_part).strip()
+            u_clean = re.sub(r"[`*]", "", u_part).strip()
+            done_shared_units[f_clean].add(u_clean)
+            done_shared_units[Path(f_clean).name].add(u_clean)
+
+    l_path = resolve_ledger_path(wd)
+    if l_path.is_file():
+        l_lines = l_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        h_idx, c_names, c_map = parse_ledger_header(l_lines)
+        if h_idx != -1 and "키" in c_map and "상태" in c_map and "단위" in c_map:
+            for l_str in l_lines[h_idx + 1:]:
+                parts = split_table_row(l_str)
+                if parts and len(parts) == len(c_names):
+                    st = parts[c_map["상태"]].strip()
+                    if st in ("해당없음", "반영", "완료", "넘김", "보류"):
+                        u_raw = re.sub(r"[`*]", "", parts[c_map["단위"]]).strip()
+                        if " · " in u_raw:
+                            f_part, u_part = u_raw.split(" · ", 1)
+                            f_clean = re.sub(r"[`*]", "", f_part).strip()
+                            u_clean = re.sub(r"[`*]", "", u_part).strip()
+                            done_shared_units[f_clean].add(u_clean)
+                            done_shared_units[Path(f_clean).name].add(u_clean)
+
+    excluded_done_shared_count = 0
+
     for s_name in target_names:
         idx_info = indexed_screens.get(s_name, {})
         base_commit: str | None = None
@@ -1522,6 +1622,17 @@ def run_drift(
             base_commits_seen.add(base_commit)
 
         commit_reachable = bool(git_mode and base_commit and _commit_object_exists(eff_src, base_commit))
+
+        s_keys = {s_name}
+        if idx_info.get("md_file"):
+            try:
+                raw_md = idx_info["md_file"].read_text(encoding="utf-8", errors="replace")
+                m_no = re.search(r"\(#(\d+)\)", raw_md)
+                if m_no:
+                    s_keys.add(f"#{m_no.group(1)}")
+                    s_keys.add(m_no.group(1))
+            except OSError:
+                pass
 
         # 이 화면의 검사 대상 파일들: (rel_path, base_hash, is_from_linked_component)
         check_entries: list[tuple[str, str, bool]] = [
@@ -1614,8 +1725,44 @@ def run_drift(
             if is_same:
                 continue
 
+            # 063 #2: 줄바꿈(CRLF) 및 끝 공백 무시 비교 (strict=False일 때 기본)
+            is_crlf_only = False
+            if (
+                not strict
+                and git_mode
+                and _is_crlf_only_diff(eff_src, rel_p, base_commit, b_hash, commit_reachable)
+            ):
+                is_crlf_only = True
+
+            if is_crlf_only:
+                file_records.append({
+                    "path": rel_p,
+                    "status": "동일(줄바꿈만)",
+                    "added": 0,
+                    "removed": 0,
+                    "shared": is_shared,
+                    "base_commit": base_commit,
+                    "base_hash": b_hash,
+                })
+                continue
+
+            # 063 #3: 공유 파일이고 대장/단위에서 이미 판단 완료된 단위인데, 이 화면이 그 단위를 안 쓰면 제외
+            if is_shared and done_shared_units:
+                f_name = Path(rel_p).name
+                done_units_for_f = done_shared_units.get(rel_p) or done_shared_units.get(f_name)
+                if done_units_for_f:
+                    uses_any = False
+                    for u in done_units_for_f:
+                        scs = set(sql_screens.get(u, []) or []) | set(method_screens.get(u, []) or [])
+                        if any(k in scs for k in s_keys):
+                            uses_any = True
+                            break
+                    if not uses_any:
+                        excluded_done_shared_count += 1
+                        continue
+
             f_add, f_rem = (
-                _file_numstat(eff_src, rel_p, base_commit, b_hash, ignore_space, commit_reachable)
+                _file_numstat(eff_src, rel_p, base_commit, b_hash, ignore_space, commit_reachable, strict=strict)
                 if git_mode
                 else (0, 0)
             )
@@ -1744,6 +1891,7 @@ def run_drift(
             screen_results,
             git_mode=git_mode,
             ignore_space=ignore_space,
+            strict=strict,
             max_lines=max_lines if output_fmt == "diff" else None,
         )
         return exit_code, diff_text, warnings
@@ -1766,6 +1914,7 @@ def run_drift(
         single_query=len(target_names) == 1 and not all_screens,
         screens_menu=s_menu if all_screens and not done_only else None,
         screens_frame=s_frame if all_screens and not done_only else None,
+        excluded_done_shared_count=excluded_done_shared_count,
     )
     return exit_code, table_text, warnings
 
@@ -1781,6 +1930,7 @@ def _render_table_output(
     single_query: bool = False,
     screens_menu: int | None = None,
     screens_frame: int | None = None,
+    excluded_done_shared_count: int = 0,
 ) -> str:
     """기본 1화면 1줄 요약 테이블 출력을 렌더링한다."""
     changed_list = [s for s in screen_results if s["status"] in ("변경", "삭제")]
@@ -1829,9 +1979,10 @@ def _render_table_output(
     else:
         count_label = f"{scope_label} {total_cnt}개"
 
+    extra_suffix = f", 판단 끝난 공유 변경 {excluded_done_shared_count}건 제외" if excluded_done_shared_count > 0 else ""
     lines.append(
         f"기준 대비 변경 {len(changed_list)}개 / {count_label} "
-        f"({' · '.join(extra_counts)}) — {head_info}"
+        f"({' · '.join(extra_counts)}) — {head_info}{extra_suffix}"
     )
 
     if changed_list:
@@ -1900,17 +2051,21 @@ def _render_diff_output(
     screen_results: list[dict[str, Any]],
     git_mode: bool,
     ignore_space: bool,
-    max_lines: int | None,
+    strict: bool = False,
+    max_lines: int | None = None,
 ) -> str:
     """-o diff 및 -o full 출력을 생성한다."""
     out_blocks: list[str] = []
-    w_args = ["-w"] if ignore_space else []
+    diff_args = _diff_ignore_args(ignore_space=ignore_space, strict=strict)
 
     for sr in screen_results:
         if sr["status"] not in ("변경", "삭제"):
             continue
+        valid_files = [f for f in sr["files"] if f.get("status") not in ("동일", "동일(줄바꿈만)")]
+        if not valid_files:
+            continue
         out_blocks.append(f"=== {sr['screen']} ({sr['status']}, +{sr['added']}/-{sr['removed']}) ===")
-        for f_rec in sr["files"]:
+        for f_rec in valid_files:
             rel_p = f_rec["path"]
             b_commit = f_rec.get("base_commit")
             if not git_mode:
@@ -1922,11 +2077,11 @@ def _render_diff_output(
                 out_blocks.append(f"--- {rel_p} ({f_rec['status']}) ---")
                 continue
 
-            _, stat_out, _ = _run_git(src_root, ["diff", "--stat", *w_args, ref, "--", rel_p])
+            _, stat_out, _ = _run_git(src_root, ["diff", "--stat", *diff_args, ref, "--", rel_p])
             stat_first = stat_out.strip().splitlines()[0] if stat_out.strip() else f"{rel_p} ({f_rec['status']})"
             out_blocks.append(stat_first)
 
-            _, diff_out, _ = _run_git(src_root, ["diff", "-U3", *w_args, ref, "--", rel_p])
+            _, diff_out, _ = _run_git(src_root, ["diff", "-U3", *diff_args, ref, "--", rel_p])
             d_lines = diff_out.splitlines()
             if max_lines is not None and len(d_lines) > max_lines:
                 omitted = len(d_lines) - max_lines

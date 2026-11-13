@@ -157,3 +157,16 @@ TOBE 소스 파일(TSX/TS/Java)의 패턴 골격, 컴포넌트 구조, 훅, 주�
   yunhee analysis run last --stderr
   yunhee analysis run last --stdout -n 50
   ```
+
+### `yunhee analysis function <함수명>`
+색인된 PostgreSQL DB 함수(Stored Procedure/Function)의 마크다운 요약 및 본문 소스를 정밀 추출합니다 (`docs/as-is/db/functions/<name>.md`).
+- **주요 옵션**:
+  - `-o, --output <md|code>`: 출력 형식 (기본: `md`, 본문만 보기: `code`)
+  - `--lines <A-B>`: 본문 줄 번호 범위 슬라이싱 (예: `--lines 10-50`)
+  - `--grep <패턴>`: 본문 내 정규식 일치 줄 및 문맥 검색
+- **예시**:
+  ```bash
+  yunhee analysis function f_get_user_info
+  yunhee analysis function f_create_seq -o code --lines 1-30
+  yunhee analysis function f_cdnm --grep "SELECT"
+  ```
