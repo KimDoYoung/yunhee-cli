@@ -987,6 +987,7 @@ def api(
     no_mask: Annotated[bool, typer.Option("--no-mask", help="개인정보 마스킹 해제")] = False,
     wait_deploy: Annotated[float | None, typer.Option("--wait-deploy", help="배포 후 앱 기동 완료까지 대기(초, 기본 60초)")] = None,
     track: Annotated[str | None, typer.Option("--track", help="호출 전후 테이블 행 수 및 신규 PK 추적 (쉼표 구분, 예: biz02_person,biz05_relate_appr)")] = None,
+    children: Annotated[bool, typer.Option("--children", help="--track 테이블을 부모로 참조하는 연관 자식 테이블들의 전후 행 수도 함께 추적")] = False,
     fresh: Annotated[bool, typer.Option("--fresh", "--no-session", help="기존 로그인 세션을 무시하고 새로 로그인 (기본: 테넌트·계정별 세션 재사용)")] = False,
     password: Annotated[str | None, typer.Option("--password", help="로그인 비밀번호 (직접 지정, 기본값 및 환경변수보다 우선)")] = None,
     force_login: Annotated[bool, typer.Option("--force-login", help="로그인 실패 3회 이상으로 잠금 직전인 경우에도 로그인을 강제 시도")] = False,
@@ -1060,6 +1061,7 @@ def api(
         wait_deploy=wait_deploy,
         raw_param=raw_param,
         track=track,
+        track_children=children,
         fresh=fresh,
         password=password,
         force_login=force_login,
@@ -1168,10 +1170,35 @@ def api(
         # 3. --fields TSV 출력
         elif fields:
             f_cols = [f.strip() for f in fields.split(",") if f.strip()]
+            all_keys: set[str] = set()
+            for r in rows:
+                if isinstance(r, dict):
+                    all_keys.update(r.keys())
+
+            import difflib
+
+            missing_warnings = []
+            for c in f_cols:
+                if all_keys and c not in all_keys:
+                    matches = difflib.get_close_matches(c, list(all_keys), n=3, cutoff=0.5)
+                    if not matches:
+                        matches = [k for k in sorted(all_keys) if c.lower() in k.lower() or k.lower() in c.lower()][:3]
+                    cand_str = f" (비슷한 키: {', '.join(matches)})" if matches else ""
+                    missing_warnings.append(f"⚠ --fields: {c} 없음{cand_str}")
+            if missing_warnings:
+                for mw in missing_warnings:
+                    typer.secho(mw, fg=typer.colors.YELLOW, err=True)
+
             print("\t".join(f_cols))
             for r in rows:
                 if isinstance(r, dict):
-                    row_vals = [str(r.get(c, "")) if r.get(c) is not None else "" for c in f_cols]
+                    row_vals = []
+                    for c in f_cols:
+                        if c not in r:
+                            row_vals.append("-")
+                        else:
+                            val = r.get(c)
+                            row_vals.append(str(val) if val is not None else "")
                     print("\t".join(row_vals))
 
         # 4. where만 지정된 경우 필터링 결과 요약
@@ -1217,6 +1244,7 @@ def sql_cmd(
     file: Annotated[Path | None, typer.Option("--file", "-f", help="실행할 SQL 파일 경로")] = None,
     builtin: Annotated[str | None, typer.Option("--builtin", help="내장 SQL 이름 실행 (예: menus)")] = None,
     rollback: Annotated[bool, typer.Option("--rollback", help="쓰기를 허용하되 반드시 트랜잭션 종료 시 ROLLBACK")] = False,
+    allow_ddl: Annotated[bool, typer.Option("--allow-ddl", "--ddl-in-tx", help="--rollback 모드에서 PostgreSQL 트랜잭션 내 DDL 실행 허용")] = False,
     limit: Annotated[int | None, typer.Option("--limit", "-n", help="출력할 최대 행 수 (table 기본 5, tsv/csv/json 기본 제한 없음)")] = None,
     timeout: Annotated[float, typer.Option("--timeout", help="statement_timeout 타임아웃(초) (기본: 10)")] = 10.0,
     var: Annotated[list[str] | None, typer.Option("--var", help="변수 설정 key=val 또는 key=\"select ...\" (반복 가능)")] = None,
@@ -1253,6 +1281,7 @@ def sql_cmd(
         file_path=file,
         builtin=builtin,
         rollback=rollback,
+        allow_ddl=allow_ddl,
         limit=limit,
         timeout=timeout,
         vars_dict=vars_dict or None,
@@ -3517,9 +3546,9 @@ def mark_cmd(
 
 @app.command(name="biz-endpoints")
 def biz_endpoints(
-    target: Annotated[str, typer.Argument(help="도메인명 (예: att, pay, ast) 또는 컨트롤러 클래스명/경로 (예: AstRelateApprController)")],
+    target: Annotated[str | None, typer.Argument(help="도메인명 (예: att, pay, ast) 또는 컨트롤러 클래스명/경로 (예: AstRelateApprController) — 생략 시 전체 또는 --screen 기반")] = None,
     path: Annotated[list[str] | None, typer.Option("--path", help="경로 필터링 문자열 (반복 또는 쉼표 구분 가능, 예: annuals)")] = None,
-    screen: Annotated[str | None, typer.Option("--screen", help="화면 번호 기반 연관 API 경로 자동 필터링 (예: 1299)")] = None,
+    screen: Annotated[str | None, typer.Option("--screen", help="화면 번호 기반 연관 API 경로 자동 필터링 (복수 지정 가능, 예: 1051 또는 1223,1341,1227)")] = None,
     output: Annotated[str, typer.Option("-o", "--output", help="출력 형식 (md, json, tsv)")] = "md",
 ) -> None:
     """TOBE API 엔드포인트 목록 및 파라미터·본문 DTO·서비스·권한검사 표 출력"""
@@ -3534,7 +3563,8 @@ def biz_endpoints(
 
     endpoints = collect_endpoints(target, path_filter=path, screen=screen)
     if not endpoints:
-        typer.secho(f"조회된 엔드포인트가 없습니다: target={target}, path={path}, screen={screen}", fg=typer.colors.YELLOW, err=True)
+        target_str = target or "(전체)"
+        typer.secho(f"조회된 엔드포인트가 없습니다: target={target_str}, path={path}, screen={screen}", fg=typer.colors.YELLOW, err=True)
         return
 
     fmt = output.lower()
@@ -3548,16 +3578,18 @@ def biz_endpoints(
 
 @app.command(name="biz-authz")
 def biz_authz(
-    target: Annotated[str, typer.Argument(help="도메인명 (예: att, pay, ast) 또는 컨트롤러 클래스명/경로")],
+    target: Annotated[str | None, typer.Argument(help="도메인명 (예: att, pay, ast) 또는 컨트롤러 클래스명/경로 — --lint-delete-by-id 시 생략 가능")] = None,
     as_user: Annotated[str, typer.Option("--as", "-u", help="낮은 권한 사번/계정 (예: 401)")] = "401",
     company: Annotated[str, typer.Option("--company", "-c", help="회사 코드 (예: kalpa)")] = "kalpa",
     password: Annotated[str | None, typer.Option("--password", help="계정 비밀번호")] = None,
     path: Annotated[list[str] | None, typer.Option("--path", help="경로 필터링 문자열 (반복 또는 쉼표 구분 가능)")] = None,
     screen: Annotated[str | None, typer.Option("--screen", help="화면 번호 기반 연관 API 경로 자동 필터링")] = None,
     param: Annotated[list[str] | None, typer.Option("--param", "-p", help="공통 쿼리 파라미터 key=val (반복 가능)")] = None,
-    probe_write: Annotated[bool, typer.Option("--probe-write", help="쓰기 API에 빈 본문으로 안전하게 인가 검사 프로빙")] = False,
+    probe_write: Annotated[bool, typer.Option("--probe-write", help="쓰기 API에 빈 본문으로 인가 검사 프로빙 (서버 검증이 있으면 거절되지만, 없으면 빈 행이 생긴다)")] = False,
     probe_delete: Annotated[bool, typer.Option("--probe-delete", help="DELETE API까지 프로빙")] = False,
     probe_appr: Annotated[bool, typer.Option("--probe-appr", help="결재 완료 행의 결재 ID 바꿔치기(apprId=1) BOLA 취약점 시험")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="실제 호출하지 않고 프로빙 대상 API 목록만 확인")] = False,
+    lint_delete_by_id: Annotated[bool, typer.Option("--lint-delete-by-id", help="요청 DTO의 ...Id 필드가 소유자 검증 없이 delete/update 매퍼로 전달되는 패턴 정적 검출")] = False,
     emit_rows: Annotated[bool, typer.Option("--emit-rows", help="보안 의심 마크다운 보고서용 행 목록 출력")] = False,
     output: Annotated[str, typer.Option("-o", "--output", help="출력 형식 (md, json)")] = "md",
 ) -> None:
@@ -3565,11 +3597,30 @@ def biz_authz(
     import json
 
     from yunhee.tools.biz.authz import format_authz_md, run_authz
+    from yunhee.tools.biz.authz import lint_delete_by_id as do_lint_delete
     from yunhee.tools.biz.endpoints import collect_endpoints
+
+    if lint_delete_by_id:
+        findings = do_lint_delete(target)
+        if not findings:
+            typer.echo(f"검출된 의심 패턴 없음: target={target or '전체'}")
+            return
+        if output.lower() == "json":
+            typer.echo(json.dumps(findings, ensure_ascii=False, indent=2))
+        else:
+            typer.echo(f"### DTO ID 기반 무검증 삭제/수정 의심 패턴 ({len(findings)}건):")
+            for f in findings:
+                typer.echo(f"- {f['summary']} [{f['file']}]")
+        return
+
+    if not target and not screen:
+        typer.secho("오류: target(도메인) 또는 --screen 중 하나를 지정해야 합니다.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
 
     endpoints = collect_endpoints(target, path_filter=path, screen=screen)
     if not endpoints:
-        typer.secho(f"조회된 엔드포인트가 없습니다: target={target}, path={path}, screen={screen}", fg=typer.colors.YELLOW, err=True)
+        target_str = target or "(전체)"
+        typer.secho(f"조회된 엔드포인트가 없습니다: target={target_str}, path={path}, screen={screen}", fg=typer.colors.YELLOW, err=True)
         return
 
     common_params = {}
@@ -3587,6 +3638,7 @@ def biz_authz(
         probe_write=probe_write,
         probe_delete=probe_delete,
         probe_appr=probe_appr,
+        dry_run=dry_run,
         common_params=common_params,
     )
 
@@ -3610,7 +3662,10 @@ def biz_appr(
     reject: Annotated[str | None, typer.Option("--reject", help="마지막 결재자가 반려 처리 (반려 사유 입력)")] = None,
     link_path: Annotated[str | None, typer.Option("--link-path", help="업무 행 연결 API 경로 (예: /api/v1/.../{ref}/appr)")] = None,
     link_style: Annotated[str | None, typer.Option("--link-style", help="업무 행 연결 파라미터 전달 스타일 (query, body, ids-body)")] = None,
+    link_body: Annotated[str | None, typer.Option("--link-body", help="업무 행 연결 시 전송할 커스텀 JSON 본문 템플릿 ({ref}, {apprId} 치환 지원)")] = None,
     seed_arg: Annotated[list[str] | None, typer.Option("--seed-arg", help="링크 시드 쿼리 파라미터 추가 key=val (반복 가능)")] = None,
+    title: Annotated[str | None, typer.Option("--title", help="상신 문서 제목 직접 지정 (기본: link-seed 또는 '<코드> 신청서')")] = None,
+    content: Annotated[str | None, typer.Option("--content", help="상신 문서 본문 HTML/텍스트 직접 지정")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="실제 호출하지 않고 조립된 상신 본문 JSON만 출력")] = False,
 ) -> None:
     """전자결재 상신·업무 행 연결·결재자 승인(또는 반려) 원스톱 자동 실행"""
@@ -3633,6 +3688,9 @@ def biz_appr(
             dry_run=dry_run,
             pre=pre,
             seed_args=seed_arg,
+            title=title,
+            content=content,
+            link_body=link_body,
         )
         for line in lines:
             typer.echo(line)
@@ -3684,6 +3742,34 @@ def biz_patch(
     except ValueError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
+
+
+@app.command(name="biz-orphans")
+def biz_orphans(
+    table: Annotated[str | None, typer.Option("--table", "-t", help="검사할 자식 테이블 이름 (지정하지 않으면 전체 FK 관계 검사)")] = None,
+    company: Annotated[str | None, typer.Option("--company", "-c", help="회사 코드 (예: kalpa)")] = None,
+    db: Annotated[str | None, typer.Option("--db", help="대상 데이터베이스 (기본: asseterpdb)")] = None,
+    output: Annotated[str, typer.Option("-o", "--output", help="출력 형식 (table, json)")] = "table",
+) -> None:
+    """삭제 등으로 인해 부모가 없어진 자식 고아 행 탐지 및 정리 SQL 출력 (읽기 전용)"""
+    import json
+
+    from yunhee.tools.biz.orphans import find_orphans
+
+    results = find_orphans(table=table, company=company, db_name=db)
+    if not results:
+        typer.echo(f"고아 행 없음: table={table or '전체'}, company={company or '전체'}")
+        return
+
+    if output.lower() == "json":
+        typer.echo(json.dumps(results, ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(f"### 고아 행 탐지 결과 ({len(results)}개 관계):")
+    for r in results:
+        typer.echo(f"\n- **{r['child_table']}** ({r['fk_col']} → {r['parent_table']}.{r['parent_pk']}): 고아 {r['count']}건")
+        typer.echo(f"  - 상위 ID: {r['ids']}")
+        typer.echo(f"  - 정리 SQL: `{r['delete_sql']}`")
 
 
 @app.command(name="biz-code")

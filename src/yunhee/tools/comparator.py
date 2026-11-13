@@ -775,7 +775,7 @@ def compare_api_sql(
                 branch_overrides=branch_overrides,
             )
             for m_p in missing:
-                sys.stderr.write(f"⚠ 값 없음: {m_p}\n")
+                sys.stderr.write(f"필요 파라미터: {m_p}\n")
         else:
             if xml_text_fallback is None:
                 xml_path = find_mapper_file(ns, src_root)
@@ -789,7 +789,7 @@ def compare_api_sql(
                 branch_overrides=branch_overrides,
             )
             for m_p in missing:
-                sys.stderr.write(f"⚠ 값 없음: {m_p}\n")
+                sys.stderr.write(f"필요 파라미터: {m_p}\n")
     except Exception as e:  # noqa: BLE001
         return ToolResult(ok=False, error=f"SQL 렌더링 실패: {e}")
 
@@ -980,6 +980,11 @@ def compare_api_sql(
     uneval_branches = [b for b in branch_log if "평가 불가" in b]
     if uneval_branches:
         count_part += f" (분기 {len(uneval_branches)}개 평가 불가)"
+
+    # 미치환 ${...} 감지 (064 #3)
+    unresolved_dollars = [d for d in re.findall(r"\$\{[^}]+\}", sql) if not d.startswith("${--")]
+    if unresolved_dollars:
+        count_part += f"  ⚠ 치환 못 한 자리표시: {', '.join(unresolved_dollars)} → SQL 행 수를 믿지 말 것"
 
     # 테이블 접두어 추출
     tbl_pfx_m = re.match(r"^([a-z]+\d*)_", ns)

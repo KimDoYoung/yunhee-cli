@@ -14,7 +14,7 @@ from typing import Any
 
 from yunhee.tools import api_client
 from yunhee.tools.base import ToolResult
-from yunhee.tools.trace.tobe import find_layout, normalize_url, parse_api_ts
+from yunhee.tools.trace.tobe import _body, find_layout, normalize_url, parse_api_ts
 
 
 def resolve_user_menus(
@@ -161,6 +161,7 @@ def run_authz(
     probe_write: bool = False,
     probe_delete: bool = False,
     probe_appr: bool = False,
+    dry_run: bool = False,
     common_params: dict[str, str] | None = None,
     url_menu_map: dict[str, set[str]] | None = None,
     user_menu_set: set[str] | None = None,
@@ -202,6 +203,19 @@ def run_authz(
         if is_write and has_path_var:
             # 쓰기는 경로 변수를 0(더미 ID)으로 치환
             call_path = re.sub(r"\{[^}/]*\}", "0", raw_path)
+
+        # dry-run 처리 (064 #9)
+        if dry_run and is_write:
+            results.append({
+                "method": verb,
+                "path": raw_path,
+                "call_path": call_path,
+                "guard_str": guards_str,
+                "result_str": "(미호출 — dry-run)",
+                "verdict": "미호출(dry-run)",
+                "associated_menus": [],
+            })
+            continue
 
         # 3. 쿼리 / 본문 준비
         req_params: dict[str, str] = {}
@@ -353,6 +367,30 @@ def run_authz(
                 res_display = "빈 본문 → 500"
                 verdict = "오류(본문 형식 확인)"
 
+        # 5. 쓰기 200 시 생성 경고 처리 (064 #9)
+        warn_created = None
+        if is_write and res.ok:
+            id_val = None
+            id_key = None
+            if isinstance(res.data, dict):
+                d_obj = res.data.get("data")
+                if isinstance(d_obj, dict):
+                    for k, v in d_obj.items():
+                        if k.endswith("Id") and v is not None:
+                            id_key = k
+                            id_val = v
+                            break
+                elif isinstance(d_obj, (int, str)):
+                    id_key = "id"
+                    id_val = d_obj
+            del_method = "지울 API: 없음"
+            del_ep = next((e for e in endpoints if e.get("method") == "DELETE" and (e.get("path") == raw_path or raw_path.startswith(e.get("path", "").split("{")[0]))), None)
+            if del_ep:
+                del_method = f"DELETE {del_ep['path']}"
+
+            id_str = f"{id_key}={id_val}" if id_key else "ID 미확인"
+            warn_created = f"⚠ 행이 만들어졌을 수 있음: {id_str} — {del_method}"
+
         results.append({
             "method": verb,
             "path": raw_path,
@@ -361,9 +399,80 @@ def run_authz(
             "result_str": res_display,
             "verdict": verdict,
             "associated_menus": list(associated_menus),
+            "warn_created": warn_created,
         })
 
     return results
+
+
+def lint_delete_by_id(target: str | Path | None = None, root_dir: Path | None = None) -> list[dict[str, Any]]:
+    """컨트롤러 요청 DTO의 ...Id 필드가 서비스에서 검증 없이 delete*/update* 매퍼로 전달되는 패턴을 정적 검출한다 (064 #6)."""
+    if root_dir is None:
+        root_dir = find_layout().root
+
+    java_root = root_dir / "backend" / "src" / "main" / "java"
+    svc_files: list[Path] = []
+    if target:
+        t_str = str(target).strip()
+        if java_root.is_dir():
+            svc_files = sorted(java_root.glob(f"**/biz/{t_str}/**/*Service.java"))
+        if not svc_files:
+            svc_files = sorted(root_dir.rglob(f"*{t_str}*Service.java"))
+    else:
+        if java_root.is_dir():
+            svc_files = sorted(java_root.rglob("*Service.java"))
+        else:
+            svc_files = sorted(root_dir.rglob("*Service.java"))
+
+    findings: list[dict[str, Any]] = []
+
+    for sf in svc_files:
+        text = sf.read_text(encoding="utf-8", errors="replace")
+
+        method_pat = re.compile(
+            r"^[ \t]*(?:public|protected)\s+(?!class)[\w<>\[\], ?.]+?\s+(\w+)\s*\(([^)]*)\)[^{;]*\{",
+            re.MULTILINE,
+        )
+        for m in method_pat.finditer(text):
+            m_name = m.group(1)
+            params_str = m.group(2)
+            open_brace = m.end() - 1
+            body = _body(text, open_brace)
+
+            dto_vars = []
+            for p_chunk in params_str.split(","):
+                p_tokens = p_chunk.strip().split()
+                if len(p_tokens) >= 2:
+                    p_type, p_var = p_tokens[-2], p_tokens[-1]
+                    if p_type not in ("UserPrincipal", "Authentication", "HttpServletRequest", "HttpServletResponse"):
+                        dto_vars.append(p_var)
+
+            del_calls = re.findall(r"\bmapper\s*\.\s*(delete\w+|update\w+)\s*\(([^;]*?)\)", body)
+            for mapper_meth, args_str in del_calls:
+                for dvar in dto_vars:
+                    id_m = re.search(r"\b" + re.escape(dvar) + r"\s*\.\s*(?:get)?(\w*Id)\s*\(", args_str)
+                    if id_m:
+                        field_name = id_m.group(1)
+                        field_name = field_name[0].lower() + field_name[1:]
+                        has_owner_check = bool(
+                            re.search(r"getUserId\(\)\s*==\s*" + re.escape(field_name), body)
+                            or re.search(r"\.equals\s*\(\s*user\.getUserId\(\)\s*\)", body)
+                            or "checkOwner" in body
+                            or "checkMine" in body
+                        )
+                        if not has_owner_check:
+                            line_no = text[:m.start()].count("\n") + 1
+                            svc_cls = sf.stem
+                            findings.append({
+                                "service": f"{svc_cls}.{m_name}",
+                                "field": field_name,
+                                "mapper_call": mapper_meth,
+                                "file": f"{sf.name}:{line_no}",
+                                "line": line_no,
+                                "summary": f"{svc_cls}.{m_name} ({field_name} → {mapper_meth})",
+                            })
+
+    return findings
 
 
 def format_authz_md(
@@ -378,12 +487,16 @@ def format_authz_md(
     ]
     suspect_count = 0
     emit_lines: list[str] = []
+    created_warnings: list[str] = []
 
     for r in results:
         is_suspect = r["verdict"].startswith("⚠ ") and not r["verdict"].startswith("⚠?")
         if is_suspect:
             suspect_count += 1
             emit_lines.append(f"| … | {as_user} {r['method']} {r['path']} → {r['result_str']} |")
+
+        if r.get("warn_created"):
+            created_warnings.append(r["warn_created"])
 
         lines.append(
             f"| {r['method']} | {r['path']} | {r['guard_str']} | "
@@ -392,6 +505,8 @@ def format_authz_md(
 
     summary = f"\n⚠ {suspect_count}건 — 보안_및_버그_의심.md에 적을 후보"
     out = "\n".join(lines) + "\n" + summary
+    if created_warnings:
+        out += "\n\n### 행 생성 경고:\n" + "\n".join(created_warnings)
     if emit_rows and emit_lines:
         out += "\n\n### 의심 후보 행:\n" + "\n".join(emit_lines)
     return out

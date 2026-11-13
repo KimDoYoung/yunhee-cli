@@ -1,5 +1,6 @@
 """서버 로그 분석 및 요청/SQL/에러 요약 도구 (yunhee log)."""
 
+import os
 import re
 import subprocess
 import sys
@@ -1370,23 +1371,37 @@ def get_trace_summary(
         src_type = "file"
     elif docker:
         src_type = "docker"
+        records = []
         try:
             log_text = read_logs_docker(docker, dir_str, app_str, trace_id=trace_id, archived=archived)
-        except DockerExecError as e:
-            sys.stderr.write(f"{e}\n")
-            raise typer.Exit(2) from e
-        records = parse_log_records(log_text)
+            records = parse_log_records(log_text)
+        except Exception:  # noqa: BLE001
+            records = []
+        if not records:
+            local_cand = os.getenv("YUNHEE_LOG_DIR") or str(Path.home() / "tmp/asseterp-data/logs")
+            if Path(local_cand).is_dir():
+                l_text = read_logs_local(Path(local_cand), app_str, trace_id=trace_id, archived=archived)
+                l_recs = parse_log_records(l_text)
+                if l_recs:
+                    records = l_recs
+                    src_type = "local"
+                    dir_str = local_cand
+                    docker = None
+                    sys.stderr.write(f"(docker 소스에서 없어 로컬 로그 {local_cand}에서 찾음)\n")
     else:
         src_type = "local"
         log_text = read_logs_local(Path(dir_str), app_str, trace_id=trace_id, archived=archived)
         records = parse_log_records(log_text)
 
     if not records:
+        extra_hint = ""
+        if src_type == "docker":
+            extra_hint = "\ndocker 소스에서 없음. --source local --dir ~/tmp/asseterp-data/logs 로 다시 찾아 보세요"
         if archived:
             n_gz = count_archived_files(src_type, docker, dir_str, app_str)
-            sys.stderr.write(f"trace {trace_id}: 로그에 없음 (오늘 파일 + archived gz {n_gz}개 검색)\n")
+            sys.stderr.write(f"trace {trace_id}: 로그에 없음 (오늘 파일 + archived gz {n_gz}개 검색){extra_hint}\n")
         else:
-            sys.stderr.write(f"trace {trace_id}: 로그에 없음 (오늘 파일만 봄 — 지난 날은 --archived)\n")
+            sys.stderr.write(f"trace {trace_id}: 로그에 없음 (오늘 파일만 봄 — 지난 날은 --archived){extra_hint}\n")
         raise typer.Exit(1)
 
     total_masks = 0
@@ -1606,6 +1621,7 @@ def get_req_summary(
             raise typer.Exit(1)
         raw_text = f.read_text(encoding="utf-8", errors="replace")
         src_type = "file"
+        records = parse_log_records(raw_text)
     elif docker:
         src_type = "docker"
         try:
@@ -1785,6 +1801,7 @@ def get_errors_summary(
             raise typer.Exit(1)
         raw_text = f.read_text(encoding="utf-8", errors="replace")
         src_type = "file"
+        records = parse_log_records(raw_text)
     elif docker:
         src_type = "docker"
         try:
@@ -1799,9 +1816,29 @@ def get_errors_summary(
                 user_range_specified=user_range_specified,
                 log_tz=tz_str,
             )
-        except DockerExecError as e:
-            sys.stderr.write(f"{e}\n")
-            raise typer.Exit(2) from e
+        except Exception:  # noqa: BLE001
+            raw_text = ""
+        records = parse_log_records(raw_text)
+        if not records:
+            local_cand = os.getenv("YUNHEE_LOG_DIR") or str(Path.home() / "tmp/asseterp-data/logs")
+            if Path(local_cand).is_dir():
+                l_text = read_logs_local(
+                    Path(local_cand),
+                    app_str,
+                    error_only=True,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                    archived=archived,
+                    user_range_specified=user_range_specified,
+                    log_tz=tz_str,
+                )
+                l_recs = parse_log_records(l_text)
+                if l_recs:
+                    records = l_recs
+                    src_type = "local"
+                    dir_str = local_cand
+                    docker = None
+                    sys.stderr.write(f"(docker 소스에서 없어 로컬 로그 {local_cand}에서 찾음)\n")
     else:
         src_type = "local"
         raw_text = read_logs_local(
@@ -1814,8 +1851,7 @@ def get_errors_summary(
             user_range_specified=user_range_specified,
             log_tz=tz_str,
         )
-
-    records = parse_log_records(raw_text)
+        records = parse_log_records(raw_text)
 
     # WARN / ERROR 필터링
     filtered: list[LogRecord] = []
@@ -2010,6 +2046,7 @@ def get_tail_summary(
             raise typer.Exit(1)
         raw_text = f.read_text(encoding="utf-8", errors="replace")
         src_type = "file"
+        records = parse_log_records(raw_text)
     elif docker:
         src_type = "docker"
         try:

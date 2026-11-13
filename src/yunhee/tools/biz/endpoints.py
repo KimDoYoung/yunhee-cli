@@ -16,7 +16,13 @@ from yunhee.tools.trace.tobe import HTTP_ANNOTATION, _body, field_types, find_la
 _SIMPLE_TYPES = {"String", "Long", "long", "Integer", "int", "Boolean", "boolean", "Double", "double"}
 
 
-def _find_controller_files(target: str | Path, root_dir: Path) -> list[Path]:
+def _find_controller_files(target: str | Path | None, root_dir: Path) -> list[Path]:
+    java_root = root_dir / "backend" / "src" / "main" / "java"
+    if not target:
+        if java_root.is_dir():
+            return sorted(java_root.rglob("*Controller.java"))
+        return sorted(root_dir.rglob("*Controller.java"))
+
     p = Path(target)
     if p.is_file():
         return [p.resolve()]
@@ -24,7 +30,6 @@ def _find_controller_files(target: str | Path, root_dir: Path) -> list[Path]:
         return sorted(p.rglob("*Controller.java"))
 
     target_str = str(target).strip()
-    java_root = root_dir / "backend" / "src" / "main" / "java"
 
     # target이 컨트롤러 클래스명(예: AstRelateApprController)인 경우 (062 #6)
     clean_target = target_str.removesuffix(".java")
@@ -194,7 +199,7 @@ def _analyze_guards(
 
     # 서비스 메서드 본문 탐색
     method_pat = re.compile(
-        r"^[ \t]{2,8}(?:public|protected)\s+(?!class)[\w<>\[\], ?.]+?\s+"
+        r"^[ \t]*(?:public|protected)\s+(?!class)[\w<>\[\], ?.]+?\s+"
         + re.escape(method_name)
         + r"\s*\([^)]*\)[^{;]*\{",
         re.MULTILINE,
@@ -247,6 +252,16 @@ def _analyze_guards(
     if "getCompanyId()" in body:
         guards.append("회사")
 
+    # 5) 서비스 내부 검사 호출 확인 (064 #13)
+    # 메서드 본문에서 check*, require*, verify*, load* 호출 탐색 (기존 등록 제외)
+    guard_call_pat = re.compile(r"\b(check[A-Z]\w*|require[A-Z]\w*|verify[A-Z]\w*|load[A-Z]\w*)\s*\(")
+    head_body = body[:1200]
+    for gm in guard_call_pat.finditer(head_body):
+        call_name = gm.group(1)
+        if call_name in ("requireSysAdmin", "requireRole", "checkMenu", "checkMine"):
+            continue
+        guards.append(f"서비스내부({call_name})")
+
     if not guards:
         guards.append("⚠없음")
 
@@ -273,28 +288,58 @@ def _match_parens(text: str, open_pos: int) -> tuple[str, int]:
     return text[open_pos + 1 :], len(text)
 
 
-def _extract_screen_api_paths(screen_num: str | int, root_dir: Path) -> list[str]:
-    """화면 번호(예: 1299)와 관련된 TSX 또는 화면 색인 문서에서 API 경로 패턴을 추출한다 (063 #5)."""
-    s_str = str(screen_num).strip().lstrip("#")
+def _extract_screen_api_paths(screen_input: str | int | list[str | int], root_dir: Path) -> list[str]:
+    """화면 번호(단일 또는 쉼표/공백 구분 복수)와 관련된 TOBE API 경로 목록을 추출한다 (063 #5, 064 #7)."""
+    if isinstance(screen_input, list):
+        screens = [str(s).strip() for s in screen_input if str(s).strip()]
+    elif isinstance(screen_input, (str, int)):
+        screens = [s.strip().lstrip("#") for s in re.split(r"[\s,]+", str(screen_input).strip()) if s.strip()]
+    else:
+        screens = []
+
     found_paths: set[str] = set()
 
-    for doc in root_dir.glob(f"docs/as-is/src/**/screens/*{s_str}*.md"):
-        txt = doc.read_text(encoding="utf-8", errors="replace")
-        for m in re.finditer(r"/api/v1/([a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-]+)", txt):
-            found_paths.add(m.group(1))
+    # 1. screen_desc 기반 정밀 추출 시도
+    try:
+        from yunhee.tools.trace.screen_desc import describe_screens
 
-    for tsx in root_dir.glob(f"frontend/src/pages/**/*{s_str}*.tsx"):
-        txt = tsx.read_text(encoding="utf-8", errors="replace")
-        for m in re.finditer(r"/api/v1/([a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-]+)", txt):
-            found_paths.add(m.group(1))
+        desc_res = describe_screens(screens, root_dir=root_dir)
+        for sc_data in desc_res.get("screens", []):
+            tb = sc_data.get("tobe") or {}
+            for api_entry in tb.get("apis", []):
+                parts = api_entry.split()
+                p_part = parts[1] if len(parts) > 1 and parts[0] in ("GET", "POST", "PUT", "DELETE", "PATCH") else parts[0]
+                clean_p = p_part.split("?")[0].strip()
+                if clean_p.startswith("/api/v1/"):
+                    clean_p = clean_p[len("/api/v1/"):]
+                elif clean_p.startswith("/api/"):
+                    clean_p = clean_p[len("/api/"):]
+                clean_p = clean_p.strip("/")
+                if clean_p:
+                    found_paths.add(clean_p)
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+    # 2. 파일 스캔 fallback (docs 및 frontend TSX)
+    for s_str in screens:
+        s_clean = s_str.lstrip("#")
+        for doc in root_dir.glob(f"docs/as-is/src/**/screens/*{s_clean}*.md"):
+            txt = doc.read_text(encoding="utf-8", errors="replace")
+            for m in re.finditer(r"/api/v1/([a-zA-Z0-9_\-]+(?:/[a-zA-Z0-9_\-]+)?)", txt):
+                found_paths.add(m.group(1).strip("/"))
+
+        for tsx in root_dir.glob(f"frontend/src/**/*{s_clean}*.tsx"):
+            txt = tsx.read_text(encoding="utf-8", errors="replace")
+            for m in re.finditer(r"/api/v1/([a-zA-Z0-9_\-]+(?:/[a-zA-Z0-9_\-]+)?)", txt):
+                found_paths.add(m.group(1).strip("/"))
 
     return sorted(found_paths)
 
 
 def collect_endpoints(
-    target: str | Path,
+    target: str | Path | None = None,
     path_filter: str | list[str] | None = None,
-    screen: str | int | None = None,
+    screen: str | int | list[str | int] | None = None,
     root_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     """지정된 도메인 또는 컨트롤러 파일에서 엔드포인트 목록을 정적 분석하여 반환한다."""
@@ -317,6 +362,9 @@ def collect_endpoints(
     if screen:
         screen_paths = _extract_screen_api_paths(screen, root_dir)
         filters.extend(screen_paths)
+        if not screen_paths:
+            # 화면이 지정되었으나 연관 API 경로를 하나도 찾지 못한 경우 (064 #7: 도메인 전체 유출 방지)
+            return []
 
     ctrl_files = _find_controller_files(target, root_dir)
     endpoints: list[dict[str, Any]] = []

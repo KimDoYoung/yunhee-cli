@@ -197,11 +197,11 @@ def world(tmp_path) -> World:
     (idx / "emp" / "screens" / "Emp00_Tab_TransInfo.md").write_text(ASIS_SCREEN, encoding="utf-8")
     (idx / "emp" / "screens" / "Emp09_Tab_Legacy.md").write_text("---\nsource_commit: a\n---\n# Emp09_Tab_Legacy\n- 종류: 화면\n", encoding="utf-8")
     (idx / "menus.md").write_text(MENUS, encoding="utf-8")
-    (idx / "_index.json").write_text(json.dumps(ASIS_INDEX), encoding="utf-8")
     src = tmp_path / "asis"
     (src / "server" / "emp" / "mapper").mkdir(parents=True)
     for name, xml in ASIS_MAPPERS.items():
         (src / "server" / "emp" / "mapper" / name).write_text(xml, encoding="utf-8")
+    (idx / "_index.json").write_text(json.dumps(ASIS_INDEX), encoding="utf-8")
     tobe = tmp_path / "tobe"
     for rel, text in {
         "frontend/src/pages/emp/Emp00_Tab_TransInfo.tsx": TOBE_TSX,

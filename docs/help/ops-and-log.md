@@ -65,12 +65,14 @@
 PostgreSQL 읽기 전용 쿼리를 실행하거나 `--rollback` 트랜잭션 격리 하에 시험 실행합니다.
 - **주요 옵션**:
   - `--rollback`: 쓰기 문장을 허용하되 반드시 종료 시 ROLLBACK
+  - `--allow-ddl` (`--ddl-in-tx`): `--rollback` 모드에서 트랜잭션 내 DDL(CREATE TEMP TABLE 등)을 허용 (단, COMMIT/ROLLBACK 직접 실행은 여전히 차단)
   - `--scalar`: 첫 행 첫 열 값만 단일 문자열로 출력 (스크립트용)
   - `-o, --output <FORMAT>`: `table`(기본), `tsv`, `csv`, `json`
 - **예시**:
   ```bash
   yunhee sql "SELECT count(*) FROM sys01_company" --scalar
   yunhee sql "UPDATE sys04_role SET note='test' WHERE role_cd='ADMIN'" --rollback
+  yunhee sql "CREATE TEMP TABLE t(id int); INSERT INTO t VALUES(1); SELECT * FROM t;" --rollback --allow-ddl
   ```
 
 ### `yunhee make-dbml [ENV_VAR]` (별칭: `dbml`)
@@ -116,6 +118,7 @@ PostgreSQL 읽기 전용 쿼리를 실행하거나 `--rollback` 트랜잭션 격
   - `--count-by <k>`: 응답 배열에서 특정 키의 값별 건수를 집계 요약 출력
   - `--log`: API 호출 직후 서버가 실제로 실행한 SQL 및 파라미터 요약 출력 (500 에러 시 원인 `Caused by:` 한 줄 표시)
   - `--track <테이블>[,<테이블>]`: 호출 전후 지정 테이블의 행 수 변화 및 새로 생긴 PK(`information_schema` 기준)를 한 줄로 출력 (예: `biz05_relate_appr: 40 → 41 (+1: biz05_relate_appr_id=202611059009067)`, 삭제 시 `41 → 40 (-1)`, 실패 시 `변화 없음`)
+  - `--children`: `--track` 지정 시 해당 테이블의 FK 자식 테이블들도 자동으로 함께 추적하여 행 수 증감 표시
 - **예시**:
   ```bash
   yunhee api GET /api/v1/sys/roles
@@ -151,7 +154,7 @@ TOBE 조회 API 응답과 AS-IS SQL 결과를 대조하여 행 수 및 그리드
   ```
 
 ### `yunhee log <subcommand>`
-- `yunhee log trace <trace_id>`: 단일 요청 trace ID의 실행 흐름 요약 및 실행 SQL/바인딩 파라미터 확인 (`--sql` 지원)
+- `yunhee log trace <trace_id>`: 단일 요청 trace ID의 실행 흐름 요약 및 실행 SQL/바인딩 파라미터 확인 (`--sql` 지원, Docker 소스 미발견 시 로컬 8080 `asseterp-data/logs` 자동 폴백)
 - `yunhee log req <method> <path>`: 접근 로그에서 특정 HTTP 메서드/경로 패턴의 최근 요청 검색 (`--trace` 지원)
 - `yunhee log errors`: 서버 로그의 WARN/ERROR 묶음 발생 빈도 및 스택 요약 (`--since 1h`, `--explain` 지원)
 - `yunhee log tail`: 최근 전체 서버 로그 흐름을 trace 단위로 접어서 요약 출력 (`--since 10m` 지원)

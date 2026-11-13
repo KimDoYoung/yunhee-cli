@@ -25,6 +25,36 @@ DEFAULT_LINK_APIS: dict[str, dict[str, str]] = {
 }
 
 
+def find_link_path_candidates(link_code: str, root_dir: Any = None) -> list[str]:
+    """해당 링크 코드 또는 시스템 내에서 결재 연동 가능한 PUT .../appr-id 또는 .../appr API 후보를 탐색한다 (064 #10)."""
+    # 알려진 연동 코드별 후보 매핑 테이블 (FND / ICS / TDM 등)
+    KNOWN_CANDIDATES: dict[str, list[str]] = {
+        "A27": ["/api/v1/ics/checklist-confirms/relate-apprs/appr-id"],
+        "A32": ["/api/v1/ics/compliance-reports/appr-id"],
+        "A60": ["/api/v1/est/pf-contracts/{ref}/plan-appr-id"],
+        "A61": ["/api/v1/est/pf-contracts/{ref}/plan-appr-id"],
+    }
+    if link_code in KNOWN_CANDIDATES:
+        return KNOWN_CANDIDATES[link_code]
+
+    from pathlib import Path
+
+    from yunhee.config import WORK_DIR
+    from yunhee.tools.biz.endpoints import collect_endpoints
+
+    rd = Path(root_dir) if root_dir else WORK_DIR
+    try:
+        eps = collect_endpoints(root_dir=rd)
+        cands: list[str] = []
+        for ep in eps:
+            p = ep.get("path", "")
+            if ep.get("method") == "PUT" and p.endswith(("/appr-id", "/appr")):
+                cands.append(p)
+        return cands
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def get_class_tree_id(link_code: str, company_id: int | str, db_name: str | None = None) -> int | None:
     """dcr30_link 테이블에서 회사의 링크코드에 연결된 classTreeId를 조회한다."""
     try:
@@ -72,6 +102,9 @@ def run_appr(
     dry_run: bool = False,
     pre: str | None = None,
     seed_args: list[str] | None = None,
+    title: str | None = None,
+    content: str | None = None,
+    link_body: str | None = None,
 ) -> list[str]:
     """전자결재 상신 및 승인/반려 전체 흐름을 실행하고 결과 요약 라인 목록을 반환한다."""
     if approvers is None:
@@ -132,7 +165,9 @@ def run_appr(
     l_style = link_style or link_info.get("style", "query")
 
     if not l_path:
-        raise ValueError(f"⚠ 링크코드 {link_code}의 연결 API를 모릅니다 — --link-path로 주세요")
+        cands = find_link_path_candidates(link_code)
+        cand_msg = f" (후보: {', '.join(cands[:5])})" if cands else ""
+        raise ValueError(f"⚠ 링크코드 {link_code}의 연결 API를 모릅니다 — --link-path로 주세요{cand_msg}")
 
     # 1. 상신자 계정 정보 조회
     _user, _pw, user_info = api_client.resolve_user_credentials(as_user, company_code=company, password=password)
@@ -215,9 +250,11 @@ def run_appr(
             seed_data = txt_obj.get("data", {})
         except Exception:  # noqa: BLE001
             seed_data = {}
+    if not isinstance(seed_data, dict):
+        seed_data = {}
 
-    title = seed_data.get("title") or f"{link_code} 신청서"
-    content = seed_data.get("content") or "<p>(본문 없음)</p>"
+    doc_title = title or seed_data.get("title") or f"{link_code} 신청서"
+    doc_content = content or seed_data.get("content") or "<p>(본문 없음)</p>"
     now_utc = datetime.datetime.now(tz=datetime.UTC)
     raw_effect = seed_data.get("effectDate")
     if not raw_effect:
@@ -243,7 +280,10 @@ def run_appr(
     ]
 
     for idx, apr_u in enumerate(approvers):
-        _, _, apr_info = api_client.resolve_user_credentials(apr_u, company_code=company, password=password)
+        try:
+            _, _, apr_info = api_client.resolve_user_credentials(apr_u, company_code=company, password=password)
+        except Exception as e:
+            raise ValueError(f"결재자({apr_u}) 로그인 실패: {e}") from e
         apr_emp_id = apr_info.get("user_id")
         steps.append({
             "stepTypeCode": "10",
@@ -257,8 +297,8 @@ def run_appr(
         "mode": "request",
         "classTreeId": class_tree_id,
         "linkCode": link_code,
-        "title": title,
-        "content": content,
+        "title": doc_title,
+        "content": doc_content,
         "effectDate": effect_date,
         "regDate": reg_date,
         "signCompany": sign_company,
@@ -266,17 +306,32 @@ def run_appr(
         "steps": steps,
     }
 
-    target_path = l_path.replace("{ref}", str(primary_ref)).replace("{id}", str(primary_ref))
-    if l_style == "ids-body":
-        link_body_desc = f"{target_path} (본문: {json.dumps({'ids': ids, 'apprId': appr_id})})"
-    elif l_style == "body":
-        link_body_desc = f"{target_path} (본문: {json.dumps({'apprId': appr_id})})"
+    target_path = ""
+    link_body_desc = ""
+    if l_path:
+        target_path = l_path.replace("{ref}", str(primary_ref)).replace("{id}", str(primary_ref))
+        if link_body:
+            rendered_lb = link_body.replace("{ref}", str(primary_ref)).replace("{id}", str(primary_ref)).replace("{apprId}", str(appr_id))
+            link_body_desc = f"{target_path} (본문: {rendered_lb})"
+        elif l_style == "ids-body":
+            link_body_desc = f"{target_path} (본문: {json.dumps({'ids': ids, 'apprId': appr_id})})"
+        elif l_style == "body":
+            link_body_desc = f"{target_path} (본문: {json.dumps({'apprId': appr_id})})"
+        else:
+            link_body_desc = f"{target_path}?apprId={appr_id}"
     else:
-        link_body_desc = f"{target_path}?apprId={appr_id}"
+        candidates = find_link_path_candidates(link_code)
+        cand_str = ", ".join(f"PUT {c}" for c in candidates) if candidates else "알 수 없음"
+        link_body_desc = f"(연결 경로 미정 — 후보: {cand_str})"
 
     if dry_run:
         output_lines.append(f"드라이런 페이로드 (PUT /api/v1/apr/apprs/{appr_id}):\n" + json.dumps(payload, ensure_ascii=False, indent=2))
-        output_lines.append(f"연결 PUT {link_body_desc}")
+        if l_path:
+            output_lines.append(f"연결 PUT {link_body_desc}")
+        else:
+            cands = find_link_path_candidates(link_code)
+            cand_msg = f" — 후보: {', '.join(f'PUT {c}' for c in cands)}" if cands else ""
+            output_lines.append(f"상신은 했으나 업무 행 연결 없음{cand_msg} (--link-path로 지정)")
         return output_lines
 
     # 6. 상신 PUT 호출
@@ -291,10 +346,39 @@ def run_appr(
     if not res_put.ok:
         raise ValueError(f"결재 상신 실패 (PUT /api/v1/apr/apprs/{appr_id}): {res_put.error}")
 
-    output_lines.append(f"상신 apprId={appr_id} 「{title}」 상태 10")
+    output_lines.append(f"상신 apprId={appr_id} 「{doc_title}」 상태 10")
 
     # 7. 업무 행에 결재 ID 연결
-    if l_style == "ids-body":
+    if not l_path:
+        cands = find_link_path_candidates(link_code)
+        cand_msg = f" — 후보: {', '.join(f'PUT {c}' for c in cands)}" if cands else ""
+        output_lines.append(f"상신은 했으나 업무 행 연결 없음{cand_msg} (--link-path로 지정)")
+    elif link_body:
+        rendered_lb = link_body.replace("{ref}", str(primary_ref)).replace("{id}", str(primary_ref)).replace("{apprId}", str(appr_id))
+        try:
+            lb_json = json.loads(rendered_lb)
+            res_link = api_client.request_api(
+                "PUT",
+                target_path,
+                as_role=as_user,
+                company_code=company,
+                password=password,
+                json_body=lb_json,
+            )
+        except Exception:  # noqa: BLE001
+            res_link = api_client.request_api(
+                "PUT",
+                target_path,
+                as_role=as_user,
+                company_code=company,
+                password=password,
+                data=rendered_lb,
+            )
+        if not res_link.ok:
+            output_lines.append(f"⚠ 업무 행 연결 실패 (PUT {target_path}): {res_link.error}")
+        else:
+            output_lines.append(f"연결 PUT {target_path} → 200")
+    elif l_style == "ids-body":
         res_link = api_client.request_api(
             "PUT",
             target_path,
@@ -303,6 +387,10 @@ def run_appr(
             password=password,
             json_body={"ids": ids, "apprId": appr_id},
         )
+        if not res_link.ok:
+            output_lines.append(f"⚠ 업무 행 연결 실패 (PUT {target_path}): {res_link.error}")
+        else:
+            output_lines.append(f"연결 PUT {target_path} → 200")
     elif l_style == "body":
         res_link = api_client.request_api(
             "PUT",
@@ -312,6 +400,10 @@ def run_appr(
             password=password,
             json_body={"apprId": appr_id},
         )
+        if not res_link.ok:
+            output_lines.append(f"⚠ 업무 행 연결 실패 (PUT {target_path}): {res_link.error}")
+        else:
+            output_lines.append(f"연결 PUT {target_path} → 200")
     else:
         res_link = api_client.request_api(
             "PUT",
@@ -321,11 +413,10 @@ def run_appr(
             password=password,
             params={"apprId": str(appr_id)},
         )
-
-    if not res_link.ok:
-        output_lines.append(f"⚠ 업무 행 연결 실패 (PUT {target_path}): {res_link.error}")
-    else:
-        output_lines.append(f"연결 PUT {target_path} → 200")
+        if not res_link.ok:
+            output_lines.append(f"⚠ 업무 행 연결 실패 (PUT {target_path}): {res_link.error}")
+        else:
+            output_lines.append(f"연결 PUT {target_path} → 200")
 
     # 8. 결재자 승인 또는 반려
     if confirm or reject:

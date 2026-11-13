@@ -13,6 +13,7 @@ GREP_MAX_SIDE_CONTEXT = 20
 
 def is_allowed_read_path(p: Path) -> bool:
     """cat / grep이 읽을 수 있는 허용 범위 경로인지 검사한다 (/etc/passwd 등 시스템 경로 차단)."""
+    import os
     import tempfile
 
     resolved = p.resolve()
@@ -22,6 +23,9 @@ def is_allowed_read_path(p: Path) -> bool:
         config.WORK_DIR,
         getattr(config, "TOBE_SRC_DIR", None),
         getattr(config, "ASIS_SRC_DIR", None),
+        getattr(config, "LOG_DIR", None),
+        os.getenv("YUNHEE_LOG_DIR"),
+        Path.home() / "tmp",
         config.YUNHEE_DIR,
         Path(tempfile.gettempdir()),
         Path("/tmp"),

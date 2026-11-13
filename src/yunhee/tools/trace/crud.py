@@ -218,11 +218,16 @@ def _compare(
     t: dict[str, set[str]],
     other_tobe: dict[str, list[str]] | None = None,
     udm_c_only: set[str] | None = None,
+    unreachable_ops: dict[str, set[str]] | None = None,
 ) -> list[str]:
     lines = []
+    unreachable_ops = unreachable_ops or {}
     for table in sorted(set(a) | set(t)):
         sa, st = a.get(table, set()), t.get(table, set())
         note = ""
+        table_unreach = unreachable_ops.get(table, set())
+        unreach_in_sa = sa & table_unreach
+
         if table not in t:
             others = (other_tobe or {}).get(table, [])
             if others:
@@ -238,11 +243,93 @@ def _compare(
             if udm_c_only and table in udm_c_only and "C" in lost and "U" in st:
                 lost = lost - {"C"}
                 c_note = "  (ASIS UDM 등록·수정 공용)"
+            # 064 #5: 도달 불가 작업은 lost에서 제외하여 불필요한 경고 차단
+            if lost and unreach_in_sa:
+                lost = lost - unreach_in_sa
             warn = f"  ⚠ TOBE에 {_fmt(lost)} 없음" if lost else ""
             added = f"  (TOBE에 {_fmt(st - sa)} 추가)" if st - sa else ""
             note = f"{warn}{c_note}{added}"
-        lines.append(f"  {table}: ASIS {_fmt(sa) or '-'} / TOBE {_fmt(st) or '-'}{note}")
+
+        if unreach_in_sa:
+            sa_reach = sa - unreach_in_sa
+            sa_str = f"{_fmt(sa_reach) or '-'}({_fmt(unreach_in_sa)} 도달 불가)"
+        else:
+            sa_str = _fmt(sa) or "-"
+
+        lines.append(f"  {table}: ASIS {sa_str} / TOBE {_fmt(st) or '-'}{note}")
     return lines
+
+
+def find_unreachable_ops(
+    doc: ScreenDoc,
+    ctx: TraceContext,
+    ops_by_sql: dict[str, dict[str, set[str]]],
+    udm: dict[str, dict[str, set[str]]],
+) -> dict[str, set[str]]:
+    """AS-IS 화면 문서 및 소스에서 도달 불가 이벤트로 식별된 메서드가 유발하는 테이블별 CRUD 작업을 수집한다 (064 #5)."""
+    unreach_methods: set[str] = set()
+    unreach_services: set[str] = set()
+
+    # 1. ASIS 소스 파일 직접 분석 (events.py 활용)
+    if ctx.src_root and doc.file:
+        root = Path(ctx.src_root)
+        fname = Path(doc.file).name
+        java_cands = list(root.rglob(fname))
+        if java_cands:
+            p = java_cands[0]
+            try:
+                from yunhee.tools.as_is.events import extract_events_and_methods
+
+                text = p.read_text(encoding="utf-8", errors="replace")
+                evs, minfos = extract_events_and_methods(text, p.name)
+                for ev in evs:
+                    if ev.is_unreachable:
+                        clean_act = ev.action.split("(")[0].strip()
+                        if clean_act:
+                            unreach_methods.add(clean_act)
+                for mi in minfos:
+                    m_base = mi.name.split("(")[0].split()[-1]
+                    if m_base in unreach_methods:
+                        for sm in re.finditer(r"(?:서비스|GridDeleteData|ServiceRequest)\s+([\w.]+)", mi.work_desc):
+                            unreach_services.add(sm.group(1).strip())
+            except Exception:  # noqa: BLE001, S110
+                pass
+
+    # 2. doc.ui 의 event_rows 또는 events 에서 unreachable 확인 (fallback)
+    if not unreach_services:
+        for ui in doc.ui.values():
+            for er in ui.event_rows:
+                if er.unreachable:
+                    for hm in er.handler_methods:
+                        unreach_methods.add(hm)
+            for ev_str in ui.events:
+                if "도달 불가" in ev_str or "unreachable" in ev_str.lower():
+                    m = re.search(r"→\s*(\w+)", ev_str)
+                    if m:
+                        unreach_methods.add(m.group(1))
+
+        for ui in doc.ui.values():
+            for mr in ui.methods:
+                if mr.name in unreach_methods:
+                    for sm in re.finditer(r"(?:서비스|GridDeleteData|ServiceRequest)\s+([\w.]+)", mr.action):
+                        unreach_services.add(sm.group(1).strip())
+
+    for svc in doc.services:
+        for meth in unreach_methods:
+            if any(meth in c for c in svc.callers):
+                unreach_services.add(svc.key)
+
+    unreach_ops: dict[str, set[str]] = defaultdict(set)
+    for svc_key in unreach_services:
+        for svc in doc.services:
+            if svc.key == svc_key:
+                for sql_id in svc.sql_ids:
+                    for tbl, ops in ops_by_sql.get(sql_id, {}).items():
+                        unreach_ops[tbl] |= ops
+        for tbl, ops in udm.get(svc_key, {}).items():
+            unreach_ops[tbl] |= ops
+
+    return dict(unreach_ops)
 
 
 def _domain_docs(ctx: TraceContext, domain: str | None) -> list[tuple[str, str, ScreenDoc]]:
@@ -313,8 +400,9 @@ def trace_crud(
             all_sources["tobe"].update(t_src)
 
             udm_c = udm_c_only_tables(doc, a, a_ops)
+            unreach_ops = find_unreachable_ops(doc, ctx, a_ops, udm)
             other_tobe = _other_tobe_screens(doc, set(screen_names), idx, t_ops)
-            res.facts.append(f"화면 {name}: 테이블 {len(set(a) | set(t))}개 (ASIS {len(a)} / TOBE {len(t)})\n" + "\n".join(_compare(a, t, other_tobe=other_tobe, udm_c_only=udm_c)))
+            res.facts.append(f"화면 {name}: 테이블 {len(set(a) | set(t))}개 (ASIS {len(a)} / TOBE {len(t)})\n" + "\n".join(_compare(a, t, other_tobe=other_tobe, udm_c_only=udm_c, unreachable_ops=unreach_ops)))
 
             if why_tbl:
                 evidence_lines = [f"테이블 {why_tbl}의 CRUD 근거:"]

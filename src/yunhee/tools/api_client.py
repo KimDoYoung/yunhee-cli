@@ -438,6 +438,25 @@ def header_tag(
     return f"[{' · '.join(parts)}]" if parts else ""
 
 
+def _find_optional_params(path: str) -> list[str]:
+    """해당 GET API 엔드포인트의 선택 쿼리 파라미터(? 표시) 목록을 탐색한다."""
+    try:
+        from yunhee.tools.biz.endpoints import collect_endpoints
+
+        clean_path = path.split("?")[0].rstrip("/")
+        eps = collect_endpoints()
+        for ep in eps:
+            ep_path = ep.get("path", "").rstrip("/")
+            if ep.get("method") == "GET" and (ep_path == clean_path or clean_path.endswith(ep_path)):
+                params = ep.get("params", [])
+                opt_params = [p for p in params if p.endswith("?")]
+                if opt_params:
+                    return opt_params
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return []
+
+
 def summarize_response(
     status_code: int,
     text: str,
@@ -490,6 +509,34 @@ def summarize_response(
             lines.append(f"Content: {preview}")
         return _finalize("\n".join(lines))
 
+    # 400 또는 Validation failed 감지 (#8)
+    val_errors: list[str] = []
+    if isinstance(data, dict):
+        if isinstance(data.get("errors"), list):
+            for err_item in data["errors"]:
+                if isinstance(err_item, dict) and "field" in err_item:
+                    fld = err_item.get("field")
+                    dmsg = err_item.get("defaultMessage") or err_item.get("message") or "검증 실패"
+                    val_errors.append(f"{fld}: {dmsg}")
+        msg_str = str(data.get("message", ""))
+        if "Validation failed" in msg_str or "MethodArgumentNotValidException" in msg_str:
+            pat = re.compile(r"Field error in object '[^']*' on field '([^']+)':.*?default message \[([^\]]+)\]")
+            for m in pat.finditer(msg_str):
+                pair = f"{m.group(1)}: {m.group(2)}"
+                if pair not in val_errors:
+                    val_errors.append(pair)
+            if not val_errors:
+                pat2 = re.compile(r"on field '([^']+)'.*?\[([^\]]+)\]")
+                for m in pat2.finditer(msg_str):
+                    val_errors.append(f"{m.group(1)}: {m.group(2)}")
+    elif "Validation failed" in text:
+        pat = re.compile(r"on field '([^']+)':.*?default message \[([^\]]+)\]")
+        for m in pat.finditer(text):
+            val_errors.append(f"{m.group(1)}: {m.group(2)}")
+
+    if val_errors:
+        lines.append(f"Validation: {', '.join(val_errors)}")
+
     target_list = None
 
     # 1. 공통 응답 봉투(success, code, data) 언래핑
@@ -526,6 +573,10 @@ def summarize_response(
 
     if target_list is not None:
         lines.append(f"Rows: {len(target_list)}")
+        if len(target_list) == 0 and path:
+            hint_params = _find_optional_params(path)
+            if hint_params:
+                lines.append(f"💡 선택 파라미터: {', '.join(hint_params)} (안 준 값에 서버 기본값이 걸릴 수 있음)")
         if target_list and isinstance(target_list[0], dict):
             first_keys = list(target_list[0].keys())
             lines.append(f"Fields ({len(first_keys)}): [{', '.join(first_keys[:15])}]")
@@ -600,7 +651,11 @@ _PCT_HEX_RE = re.compile(r"%[0-9A-Fa-f]{2}")
 _TABLE_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$")
 
 
-def snapshot_tables(track_spec: str | list[str] | None, db_name: str | None = None) -> dict[str, dict[str, Any]]:
+def snapshot_tables(
+    track_spec: str | list[str] | None,
+    db_name: str | None = None,
+    track_children: bool = False,
+) -> dict[str, dict[str, Any]]:
     """--track에 지정된 테이블들의 호출 전 행 수와 PK 집합을 스냅샷으로 저장한다."""
     if not track_spec:
         return {}
@@ -610,6 +665,19 @@ def snapshot_tables(track_spec: str | list[str] | None, db_name: str | None = No
         tables = [t.strip() for item in track_spec for t in item.split(",") if t.strip()]
     if not tables:
         return {}
+
+    if track_children:
+        try:
+            from yunhee.tools.biz.orphans import find_child_tables
+
+            extra_children: list[str] = []
+            for t in tables:
+                extra_children.extend(find_child_tables(t, db_name=db_name))
+            for ct in extra_children:
+                if ct not in tables:
+                    tables.append(ct)
+        except Exception:  # noqa: BLE001, S110
+            pass
 
     import psycopg
 
@@ -786,6 +854,7 @@ def request_api(
     wait_deploy: float | None = None,
     raw_param: bool = False,
     track: str | list[str] | None = None,
+    track_children: bool = False,
     fresh: bool = False,
     password: str | None = None,
     force_login: bool = False,
@@ -899,7 +968,7 @@ def request_api(
     elif json_body is not None:
         req_kwargs["json"] = json_body
 
-    before_track_snaps = snapshot_tables(track) if track else {}
+    before_track_snaps = snapshot_tables(track, track_children=track_children) if track else {}
 
     start = time.perf_counter()
     try:

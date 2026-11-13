@@ -243,6 +243,30 @@ def eval_test_condition_status(
     if not test:
         return True, ""
 
+    # ${isPostgreSql} / ${isOracle} 등 자리표시 치환 (064 #3)
+    if "${isPostgreSql}" in test:
+        test = test.replace("${isPostgreSql}", "true")
+    if "${isOracle}" in test:
+        test = test.replace("${isOracle}", "false")
+    if "${isTibero}" in test:
+        test = test.replace("${isTibero}", "false")
+
+    if test.lower() in ("true", "'true'", '"true"'):
+        return True, ""
+    if test.lower() in ("false", "'false'", '"false"'):
+        return False, ""
+
+    # 기본 DB 환경 파라미터 보충
+    if "isPostgreSql" not in params:
+        params = dict(params)
+        params["isPostgreSql"] = True
+    if "isOracle" not in params:
+        params = dict(params) if not isinstance(params, dict) else params
+        params["isOracle"] = False
+    if "isTibero" not in params:
+        params = dict(params) if not isinstance(params, dict) else params
+        params["isTibero"] = False
+
     # 변수명 추정 (test 내 첫 식별자)
     v_match = re.search(r"\b([a-zA-Z_]\w*)\b", test)
     var_name = v_match.group(1) if v_match else ""
@@ -1128,6 +1152,12 @@ def render_with_meta(
     missing_params: list[str] = []
     branch_log: list[str] = []
     local_params = dict(params)
+    if "isPostgreSql" not in local_params:
+        local_params["isPostgreSql"] = True
+    if "isOracle" not in local_params:
+        local_params["isOracle"] = False
+    if "isTibero" not in local_params:
+        local_params["isTibero"] = False
 
     rendered = render_node(
         st.node,
@@ -1167,6 +1197,10 @@ def render_with_meta(
 
     def replace_dollar(m: re.Match) -> str:
         var = m.group(1).strip()
+        if var == "isPostgreSql":
+            return "true"
+        if var in ("isOracle", "isTibero"):
+            return "false"
         if "," in var:
             var = var.split(",")[0].strip()
         if var in local_params and local_params[var] is not None:
@@ -1176,7 +1210,7 @@ def render_with_meta(
             if type_pfx == "b":
                 return "TRUE" if bool(val) else "FALSE"
             return str(val)
-        return "1"
+        return m.group(0)
 
     sql = re.sub(r"#\{([^}]+)\}", replace_sharp, rendered)
     sql = re.sub(r"\$\{([^}]+)\}", replace_dollar, sql)
@@ -1184,6 +1218,11 @@ def render_with_meta(
     # 정리: 중복 주석 제거 등
     sql = re.sub(r"<!--.*?-->", " ", sql, flags=re.DOTALL)
     sql = sql.strip().rstrip(";")
+
+    # 미치환 ${...} 감지 (064 #3)
+    unresolved_dollars = re.findall(r"\$\{[^}]+\}", sql)
+    if unresolved_dollars:
+        sql += f"\n-- ⚠ 치환 못 한 자리표시: {', '.join(unresolved_dollars)} → SQL 행 수를 믿지 말 것"
 
     # 고유한 누락 파라미터 목록
     unique_missing = sorted(set(missing_params))

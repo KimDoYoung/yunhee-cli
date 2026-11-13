@@ -8,9 +8,10 @@
 
 | 명령어 | 주요 기능 | 주요 옵션 |
 | :--- | :--- | :--- |
-| `biz-endpoints <target>` | Spring Boot 컨트롤러 엔드포인트·DTO·서비스·권한 가드 정적 분석 (클래스명 직접 지원) | `-o md\|json\|tsv`, `--path` (반복/쉼표), `--screen` |
-| `biz-authz <target>` | API URL과 메뉴 인가를 대조하여 허용 여부 판정 및 취약 엔드포인트 진단 | `-u`, `-c`, `--probe-write`, `--probe-appr`, `--path`, `--screen`, `--dry-run` |
-| `biz-appr <link_code>` | 업무 문서와 결재 연동 상신·연결·승인/반려 단계 자동화 | `--ref` (반복), `--pre`, `--link-path`, `--seed-arg`, `-u`, `-c`, `--approver`, `--confirm`, `--reject` |
+| `biz-endpoints [target]` | Spring Boot 컨트롤러 엔드포인트·DTO·서비스·권한 가드 정적 분석 (클래스명 직접 지원, target 생략 시 전체 컨트롤러 스캔) | `-o md\|json\|tsv`, `--path` (반복/쉼표), `--screen` (복수/쉼표) |
+| `biz-authz <target>` | API URL과 메뉴 인가를 대조하여 허용 여부 판정 및 취약 엔드포인트 진단 | `-u`, `-c`, `--probe-write`, `--probe-appr`, `--path`, `--screen`, `--dry-run`, `--lint-delete-by-id` |
+| `biz-appr <link_code>` | 업무 문서와 결재 연동 상신·연결·승인/반려 단계 자동화 | `--ref` (반복), `--pre`, `--link-path`, `--seed-arg`, `--title`, `--content`, `--link-body`, `-u`, `-c`, `--approver`, `--confirm`, `--reject` |
+| `biz-orphans <parent_table>` | FK 부모-자식 관계 기반 고아(Orphan) 행 탐색 및 누락된 자식 삭제 API 진단 | `-c`, `--children` |
 | `biz-patch <method> <path>` | 조회된 API 데이터를 수정하여 저장하고 필드 누락 검증 | `--set key=val`, `-b/--raw-body`, `--where "k=v"`, `--list`, `--drop-suffix` |
 | `biz-code [kind]` | 공통코드 종류(종류명/코드값) 및 상세 코드 목록 조회 (회사별 명칭 지원) | `--like`, `-c`, `--db` |
 | `biz-db-write` | 로컬 DB 대상 안전한 쓰기 실행 (자동 `pg_dump` 백업 및 되돌리기 안내) | `-f`, `-e`, `--no-backup`, `--dry-run` |
@@ -24,7 +25,8 @@
 Spring Boot 컨트롤러, DTO, 서비스 소스를 정적으로 분석하여 HTTP 메서드, 경로, 본문 DTO 필드, 호출 서비스, 권한 검사(Guards)를 추출합니다.
 
 ```bash
-# 특정 도메인(pay, att 등) 또는 컨트롤러 클래스명 직접 분석
+# 특정 도메인(pay, att 등) 또는 컨트롤러 클래스명 직접 분석 (생략 시 전체 컨트롤러 스캔)
+yunhee biz-endpoints
 yunhee biz-endpoints pay
 yunhee biz-endpoints AstRelateApprController
 
@@ -32,8 +34,9 @@ yunhee biz-endpoints AstRelateApprController
 yunhee biz-endpoints pay --path work-times -o json
 yunhee biz-endpoints ast --path owner-capitals --path invest-limits
 
-# 화면 번호 연관 API 자동 필터링
-yunhee biz-endpoints ast --screen 1299
+# 화면 번호 연관 API 자동 필터링 (복수 및 쉼표 지정 지원)
+yunhee biz-endpoints --screen 1299
+yunhee biz-endpoints --screen '1299, 1300'
 ```
 
 - **권한 가드(Guards) 판정**:
@@ -41,6 +44,7 @@ yunhee biz-endpoints ast --screen 1299
   - `메뉴/역할`: `@PreAuthorize`, `@Secured`, 역할 검사
   - `본인`: 세션 사용자 본인 ID 일치 검사 (`requireSelf` 등)
   - `회사`: 세션 회사 ID 조건 (`companyId` 매핑)
+  - `서비스내부(메서드명)`: 서비스 진입부 검사 메서드(`check*`, `require*`, `verify*`, `load*`)
   - `⚠없음`: 컨트롤러 및 서비스에 권한 검사 로직이 감지되지 않음 (쓰기 a·조회 b 요약 표시)
 
 ---
@@ -53,15 +57,15 @@ yunhee biz-endpoints ast --screen 1299
 # 사원(401) 계정으로 pay 도메인의 인가 상태 분석 (안전 GET 프로브 포함)
 yunhee biz-authz pay -u 401 -c kalpa
 
-# 특정 경로 또는 화면 번호에 대해 빈 페이로드({})로 쓰기 권한 검사 프로브
+# 특정 경로 또는 화면 번호에 대해 빈 페이로드({})로 쓰기 권한 검사 프로브 (--dry-run 시 실제 요청 없이 시뮬레이션)
 yunhee biz-authz pay --path work-times -u 401 -c kalpa --probe-write
-yunhee biz-authz ast --screen 1299 -u 401 -c kalpa --probe-write
+yunhee biz-authz ast --screen 1299 -u 401 -c kalpa --probe-write --dry-run
 
 # 결재 ID 바꿔치기(apprId=1) 프로브 시험 (원복 보장)
 yunhee biz-authz pay --probe-appr -u 401 -c kalpa
 
-# 프로브 없이 정적 메뉴 인가만 대조
-yunhee biz-authz att -u 401 -c kalpa --dry-run
+# DELETE API에서 companyId 조건 누락 취약점 검출 (정적 코드 분석)
+yunhee biz-authz pay --lint-delete-by-id
 ```
 
 ---
@@ -77,8 +81,9 @@ yunhee biz-appr A74 --ref 12345 -u 401 -c kalpa --approver 301 --confirm
 # 상신 전 선행 업무 데이터 자동 생성 후 결재 연동
 yunhee biz-appr A02 --pre 'POST /api/v1/fnd/funds {"fundCode": "F01"}' -u 401 -c kalpa --confirm
 
-# 복수 ref 건 지정 및 커스텀 연결 경로/시드 인자 전달
+# 복수 ref 건 지정 및 커스텀 연결 경로/시드 인자/제목/본문 전달
 yunhee biz-appr A64 --ref 101 --ref 102 --link-path /api/v1/ast/relate-apprs --seed-arg "relateType=1" -u 401 -c kalpa
+yunhee biz-appr A60 --ref 501 --title "투자한도 결재" --link-body '{"limitId": {ref}, "apprId": {apprId}}' -u 401 -c kalpa
 
 # 반려 처리
 yunhee biz-appr A74 --ref 12345 -u 401 -c kalpa --approver 301 --reject
@@ -89,7 +94,18 @@ yunhee biz-appr A74 --ref 12345 -u 401 -c kalpa --approver 301
 
 ---
 
-## 4. `biz-patch` — API 단일 객체/목록 필드 안전 수정
+## 4. `biz-orphans` — 고아(Orphan) 행 탐색 및 무결성 진단
+
+FK 부모-자식 관계를 분석하여 부모가 삭제되었으나 자식 테이블에 남아있는 고아 데이터가 있는지 조회하고, 컨트롤러에 자식 데이터 삭제 누락 여부를 진단합니다.
+
+```bash
+# 부모 테이블 기준 자식 테이블의 고아 행 검사
+yunhee biz-orphans ast01_invest_limit -c kalpa
+```
+
+---
+
+## 5. `biz-patch` — API 단일 객체/목록 필드 안전 수정
 
 현재 API 응답 데이터를 읽어와서 지정한 필드만 변경한 뒤 PUT/POST로 다시 저장합니다. 저장 시 원본 필드가 소실되는지(`wiped_fields`) 자동으로 검증합니다.
 

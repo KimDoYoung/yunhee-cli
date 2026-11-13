@@ -20,11 +20,16 @@ SUPPORTED_OUTPUT_FORMATS = ("table", "tsv", "csv", "json")
 BUILTIN_SQL_DIR = Path(__file__).resolve().parent / "sql"
 
 
-# 두 모드 모두 막는 문장 (첫 키워드 기준). COMMIT/END/PREPARE TRANSACTION은 실제 저장, DDL은 롤백 대상이 아니라고 본다.
-BLOCKED_ALWAYS = {
-    "COMMIT", "END", "PREPARE", "CREATE", "ALTER", "DROP", "TRUNCATE",
-    "GRANT", "REVOKE", "COMMENT", "REINDEX", "VACUUM", "CLUSTER", "REFRESH",
+# DDL 키워드 목록
+DDL_KEYWORDS = {
+    "CREATE", "ALTER", "DROP", "TRUNCATE", "GRANT", "REVOKE", "COMMENT", "REINDEX",
 }
+# 두 모드 모두 무조건 막는 문장 (COMMIT/END는 트랜잭션 강제 종료, VACUUM/CLUSTER/REFRESH 등은 트랜잭션 내 실행 불가)
+BLOCKED_TRANSACTION = {
+    "COMMIT", "END", "PREPARE", "VACUUM", "CLUSTER", "REFRESH",
+}
+# 일반적인 경우 항상 막는 문장 (COMMIT/END/DDL)
+BLOCKED_ALWAYS = BLOCKED_TRANSACTION | DDL_KEYWORDS
 # 기본(읽기 전용) 모드에서 추가로 막는 문장. CALL·DO는 안에서 무엇을 할지 모르므로 무조건 막는다.
 WRITE_KEYWORDS = {"INSERT", "UPDATE", "DELETE", "MERGE", "CALL", "DO", "COPY", "LOCK"}
 # 기본 모드에서 막는 트랜잭션 제어문 (ROLLBACK·SAVEPOINT·SET은 허용)
@@ -142,10 +147,21 @@ def _mask_strings(sql: str) -> str:
     return re.sub(r"'(?:[^']|'')*'", "''", sql)
 
 
-def guard_statement(stmt: str, rollback: bool) -> str | None:
+def guard_statement(
+    stmt: str,
+    rollback: bool,
+    allow_ddl: bool = False,
+    is_postgres: bool = True,
+) -> str | None:
     """실행 전 안전 가드. 막아야 하면 오류 문구, 아니면 None."""
     kw = first_keyword(stmt)
     if not kw:
+        return None
+    if rollback and allow_ddl:
+        if not is_postgres:
+            return "안전 가드: DDL 트랜잭션 롤백은 PostgreSQL에서만 지원됩니다."
+        if kw in BLOCKED_TRANSACTION:
+            return f"안전 가드: --rollback 모드에서는 '{kw}' 문장을 실행할 수 없습니다."
         return None
     if kw in BLOCKED_ALWAYS:
         mode = "--rollback 모드" if rollback else "읽기 전용 모드"
@@ -362,6 +378,7 @@ def run_sql(
     file_path: Path | None = None,
     builtin: str | None = None,
     rollback: bool = False,
+    allow_ddl: bool = False,
     limit: int | None = None,
     timeout: float = 10.0,
     vars_dict: dict[str, Any] | None = None,
@@ -417,7 +434,7 @@ def run_sql(
 
     # 안전 가드 (두 모드 공통): DB에 맡기기 전에 실행 전 거부한다.
     for stmt in stmts:
-        err = guard_statement(stmt, rollback)
+        err = guard_statement(stmt, rollback, allow_ddl=allow_ddl, is_postgres=True)
         if err:
             return ToolResult(ok=False, error=err)
 
