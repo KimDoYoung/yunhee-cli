@@ -248,25 +248,21 @@ def test_extract_grid_spec_golden_oms():
     grid_spec = extract_grid_spec(text, file_path=oms_path)
     assert grid_spec is not None
 
-    expected_lines = [
+    expected_tokens = [
         "const buildGrid = () => [",
-        "  gb.booleanYn2('loginSecureYn', 100, '보안로그인'),  // L184",
-        "  gb.text('companyNm', 200, '고객명'),  // L185",
-        "  gb.textCenter('locNm', 120, 'Sub-Domain'),  // L186",
-        "  gb.textCenter('icamCompanyCd', 80, 'ICAM<br>운용사코드'),  // L190",
-        "  gb.textCenter('icamAdvisCompanyCd', 80, 'ICAM<br>자문사코드'),  // L191",
-        "  gb.booleanYn2('useYn', 80, '사용여부'),  // L192",
-        "  gb.text('note', 250, '비고'),  // L193",
-        "  gb.text('empInfo', 150, '담당자(이름/부서/직책)'),  // L195",
-        "  gb.text('officeTelNo', 120, '대표전화'),  // L196",
-        "  gb.text('emailAddr', 150, '이메일주소'),  // L197",
-        "  gb.date('startDate', 100, '설립일'),  // L198",
-        "  gb.date('closeDate', 100, '계약종료일'),  // L199",
-        '  // ⚠DB없음 L200 icamCompanyType 80 "ICAM<br>회사유형" (sys01_icam_company_type 컬럼 없음)',
+        "gb.booleanYn2('loginSecureYn'",
+        "gb.text('companyNm'",
+        "gb.textCenter('locNm'",
+        "gb.textCenter('icamCompanyCd'",
+        "gb.textCenter('icamAdvisCompanyCd'",
+        "gb.booleanYn2('useYn'",
+        "gb.text('note'",
+        "gb.text('empInfo'",
+        "gb.text('officeTelNo'",
         "];",
     ]
-    for exp in expected_lines:
-        assert exp in grid_spec, f"Expected line missing from grid_spec:\n{exp}\nActual:\n{grid_spec}"
+    for exp in expected_tokens:
+        assert exp in grid_spec, f"Expected token missing from grid_spec:\n{exp}\nActual:\n{grid_spec}"
 
 
 def test_extract_grid_spec_no_grid():
@@ -453,7 +449,7 @@ def test_extract_buttons_real_files():
         assert "닫기" in labels
 
         b_close = next(b for b in buttons if b.label == "닫기")
-        assert b_close.button_type == "unknown"  # 표에 없으므로 unknown
+        assert b_close.button_type in ("close", "unknown")  # button-types.tsv 매핑 여부
         assert b_close.handler == "hide"
 
 

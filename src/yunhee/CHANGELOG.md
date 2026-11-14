@@ -2,6 +2,35 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.9.6] - 2026-11-14
+수정사항 064 반영 정식 릴리즈 및 안정화:
+- **`biz-appr` 결재 연동 안전성 및 유연성 보강 (`src/yunhee/tools/biz/appr.py`, `src/yunhee/cli.py`)**:
+  - `seed_data` 부재 시 `AttributeError` 방어 가드 적용 및 기본값 fallback (`#1`).
+  - `--title`, `--content` 옵션 지원으로 결재 문서 제목/본문 직접 지정 (`#1`).
+  - `--link-body` 템플릿 지원 (`{ref}`, `{id}`, `{apprId}` 치환) 및 미등록 코드에 대한 후보 API 자동 제안 (`#10`).
+  - 결재자 로그인 실패 시 실패 계정/회사/사유 상세 안내 (`#1`).
+- **`biz-endpoints` & `biz-authz` 진단 정밀화 (`src/yunhee/tools/biz/endpoints.py`, `src/yunhee/tools/biz/authz.py`, `src/yunhee/cli.py`)**:
+  - `biz-endpoints`: target 생략 시 전체 컨트롤러 스캔 지원, 복수/쉼표 구분 다중 `--screen` 필터링 지원 (`#7`).
+  - 서비스 내부 진입부 검사 메서드(`check*`, `require*`, `verify*`, `load*`)를 `서비스내부(메서드명)` 가드로 인식하여 `⚠없음` 허위 경고 제외 (`#13`).
+  - `biz-authz --probe-write`: 쓰기 API 200 반환 시 실제 행 생성 경고 표기 및 `--dry-run` 사전 시뮬레이션 지원 (`#9`).
+  - `biz-authz --lint-delete-by-id`: DELETE API에서 companyId 조건 누락 취약점 검출 정적 린터 신설 (`#6`).
+- **`biz-orphans` 신설 및 `api` 데이터 추적 강화 (`src/yunhee/tools/biz/orphans.py`, `src/yunhee/tools/api_client.py`, `src/yunhee/cli.py`)**:
+  - `yunhee biz-orphans <table>`: FK 부모-자식 관계 기반 고아(orphan) 행 탐색 및 DELETE 정리 SQL 안내 (`#4`).
+  - `yunhee api --track <table> --children`: 부모 테이블뿐 아니라 연관 FK 자식 테이블 행 수 변화도 함께 추적 (`#4`).
+  - `api --fields`: 미존재 필드 요청 시 difflib 오타 추천 및 경고, 누락 필드는 `-`로 명시 표기 (`#2`).
+  - `api`: 400 Validation failed 에러 상세 원인 1줄 요약, rows=0 응답 시 미사용 선택 파라미터(`?`) 힌트 제공 (`#8`, `#14`).
+- **`compare` & `sql` 쿼리 검증 정밀화 (`src/yunhee/tools/comparator.py`, `src/yunhee/tools/as_is/mybatis_render.py`, `src/yunhee/tools/sql_runner.py`)**:
+  - `${isPostgreSql}` = true, `${isOracle}` = false 자동 바인딩 및 OGNL 리터럴 평가 지원 (`#3`).
+  - 미치환 `${...}` 잔존 시 경고 출력 및 불완전 SQL 실행 결과 신뢰 경고 (`#3`).
+  - 필수 파라미터 누락 시 사전 안내 출력 (`#3`).
+  - `sql --rollback`: 트랜잭션 내에서 DDL 실행을 허용하는 `--allow-ddl` (`--ddl-in-tx`) 옵션 지원 (COMMIT은 안전 차단 유지) (`#12`).
+- **`trace-crud` 비도달 메서드 감지 및 `log trace` 로컬 폴백 (`src/yunhee/tools/trace/crud.py`, `src/yunhee/tools/log_reader.py`, `src/yunhee/tools/outliner.py`)**:
+  - AS-IS 화면 내 미호출/도달 불가 메서드에서만 실행되는 D(Delete) 작업은 `ASIS RU(D 도달 불가)`로 표기하여 허위 누락 경고(`⚠ TOBE에 D 없음`)에서 자동 제외 (`#5`).
+  - `log trace` / `log errors`: Docker 소스 미발견 시 로컬 8080 로그(`YUNHEE_LOG_DIR` / `~/tmp/asseterp-data/logs`) 자동 폴백 (`#11`).
+  - `outliner.py`: 허용 읽기 경로에 로그 디렉터리(`LOG_DIR`, `YUNHEE_LOG_DIR`, `~/tmp`) 포함 (`#11`).
+- **테스트 안정화 (`tests/test_events.py`)**:
+  - 외부 실제 OMS 소스 의존 골든 테스트 및 버튼 매핑 assert 정합성 개선.
+
 ## [0.9.5] - 2026-11-13
 수정사항 064 반영: `biz-appr` 결재 연동 안전성 및 유연성 보강 · `biz-authz` / `biz-endpoints` 권한 진단 정밀화 · `biz-orphans` 신설 및 `api` 데이터 추적 강화 · `compare` & `sql` 쿼리 검증 정밀화 · `trace-crud` 도달 불가 분기 인지 · `log trace` 로컬 8080 폴백
 - **`biz-appr`: 결재 연동 안전성 및 옵션 확장 (`src/yunhee/tools/biz/appr.py`, `src/yunhee/cli.py`)**:
