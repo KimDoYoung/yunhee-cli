@@ -995,6 +995,8 @@ def api(
     where: Annotated[list[str] | None, typer.Option("--where", help="행 필터 key=val (반복 가능)")] = None,
     count_by: Annotated[str | None, typer.Option("--count-by", help="지정 필드의 값별 행 수 집계")] = None,
     get: Annotated[str | None, typer.Option("--get", help="응답 JSON에서 특정 키/경로의 값만 머리말 없이 단일 텍스트로 출력 (예: data, data.0.id)")] = None,
+    header: Annotated[list[str] | None, typer.Option("-H", "--header", help="요청 헤더 'Key: Value' (반복 가능, 환경변수 $env:VAR 치환 지원)")] = None,
+    no_login: Annotated[bool, typer.Option("--no-login", help="로그인 세션 없이 헤더만으로 API 호출 (배치 엔드포인트 등)")] = False,
 ):
     """자동 로그인 기반 API 호출 및 응답(상태·행수·필드) 요약
 
@@ -1041,6 +1043,15 @@ def api(
         typer.echo(TENANT_REQUIRED_MSG, err=True)
         raise typer.Exit(code=1)
 
+    headers_dict: dict[str, str] = {}
+    if header:
+        for h in header:
+            if ":" in h:
+                hk, hv = h.split(":", 1)
+                headers_dict[hk.strip()] = hv.strip()
+            else:
+                headers_dict[h.strip()] = ""
+
     kw = {"base_url": target_base}
     if login_path:
         kw["login_path"] = login_path
@@ -1065,6 +1076,8 @@ def api(
         fresh=fresh,
         password=password,
         force_login=force_login,
+        headers=headers_dict or None,
+        no_login=no_login,
         **kw,
     )
 
@@ -3653,14 +3666,15 @@ def biz_appr(
     link_code: Annotated[str, typer.Argument(help="전자결재 연동 코드 (예: A74, A73, D01, A02, A63)")],
     ref: Annotated[str | None, typer.Option("--ref", help="연동할 업무 데이터 행 ID (쉼표로 복수 지정 가능, 예: 101,102)")] = None,
     pre: Annotated[str | None, typer.Option("--pre", help="상신 전 사전 행 생성 API (예: 'POST /path {\"k\":\"v\"}')")] = None,
-    as_user: Annotated[str, typer.Option("--as", "-u", help="상신자 사번/계정 (기본: 401)")] = "401",
-    company: Annotated[str, typer.Option("--company", "-c", help="회사 코드 (기본: kalpa)")] = "kalpa",
+    as_user: Annotated[str | None, typer.Option("--as", "-u", help="상신자 사번/계정 (기본: 401 또는 설정된 기본 계정)")] = None,
+    company: Annotated[str | None, typer.Option("--company", "-c", help="회사 코드 (기본: kalpa 또는 설정된 기본 회사)")] = None,
     approver: Annotated[str | None, typer.Option("--approver", help="결재자 사번 목록 (쉼표 구분, 예: 301 또는 201,100)")] = None,
     password: Annotated[str | None, typer.Option("--password", help="계정 비밀번호")] = None,
     class_id: Annotated[int | None, typer.Option("--class", help="문서분류 ID (생략 시 dcr30_link에서 자동 조회)")] = None,
     confirm: Annotated[bool, typer.Option("--confirm", help="상신 후 결재자 승인(30 완료)까지 순서대로 실행")] = False,
     reject: Annotated[str | None, typer.Option("--reject", help="마지막 결재자가 반려 처리 (반려 사유 입력)")] = None,
-    link_path: Annotated[str | None, typer.Option("--link-path", help="업무 행 연결 API 경로 (예: /api/v1/.../{ref}/appr)")] = None,
+    link_path: Annotated[str | None, typer.Option("--link-path", help="업무 행 연결 API 경로 (예: /api/v1/.../{ref}/appr 또는 'POST /api/v1/...')")] = None,
+    link_method: Annotated[str | None, typer.Option("--link-method", help="업무 행 연결 HTTP 메서드 (기본: PUT, --link-path 접두어로도 지정 가능)")] = None,
     link_style: Annotated[str | None, typer.Option("--link-style", help="업무 행 연결 파라미터 전달 스타일 (query, body, ids-body)")] = None,
     link_body: Annotated[str | None, typer.Option("--link-body", help="업무 행 연결 시 전송할 커스텀 JSON 본문 템플릿 ({ref}, {apprId} 치환 지원)")] = None,
     seed_arg: Annotated[list[str] | None, typer.Option("--seed-arg", help="링크 시드 쿼리 파라미터 추가 key=val (반복 가능)")] = None,
@@ -3684,6 +3698,7 @@ def biz_appr(
             confirm=confirm,
             reject=reject,
             link_path=link_path,
+            link_method=link_method,
             link_style=link_style,
             dry_run=dry_run,
             pre=pre,
@@ -3767,7 +3782,8 @@ def biz_orphans(
 
     typer.echo(f"### 고아 행 탐지 결과 ({len(results)}개 관계):")
     for r in results:
-        typer.echo(f"\n- **{r['child_table']}** ({r['fk_col']} → {r['parent_table']}.{r['parent_pk']}): 고아 {r['count']}건")
+        inferred_tag = " (이름 규칙으로 추정)" if r.get("inferred") else ""
+        typer.echo(f"\n- **{r['child_table']}** ({r['fk_col']} → {r['parent_table']}.{r['parent_pk']}{inferred_tag}): 고아 {r['count']}건")
         typer.echo(f"  - 상위 ID: {r['ids']}")
         typer.echo(f"  - 정리 SQL: `{r['delete_sql']}`")
 

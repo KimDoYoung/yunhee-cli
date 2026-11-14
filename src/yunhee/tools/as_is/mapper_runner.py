@@ -89,6 +89,11 @@ def run_mapper_statement(
 
     params_dict = dict(params or {})
 
+    # 066 #8: 빈 값 파라미터 경고
+    for k, v in params_dict.items():
+        if v == "":
+            sys.stderr.write(f"⚠ {k}='' — 빈 글자로 넘깁니다(생략 시 null)\n")
+
     # TOBE SQL 렌더링
     try:
         tobe_sql, missing = render_from_xml(raw_xml, sid, params=params_dict, mode="params")
@@ -164,7 +169,10 @@ def run_mapper_statement(
 
         asis_count = len(asis_rows)
         match = (tobe_count == asis_count)
-        mark = "✅" if match else "❌"
+        if match and tobe_count == 0 and asis_count == 0:
+            mark = "0=0 (확인 못 함 — 조건을 넓혀 보세요)"
+        else:
+            mark = "✅" if match else "❌"
 
         col_str = " ".join(tobe_cols)
         summary = f"TOBE rows={tobe_count}, AS-IS rows={asis_count} {mark}  열: {col_str} (TOBE ⊇ 그리드 열)"

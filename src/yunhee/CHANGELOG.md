@@ -2,6 +2,29 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.9.7] - 2026-11-14
+수정사항 066 반영 및 안정화:
+- **`biz-appr` 연결 API 메서드 지정 및 KFS 기본 계정 지원 (`src/yunhee/tools/biz/appr.py`, `src/yunhee/cli.py`)**:
+  - `--link-path` 접두 메서드(`POST /api/v1/...` 등) 및 `--link-method` 옵션 지원 (A41 POST 결재 연동 대응).
+  - 연결 후보 표에 A41(POST), A76(PUT), A33(PUT), A34(PUT) 등록.
+  - `-u`, `-c` 생략 시 `api` 기본 계정 자동 해결 및 로그인 전 상신자/비밀번호 출처 한 줄 안내 출력.
+- **`biz-event-new` API 범위 한정 및 의심 번호 정확도 개선 (`src/yunhee/tools/biz/eventdoc.py`)**:
+  - 대상 화면 TSX 및 직접 import하는 연관 하위 UI 컴포넌트(`.tsx`)에서 호출하는 API만 쓰기 API 목록에 등록 (무관한 도메인 전체 API 배제).
+  - 다음 의심 번호 계산 시 문서 내 본문/메뉴번호(#1510 등) 오탐을 차단하고, 표 첫 칸(`| 230 |`) 최댓값 + 1을 최우선 산출.
+- **`biz-orphans` 접두사 제거 어근 일치 기반 FK 추정 (`src/yunhee/tools/biz/orphans.py`, `src/yunhee/cli.py`)**:
+  - FK 제약이 없는 테이블 간 접두사 제거 어근 일치(`biz16_cont_corp_id` ↔ `biz10_cont_corp_id`)로 부모 후보를 찾아 고아 행 감지 및 `(이름 규칙으로 추정)` 표기.
+- **`compare` 화면 파라미터 패턴 힌트 안내 (`src/yunhee/tools/comparator.py`)**:
+  - 화면 소스에서 `provideRcvType="%"` 등 정적 기본값 패턴을 탐지하여 필수 파라미터 누락 시 `-- 필요: provideRcvType (화면 기본 "%")` 형태로 힌트 제공.
+- **`api` 커스텀 헤더 및 `--no-login` 지원 (`src/yunhee/tools/api_client.py`, `src/yunhee/cli.py`)**:
+  - `-H / --header "Name: Value"`(반복) 옵션 및 `--no-login` 플래그 추가 (ICAM 배치 등 세션 없는 엔드포인트 호출용).
+  - 헤더 값 내 `$env:VAR_NAME` 또는 `$VAR_NAME` 환경변수 자동 치환 지원.
+- **`biz-authz` 날짜 범위 기본값 확장 및 파라미터 안내 (`src/yunhee/tools/biz/authz.py`)**:
+  - 날짜 파라미터(`startDate`, `fromDate` 등은 `2000-01-01`, `closeDate`, `toDate` 등은 `2099-12-31`) 기본값 적용으로 좁은 기본값에 의한 허위 0행 방지.
+  - 0행 반환 시 사용된 파라미터 안내(`(stdYear=2026)` 등) 출력.
+- **`compare` / `mapper-run` 빈 값 파라미터 경고 및 0=0 표기 (`src/yunhee/tools/comparator.py`, `src/yunhee/tools/as_is/mapper_runner.py`)**:
+  - `-p key=`(빈 값) 전달 시 `⚠ key='' — 빈 글자로 넘깁니다(생략 시 null)` 경고 출력.
+  - 양쪽 모두 0행인 경우 `0=0 (확인 못 함 — 조건을 넓혀 보세요)` 표기.
+
 ## [0.9.6] - 2026-11-14
 수정사항 064 반영 정식 릴리즈 및 안정화:
 - **`biz-appr` 결재 연동 안전성 및 유연성 보강 (`src/yunhee/tools/biz/appr.py`, `src/yunhee/cli.py`)**:

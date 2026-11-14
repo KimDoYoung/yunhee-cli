@@ -302,7 +302,8 @@ const buildGrid = () => [
         )
         assert res.ok
         assert "필드 비교 못 함 (행 0건)" in res.data["summary"]
-        assert "API rows=0, SQL rows=0 ✅" in res.data["summary"]
+        assert "API rows=0, SQL rows=0" in res.data["summary"]
+        assert "0=0 (확인 못 함 — 조건을 넓혀 보세요)" in res.data["summary"]
 
 
 def test_042_compare_branch_params_and_string_type_binding(monkeypatch):

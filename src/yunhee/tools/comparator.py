@@ -515,6 +515,26 @@ _GENERIC_PROP_RE = re.compile(
 )
 
 
+def _find_screen_param_hints(missing_params: list[str], grid_class: str | None, src_root: Path | None) -> dict[str, str]:
+    """AS-IS 화면 소스에서 파라미터 기본값(예: %)을 정적으로 찾아 힌트 문자열을 반환한다 (066 #4)."""
+    if not missing_params or not src_root or not grid_class:
+        return {}
+    hints: dict[str, str] = {}
+    cands = list(src_root.glob(f"**/{grid_class}.java")) if not grid_class.endswith(".java") else list(src_root.glob(f"**/{grid_class}"))
+    if not cands:
+        return {}
+    try:
+        txt = cands[0].read_text(encoding="utf-8", errors="replace")
+        for p in missing_params:
+            if re.search(r'["\']' + re.escape(p) + r'["\']\s*,\s*["\']%["\']', txt):
+                hints[p] = '화면 기본 "%"'
+            elif re.search(r'["\']' + re.escape(p) + r'["\']\s*,\s*[^;\n]*?\+\s*["\']%["\']', txt):
+                hints[p] = '화면: 코드 + "%"'
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return hints
+
+
 def compare_api_sql(
     method: str,
     path: str,
@@ -763,6 +783,12 @@ def compare_api_sql(
             p_items = [f"{k}={v}" for k, v in sorted(sql_params.items())]
             used_params_msg = f"\n사용한 파라미터: {', '.join(p_items)}"
 
+    # 066 #8: 빈 값 파라미터 경고
+    if sql_params:
+        for k, v in sql_params.items():
+            if v == "":
+                sys.stderr.write(f"⚠ {k}='' — 빈 글자로 넘깁니다(생략 시 null)\n")
+
     # 2. SQL 렌더링
     branch_log: list[str] = []
     try:
@@ -801,7 +827,11 @@ def compare_api_sql(
             p_items.append(f"{k}={v}{tag}")
         p_str = ", ".join(p_items) if p_items else "(없음)"
         b_str = f" (branch: {', '.join(branch_log)})" if branch_log else ""
-        m_str = f" (-- 필요: {', '.join(missing)})" if missing else ""
+
+        # 066 #4: 화면 소스에서 파라미터 기본값(예: %) 정적 탐색
+        screen_hints = _find_screen_param_hints(missing, grid, src_root)
+        m_items = [f"{m_p} ({screen_hints[m_p]})" if m_p in screen_hints else m_p for m_p in missing]
+        m_str = f" (-- 필요: {', '.join(m_items)})" if missing else ""
         sql_params_line = f"SQL params: {p_str}{b_str}{m_str}"
 
     api_params_line = ""
@@ -974,7 +1004,10 @@ def compare_api_sql(
 
         if not scalar_matched:
             rows_match = (api_row_count == sql_row_count)
-            rows_mark = "✅" if rows_match else "❌"
+            if rows_match and api_row_count == 0 and sql_row_count == 0:
+                rows_mark = "0=0 (확인 못 함 — 조건을 넓혀 보세요)"
+            else:
+                rows_mark = "✅" if rows_match else "❌"
             count_part = f"API rows={api_row_count}, SQL rows={sql_row_count} {rows_mark}"
 
     uneval_branches = [b for b in branch_log if "평가 불가" in b]

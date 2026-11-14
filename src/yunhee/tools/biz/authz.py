@@ -147,7 +147,12 @@ def _make_dummy_param(p_type: str, p_name: str = "") -> str:
         return "01"
     t = p_type.lower()
     if "date" in t or "date" in name_l:
-        return now_dt.date().isoformat()
+        # 066 #7: 날짜 범위 프로브 시 넓은 범위 제공 (과거~미래 전체 조회)
+        if any(k in name_l for k in ("start", "from", "begin")):
+            return "2000-01-01"
+        if any(k in name_l for k in ("close", "to", "end")):
+            return "2099-12-31"
+        return "2000-01-01"
     if "int" in t or "long" in t:
         return "1"
     return ""
@@ -342,7 +347,8 @@ def run_authz(
                 elif is_common_ref or "KFS관리자" in ep.get("guards", []):
                     verdict = "공통 기준표(참고)"
                 elif row_cnt == 0:
-                    verdict = "⚠?(0행 — 자료 없음)"
+                    param_hint = f" ({', '.join(f'{k}={v}' for k, v in req_params.items())})" if req_params else ""
+                    verdict = f"⚠?(0행 — 자료 없음{param_hint})"
                 elif associated_menus and not (associated_menus & user_menu_set):
                     verdict = "⚠ 관리자 화면 자료를 사원이 받음"
                 elif associated_menus and (associated_menus & user_menu_set):

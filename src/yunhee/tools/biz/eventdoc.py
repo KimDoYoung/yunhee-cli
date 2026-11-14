@@ -221,7 +221,7 @@ def _find_related_events(root_dir: Path, menu_nos: list[str], cur_event_id: str)
 
 
 def _find_next_suspect_number(root_dir: Path) -> int | None:
-    """보안_및_버그_의심.md 에서 가장 큰 의심 번호를 찾아 다음 번호를 반환한다 (061 #7)."""
+    """보안_및_버그_의심.md 에서 가장 큰 의심 번호를 찾아 다음 번호를 반환한다 (061 #7, 066 #2)."""
     cand = root_dir / "docs" / "2-업무분석" / "보안_및_버그_의심.md"
     if not cand.is_file():
         # 하위 디렉터리 탐색
@@ -233,9 +233,27 @@ def _find_next_suspect_number(root_dir: Path) -> int | None:
 
     try:
         txt = cand.read_text(encoding="utf-8", errors="replace")
-        nums = [int(m.group(1)) for m in re.finditer(r"(?:#|의심\s*#?)(\d+)", txt)]
-        if nums:
-            return max(nums) + 1
+        # 066 #2: 표의 첫 번째 칸(| 230 | 또는 | #230 |) 최우선, 표가 없을 때만 리스트/헤더 번호 고려
+        nums_table: list[int] = []
+        nums_other: list[int] = []
+        for line in txt.splitlines():
+            s = line.strip()
+            m_row = re.match(r"^\|\s*#?(\d+)\s*\|", s)
+            if m_row:
+                nums_table.append(int(m_row.group(1)))
+                continue
+            m_head = re.match(r"^#+\s*(?:의심\s*)?#?(\d+)\b", s)
+            if m_head:
+                nums_other.append(int(m_head.group(1)))
+                continue
+            m_list = re.match(r"^(?:[-*]|\d+\.)\s*#?(\d+)\b", s)
+            if m_list:
+                nums_other.append(int(m_list.group(1)))
+
+        if nums_table:
+            return max(nums_table) + 1
+        if nums_other:
+            return max(nums_other) + 1
     except OSError:
         pass
     return None
@@ -253,33 +271,82 @@ def _find_tobe_page(root_dir: Path, class_name: str) -> Path | None:
 
 
 def _extract_tobe_api_calls(tsx_path: Path, root_dir: Path) -> list[tuple[str, str]]:
-    """TSX 파일에서 호출하는 api 함수를 파싱하여 (METHOD, URL) 목록을 추출한다."""
+    """TSX 파일 및 해당 화면이 참조하는 팝업/컴포넌트 TSX에서 호출하는 api 함수를 정밀 파싱하여 (METHOD, URL) 목록을 추출한다 (066 #2)."""
     if not tsx_path.is_file():
         return []
 
     layout = find_layout(root_dir)
     api_dir = layout.api_dir
     api_fn_map: dict[str, tuple[str, str]] = {}  # fn_name -> (method, url)
+    obj_fn_map: dict[str, tuple[str, str]] = {}  # "obj.fn" -> (method, url)
+    common_short_names = {"list", "get", "find", "save", "create", "update", "delete", "remove", "select"}
+
     if api_dir.is_dir():
         for api_file in api_dir.glob("*.ts"):
             txt = api_file.read_text(encoding="utf-8", errors="replace")
             for f in parse_api_ts(txt, str(api_file)):
                 if f.url and f.verb:
                     verb_upper = f.verb.upper()
-                    api_fn_map[f.name] = (verb_upper, f.url)
                     if f.obj:
-                        api_fn_map[f"{f.obj}.{f.name}"] = (verb_upper, f.url)
+                        obj_fn_map[f"{f.obj}.{f.name}"] = (verb_upper, f.url)
+                    # 짧은 일반명사는 충돌 방지를 위해 import 문 확인용으로만 등록
+                    api_fn_map[f.name] = (verb_upper, f.url)
 
-    tsx_txt = tsx_path.read_text(encoding="utf-8", errors="replace")
+    # 화면 메인 TSX 및 import된 연관 팝업/컴포넌트 TSX 수집
+    files_to_scan: list[Path] = [tsx_path]
+    seen_files: set[Path] = {tsx_path}
+    try:
+        main_txt = tsx_path.read_text(encoding="utf-8", errors="replace")
+        for m_imp in re.finditer(r"import\s+.*?from\s+['\"]([^'\"]+)['\"]", main_txt):
+            imp_rel = m_imp.group(1)
+            cand_p: Path | None = None
+            if imp_rel.startswith("."):
+                cand_p = (tsx_path.parent / imp_rel).resolve()
+            elif imp_rel.startswith("@/"):
+                cand_p = (layout.frontend / imp_rel[2:]).resolve()
+            if cand_p:
+                check_candidates = [cand_p] if cand_p.suffix == ".tsx" else [cand_p.with_suffix(".tsx"), cand_p / "index.tsx"]
+                for check_p in check_candidates:
+                    if check_p.is_file() and check_p not in seen_files:
+                        # 066 #2: api 정의 파일(.ts)은 제외하고 오직 UI 컴포넌트(.tsx)만 스캔 대상에 포함
+                        seen_files.add(check_p)
+                        files_to_scan.append(check_p)
+                        break
+    except Exception:  # noqa: BLE001, S110
+        pass
+
     calls: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    for fn_name, (method, url) in api_fn_map.items():
-        if re.search(r"\b" + re.escape(fn_name) + r"\b", tsx_txt):
-            item = (method, url)
-            if item not in seen:
-                seen.add(item)
-                calls.append(item)
+    for p in files_to_scan:
+        try:
+            txt = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        # 1. obj.fn 꼴 매칭 (예: bizApi.saveFeeInfo)
+        for obj_fn, (method, url) in obj_fn_map.items():
+            if obj_fn in txt:
+                item = (method, url)
+                if item not in seen:
+                    seen.add(item)
+                    calls.append(item)
+
+        # 2. 명시적 import 또는 호출 매칭
+        for fn_name, (method, url) in api_fn_map.items():
+            if fn_name in common_short_names:
+                # 흔한 이름은 api 파일로부터 import 구문이 있을 때만 인정
+                if re.search(r"import\s+[^;]*?\b" + re.escape(fn_name) + r"\b[^;]*?from", txt):
+                    item = (method, url)
+                    if item not in seen:
+                        seen.add(item)
+                        calls.append(item)
+            else:
+                if re.search(r"\b" + re.escape(fn_name) + r"\b", txt):
+                    item = (method, url)
+                    if item not in seen:
+                        seen.add(item)
+                        calls.append(item)
 
     return calls
 

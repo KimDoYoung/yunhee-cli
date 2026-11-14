@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import psycopg
@@ -57,6 +58,12 @@ def get_table_metadata(conn: psycopg.Connection) -> tuple[dict[str, str], dict[s
     return pk_map, cols_map
 
 
+def _strip_table_prefix(name: str) -> str:
+    """테이블명이나 컬럼명에서 영문+숫자 접두사(biz16_, sys01_ 등)를 제거하고 어근을 반환한다 (066 #3)."""
+    m = re.match(r"^[a-zA-Z]+\d+_(.*)$", name)
+    return m.group(1) if m else name
+
+
 def get_fk_relations(
     conn: psycopg.Connection,
     target_table: str | None = None,
@@ -93,9 +100,10 @@ def get_fk_relations(
                 "parent_table": r["parent_tbl"],
                 "parent_pk": r["parent_pk"],
                 "child_pk": child_pk,
+                "inferred": False,
             })
 
-    # 2. 명명 규칙 기반 FK 탐색 (FK 제약조건이 없는 AssetERP 레거시 테이블 대응)
+    # 2. 명명 규칙 기반 FK 탐색 (FK 제약조건이 없는 AssetERP 레거시 테이블 대응, 066 #3 확장)
     seen_pairs = {(rel["child_table"], rel["fk_col"]) for rel in relations}
 
     for child_tbl, cols in cols_map.items():
@@ -108,18 +116,29 @@ def get_fk_relations(
             if (child_tbl, col) in seen_pairs:
                 continue
 
-            # col이 다른 테이블의 PK와 일치하는지 확인
-            # 예: ics21_checklist_l_class_id == ics21_checklist_l_class.ics21_checklist_l_class_id
+            col_root = _strip_table_prefix(col)
+
+            # col이 다른 테이블의 PK와 일치하는지 또는 접두사 제거 어근이 일치하는지 확인
+            # 예 1: ics21_checklist_l_class_id == ics21_checklist_l_class.ics21_checklist_l_class_id
+            # 예 2: biz16_cont_corp_id ↔ biz10_cont_corp.biz10_cont_corp_id (어근 cont_corp_id 일치)
             for p_tbl, p_pk in pk_map.items():
                 if p_tbl == child_tbl:
                     continue
-                if col == p_pk or col == f"{p_tbl}_id":
+                p_root = _strip_table_prefix(p_pk)
+                is_exact = (col == p_pk or col == f"{p_tbl}_id")
+                is_inferred = False
+
+                if not is_exact and col_root == p_root and len(col_root) >= 4 and col_root.endswith("_id"):
+                    is_inferred = True
+
+                if is_exact or is_inferred:
                     relations.append({
                         "child_table": child_tbl,
                         "fk_col": col,
                         "parent_table": p_tbl,
                         "parent_pk": p_pk,
                         "child_pk": child_pk or col,
+                        "inferred": is_inferred,
                     })
                     seen_pairs.add((child_tbl, col))
                     break
@@ -224,6 +243,7 @@ def find_orphans(
                                 "count": total_cnt,
                                 "ids": orphan_ids,
                                 "delete_sql": del_sql,
+                                "inferred": rel.get("inferred", False),
                             })
                     except Exception:  # noqa: BLE001, S112
                         continue

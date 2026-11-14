@@ -435,7 +435,7 @@ def test_biz_authz_reduced_false_positives_and_probe_appr(monkeypatch):
 
     v_map = {r["path"]: r["verdict"] for r in results}
     assert v_map["/api/v1/pay/retire-tables/tax-calc"] == "자료없음(더미 ID) — 판정 못 함"
-    assert v_map["/api/v1/pay/tax-withholdings"] == "⚠?(0행 — 자료 없음)"
+    assert v_map["/api/v1/pay/tax-withholdings"].startswith("⚠?(0행 — 자료 없음")
     assert v_map["/api/v1/pay/tax-calcs"] == "공통 기준표(참고)"
     assert v_map["/api/v1/pay/tax-withholdings/{id}/appr-id"] == "⚠ 결재 ID 검사 없음"
 

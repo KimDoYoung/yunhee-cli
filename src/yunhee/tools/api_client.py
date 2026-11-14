@@ -858,6 +858,8 @@ def request_api(
     fresh: bool = False,
     password: str | None = None,
     force_login: bool = False,
+    headers: dict[str, str] | None = None,
+    no_login: bool = False,
 ) -> ToolResult:
     """인증 세션을 사용하여 API를 호출하고 결과를 요약 반환한다.
     
@@ -865,10 +867,30 @@ def request_api(
     - 최초 로그인 시도 실패 시 즉시 중단 (더미 요청으로 401을 발생시키지 않음).
     - 저장된 기존 세션이 만료되어 401이 난 경우에만 세션을 삭제하고 1회 재로그인 시도.
     - 재로그인이 실패하면 즉시 실패로 중단하여 계정 잠금(5회 실패 락) 위험 원천 차단.
+    - no_login=True 지정 시 세션/로그인 없이 헤더만으로 요청 (배치 엔드포인트 등).
     """
     import time
 
     params = normalize_query_params(params, raw=raw_param)
+
+    # 066 #5: 커스텀 헤더 환경변수 치환 및 정리
+    custom_headers: dict[str, str] = {}
+    env_headers_str = os.getenv("YUNHEE_API_HEADERS", "")
+    if env_headers_str:
+        for item in env_headers_str.split(";"):
+            if ":" in item:
+                hk, hv = item.split(":", 1)
+                custom_headers[hk.strip()] = hv.strip()
+    if headers:
+        for hk, hv in headers.items():
+            val = hv
+            # $env:VAR_NAME 또는 $VAR_NAME 치환
+            if val.startswith("$env:"):
+                var_name = val[5:]
+                val = os.getenv(var_name, "")
+            elif val.startswith("$") and val[1:].isalnum():
+                val = os.getenv(val[1:], "")
+            custom_headers[hk] = val
 
     if json_body is not None and form_fields:
         return ToolResult(ok=False, error="--body(-b)와 --form(-F) 옵션은 함께 사용할 수 없습니다.")
@@ -896,26 +918,33 @@ def request_api(
             time.sleep(1)
 
     comp = company_code or config.TEST_COMPANY
-    try:
-        try:
-            user, pw, user_info = resolve_user_credentials(as_role, company_code=comp, password=password)
-        except TypeError:
-            user, pw, user_info = resolve_user_credentials(as_role)
-    except ValueError as exc:
-        return ToolResult(ok=False, error=str(exc))
-
-    comp = company_code or config.TEST_COMPANY
-    if fresh:
-        _clear_session(user, base_url, tenant, comp)
+    if no_login:
+        user = as_role or "anonymous"
+        pw = ""
+        user_info = {}
         session = None
         had_existing_session = False
+        login_status = "none"
     else:
-        session = _load_session(user, base_url, tenant, comp)
-        had_existing_session = session is not None
-    if session and session.get("user_info"):
-        user_info = session.get("user_info")
+        try:
+            try:
+                user, pw, user_info = resolve_user_credentials(as_role, company_code=comp, password=password)
+            except TypeError:
+                user, pw, user_info = resolve_user_credentials(as_role)
+        except ValueError as exc:
+            return ToolResult(ok=False, error=str(exc))
 
-    login_status = "reused" if had_existing_session else "new"
+        if fresh:
+            _clear_session(user, base_url, tenant, comp)
+            session = None
+            had_existing_session = False
+        else:
+            session = _load_session(user, base_url, tenant, comp)
+            had_existing_session = session is not None
+        if session and session.get("user_info"):
+            user_info = session.get("user_info")
+
+        login_status = "reused" if had_existing_session else "new"
 
     conf_pfx = config.TOML_CONFIG.get("api", {}).get("auto_prefix")
     auto_prefix = "/api/v1/" if conf_pfx is None else (conf_pfx or "")
@@ -929,8 +958,8 @@ def request_api(
 
     url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
 
-    # 세션이 없고 자동 로그인이 켜져 있으면 최초 로그인 시도
-    if not session and auto_login:
+    # 세션이 없고 자동 로그인이 켜져 있으면 최초 로그인 시도 (no_login 제외)
+    if not session and auto_login and not no_login:
         login_res = login(
             base_url=base_url,
             user=user,
@@ -949,9 +978,11 @@ def request_api(
         if session and session.get("user_info"):
             user_info = session.get("user_info")
 
-    cookies = (session or {}).get("cookies", {})
-    headers = dict((session or {}).get("headers", {}))
+    cookies = {} if no_login else (session or {}).get("cookies", {})
+    headers = dict((session or {}).get("headers", {})) if not no_login else {}
     headers.update(_tenant_headers(base_url, tenant))
+    if custom_headers:
+        headers.update(custom_headers)
     if form_fields:
         headers.pop("Content-Type", None)
         headers.pop("content-type", None)
@@ -993,7 +1024,7 @@ def request_api(
         or "만료" in resp.text
         or "만료되었습니다" in resp.text
     )
-    if is_token_expired and auto_login and had_existing_session:
+    if is_token_expired and auto_login and had_existing_session and not no_login:
         _clear_session(user, base_url, tenant, comp)
         login_res = login(
             base_url=base_url,
