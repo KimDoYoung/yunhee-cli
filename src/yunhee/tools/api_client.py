@@ -304,13 +304,14 @@ def login(
         try:
             failed_data = json.loads(fail_file.read_text(encoding="utf-8"))
             fail_cnt = failed_data.get("fail_count", 0)
+            saved_pw_source = failed_data.get("pw_source") or (user_info or {}).get("pw_source", "미상")
+            target_prefix = comp or tenant or "기본"
             if fail_cnt >= 3:
                 return ToolResult(
                     ok=False,
                     error=(
-                        f"로그인 중단: 직전 로그인 실패 횟수가 {fail_cnt}/5회로 계정 잠금 직전입니다.\n"
-                        "비밀번호를 다시 확인한 후 --force-login 옵션을 붙여 실행하세요.\n"
-                        f"(시도 대상: user={user}, company={comp})"
+                        f"⚠ {target_prefix}/{user} 실패 {fail_cnt}/5 — 계정 잠금 직전(더 부르면 잠길 수 있음). "
+                        f"비밀번호 출처: {saved_pw_source} (계속하려면 --force-login)"
                     ),
                 )
         except Exception:  # noqa: BLE001, S110
@@ -341,7 +342,12 @@ def login(
         if fail_count is not None:
             try:
                 fail_file.write_text(
-                    json.dumps({"fail_count": fail_count, "user": user, "company": comp}),
+                    json.dumps({
+                        "fail_count": fail_count,
+                        "user": user,
+                        "company": comp,
+                        "pw_source": (user_info or {}).get("pw_source", "미상"),
+                    }),
                     encoding="utf-8",
                 )
             except Exception:  # noqa: BLE001, S110

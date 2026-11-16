@@ -1499,6 +1499,8 @@ def mapper_run_cmd(
     count: Annotated[bool, typer.Option("--count", help="행 수만 출력")] = False,
     rows: Annotated[int | None, typer.Option("--rows", "-n", help="출력할 최대 행 수")] = None,
     rollback: Annotated[bool, typer.Option("--rollback", help="트랜잭션 실행 후 롤백 (쓰기 문장 필수)")] = False,
+    auto_params: Annotated[bool, typer.Option("--auto-params", help="파라미터 값을 DB에서 스스로 찾아 바인딩")] = False,
+    company: Annotated[str | None, typer.Option("--company", help="회사 코드 또는 회사 ID (미지정 시 기본 회사)")] = None,
     db: Annotated[str, typer.Option("--db", "-c", help="대상 DB명 (기본: asseterpdb)")] = "asseterpdb",
     src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
 ) -> None:
@@ -1531,7 +1533,143 @@ def mapper_run_cmd(
         limit_rows=rows,
         rollback=rollback,
         src_root=src,
+        auto_params=auto_params,
+        company=company,
     )
+    if not res.ok and not res.data:
+        typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(res.data.get("summary", ""))
+    if not res.ok:
+        raise typer.Exit(code=1)
+
+
+@app.command(name="test-params")
+def test_params_cmd(
+    target: Annotated[str, typer.Argument(help="매퍼 파일과 statement ID (예: backend/src/main/resources/mapper/EmpDeductMapper.xml#insertAddDeductTypes)")],
+    company: Annotated[str | None, typer.Option("--company", "-c", help="회사 코드 또는 회사 ID")] = None,
+    n: Annotated[int, typer.Option("--n", help="시도할 최대 조합 수")] = 3,
+    output: Annotated[str, typer.Option("--output", "-o", help="출력 형식 (text, json, args)")] = "text",
+    db: Annotated[str, typer.Option("--db", help="대상 DB명 (기본: asseterpdb)")] = "asseterpdb",
+) -> None:
+    """MyBatis 매퍼 statement 실행에 필요한 시험 파라미터 값을 DB에서 찾아 출력."""
+    from yunhee.tools.test.params import (
+        format_params_output,
+        resolve_params_for_statement,
+    )
+
+    res = resolve_params_for_statement(target, company=company, n_tries=n, db_name=db)
+    if not res.ok:
+        typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    out = format_params_output(res.data, fmt=output)
+    typer.echo(out)
+
+
+@app.command(name="test-gen-mapper")
+def test_gen_mapper_cmd(
+    target: Annotated[str, typer.Argument(help="매퍼 이름 (예: AttCommuteMapper) 또는 도메인명 (예: att)")],
+    company: Annotated[str | None, typer.Option("--company", "-c", help="회사 코드 또는 회사 ID (미지정 시 기본 회사)")] = None,
+    out: Annotated[Path | None, typer.Option("--out", help="출력 루트 디렉터리 (기본: backend/src/test/java)")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="파일을 생성하지 않고 문장별 채움/Disabled 상태만 표시")] = False,
+    force: Annotated[bool, typer.Option("--force", help="이미 존재하는 테스트 파일 덮어쓰기")] = False,
+) -> None:
+    """매퍼 스모크 시험(JUnit5 @MybatisTest) 뼈대 자동 생성."""
+    from yunhee.tools.test.gen_mapper import run_test_gen_mapper
+
+    res = run_test_gen_mapper(target, company=company, out_dir=out, dry_run=dry_run, force=force)
+    if not res.ok and not res.data:
+        typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(res.data.get("summary", ""))
+    if not res.ok:
+        raise typer.Exit(code=1)
+
+
+@app.command(name="test-scenario-skel")
+def test_scenario_skel_cmd(
+    event_id: Annotated[str | None, typer.Argument(help="업무분석 이벤트 ID (예: EMP-BZ-0018) 또는 --check 시 도메인명 (예: EMP)")] = None,
+    company: Annotated[str, typer.Option("--company", help="시나리오 실행 가상회사 (기본: kova)")] = "kova",
+    module: Annotated[str | None, typer.Option("--module", help="시나리오 모듈 파일명 (미지정 시 이벤트 접두사 emp, pay 등)")] = None,
+    print_only: Annotated[bool, typer.Option("--print", help="파일에 추가하지 않고 생성된 파이썬 함수 코드만 출력")] = False,
+    check: Annotated[bool, typer.Option("--check", help="이벤트 문서들의 YAML 문법·중복키·자리표시·AST 일괄 점검")] = False,
+) -> None:
+    """업무분석 이벤트 YAML로부터 시나리오 파이썬 테스트 함수 뼈대 생성."""
+    from yunhee.tools.test.scenario_skel import (
+        apply_scenario_skel,
+        check_scenario_docs,
+    )
+
+    if check:
+        res_chk = check_scenario_docs(target=event_id)
+        if not res_chk.ok and not res_chk.data:
+            typer.secho(f"[ERROR] {res_chk.error}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1)
+        typer.echo(res_chk.data.get("summary", ""))
+        if not res_chk.ok:
+            raise typer.Exit(code=1)
+        return
+
+    if not event_id:
+        typer.secho("[ERROR] 이벤트 ID를 지정하세요 (예: EMP-BZ-0018) 또는 --check 옵션을 사용하세요.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    res = apply_scenario_skel(event_id, company=company, module=module, print_only=print_only)
+    if not res.ok:
+        typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(res.data.get("summary", ""))
+
+
+@app.command(name="test-coverage")
+def test_coverage_cmd(
+    by: Annotated[str, typer.Option("--by", help="집계 기준 (domain, mapper, screen)")] = "domain",
+    output: Annotated[str, typer.Option("--output", "-o", help="출력 형식 (md, tsv)")] = "md",
+    junit: Annotated[Path | None, typer.Option("--junit", help="JUnit 테스트 결과 디렉터리 (TEST-*.xml)")] = None,
+    scenario: Annotated[Path | None, typer.Option("--scenario", help="시나리오 결과 JSON 파일")] = None,
+    log: Annotated[str | None, typer.Option("--log", help="서버 로그 파일 경로 또는 docker (Preparing SQL 기반 실행 커버리지)")] = None,
+    from_time: Annotated[str | None, typer.Option("--from", "--since", help="로그 조회 시작 시각 (예: 23:08, 2026-11-16T23:08)")] = None,
+    to_time: Annotated[str | None, typer.Option("--to", "--until", help="로그 조회 종료 시각 (예: 23:10)")] = None,
+    since_run: Annotated[str | None, typer.Option("--since-run", help="특정 run 실행 구간 로그 조회 (예: last 또는 run_id)")] = None,
+    domain: Annotated[str | None, typer.Option("--domain", "-d", help="특정 도메인만 필터링 (예: emp)")] = None,
+) -> None:
+    """매퍼 문장 및 화면 단위 테스트 커버리지 분석."""
+    from yunhee.tools.test.coverage import run_test_coverage
+
+    res = run_test_coverage(
+        by=by,
+        output_format=output,
+        junit_dir=junit,
+        scenario_file=scenario,
+        log_source=log,
+        from_time=from_time,
+        to_time=to_time,
+        since_run=since_run,
+        domain_filter=domain,
+    )
+    if not res.ok and not res.data:
+        typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(res.data.get("summary", ""))
+
+
+@app.command(name="test-compare")
+def test_compare_cmd(
+    tsv_file: Annotated[Path, typer.Argument(help="비교 대상 목록 TSV 파일 경로 (이름\\tMETHOD path\\tAS-IS SQL ID\\t파라미터\\t옵션)")],
+    company: Annotated[str | None, typer.Option("--company", "-c", help="회사 코드 또는 회사 ID")] = None,
+    output: Annotated[str, typer.Option("--output", "-o", help="출력 형식 (tsv, junit)")] = "tsv",
+    out: Annotated[Path | None, typer.Option("--out", help="JUnit XML 저장 대상 디렉터리 (TEST-test-compare.xml)")] = None,
+    db: Annotated[str, typer.Option("--db", help="대상 DB명 (기본: asseterpdb)")] = "asseterpdb",
+) -> None:
+    """조회 API와 AS-IS SQL 결과 일괄 비교 대조 시험."""
+    from yunhee.tools.test.batch_compare import run_batch_compare
+
+    res = run_batch_compare(tsv_file, company=company, output_format=output, out_dir=out, db_name=db)
     if not res.ok and not res.data:
         typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
@@ -2345,6 +2483,10 @@ def sql_check_cmd(
         bool,
         typer.Option("--summary", help="매퍼별 ✅ n / ❌ m 한 줄 및 ❌ statement만 상세 출력"),
     ] = False,
+    java_types: Annotated[
+        bool,
+        typer.Option("--java-types/--no-java-types", help="TOBE 매퍼 Java 시그니처 타입을 EXPLAIN 파라미터에 바인딩 (기본 켬)"),
+    ] = True,
     new_since_index: Annotated[
         bool,
         typer.Option("--new-since-index", "--changed-asis", help="색인 기준 이후 새로 생겼거나 최근 변경된 AS-IS 매퍼 SQL만 EXPLAIN 검증"),
@@ -2387,7 +2529,15 @@ def sql_check_cmd(
             else:
                 typer.secho(f"[ERROR] TOBE 매퍼 경로를 찾을 수 없습니다: {tobe}", fg=typer.colors.RED)
                 raise typer.Exit(1)
-        res = check_tobe_sql(tobe, db=db, only=only, changed=changed, summary=summary)
+        res = check_tobe_sql(
+            tobe,
+            db=db,
+            only=only,
+            changed=changed,
+            summary=summary,
+            java_types=java_types,
+            output_format=output or "text",
+        )
         if not res.ok and not res.data:
             typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED)
             raise typer.Exit(1)

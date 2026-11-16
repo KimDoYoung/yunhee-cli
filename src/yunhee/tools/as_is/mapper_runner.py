@@ -30,6 +30,8 @@ def run_mapper_statement(
     limit_rows: int | None = None,
     rollback: bool = False,
     src_root: Path | None = None,
+    auto_params: bool = False,
+    company: str | None = None,
 ) -> ToolResult:
     """TOBE 매퍼 statement를 실행하고 필요한 경우 AS-IS SQL과 결과를 비교한다."""
     if "#" not in target:
@@ -41,6 +43,20 @@ def run_mapper_statement(
     file_part, sid = target.split("#", 1)
     file_part = file_part.strip()
     sid = sid.strip()
+
+    # auto-params 처리
+    params_dict = dict(params or {})
+    if auto_params:
+        from yunhee.tools.test.params import resolve_params_for_statement
+        res_p = resolve_params_for_statement(target, company=company, user_params=params_dict, db_name=db_name)
+        if res_p.ok and res_p.data and "params" in res_p.data:
+            auto_chosen: dict[str, str] = {}
+            for p in res_p.data["params"]:
+                if p.value != "?" and p.name not in params_dict:
+                    params_dict[p.name] = str(p.value)
+                    auto_chosen[p.name] = str(p.value)
+            if auto_chosen:
+                sys.stderr.write(f"자동 파라미터: {', '.join(f'{k}={v}' for k, v in auto_chosen.items())}\n")
 
     # 파일 경로 해결 (절대 경로 또는 WORK_DIR 상대)
     mapper_path = Path(file_part)
@@ -86,8 +102,6 @@ def run_mapper_statement(
             ok=False,
             error="쓰기 statement(insert/update/delete)는 --rollback 옵션이 필요합니다.",
         )
-
-    params_dict = dict(params or {})
 
     # 066 #8: 빈 값 파라미터 경고
     for k, v in params_dict.items():

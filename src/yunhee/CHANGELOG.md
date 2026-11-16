@@ -2,6 +2,46 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [0.9.9] - 2026-11-16
+수정사항 068 · 069 반영: `test-scenario-skel` 뼈대 품질 고도화, `yunhee sql` 동명 열 구분, `test-coverage` 이중 집계 수정 및 서버 로그 실행 커버리지 추가:
+- **`test-scenario-skel` 뼈대 품질 대폭 개선 (`src/yunhee/tools/test/scenario_skel.py`, `src/yunhee/cli.py`)**:
+  - **Actor 이어받기 및 역할어·회사 구분**: 직전 단계 actor 상속, 줄 주석(`# 301`) 및 단계 설명·따라하기 표 역할어(`직원`, `팀장`, `경영관리` 등) 기반 사번 매핑, `company: admin`(`kfs`) 유지 및 가상회사 `COMPANY` 상수 사용.
+  - **자리표시 및 앞 단계 응답 변수 연결**: `<401>`·`<402>` $\rightarrow$ `emp["402"]`, `{errandId}`·`{apprId}`·`<3>`·`<교통비ID,…>` 등 앞 단계 응답 변수 바인딩(f-string), 문서분류 `tree(cid, ...)` 및 `classTreeId=…` 연결, 미해결 자리표시 `None  # TODO <...>` 안전 처리.
+  - **요청 본문 · 묶음 단계 · 결재(`apr`) · 오류 기대(`sc.raw`)**: 주석/인라인 `{ ... }` 본문 파싱, 묶음 마지막 줄에만 `expect` 부착(`expect.api`는 별도 조회 단계 생성), 결재 `apr.save_body` 틀 및 누락된 `/apprs/new` 자동 삽입, 에러 기대 주석(`INVALID_INPUT`, `→ 403` 등)의 `sc.raw` 변환, 상대 경로(`/copy`, `?companyId=0`) 기준 경로 결합.
+  - **`returns` · `rows` · `table delta` 코드화**: `returns` $\rightarrow$ `expect={"": val}`, `rows` $\rightarrow$ `len(v or []) == n`, `table delta` / `tables` $\rightarrow$ `information_schema` 기반 전후 `count_rows` + `sc.check` 자동 생성.
+  - **안전 가드 및 `--check` 모드**: 주석 포함 dict/list 멀티라인 포맷팅으로 문법 오류 원천 차단, 반환/저장 전 `ast.parse` 검증 강제, YAML 중복 키 감지·병합 보존, `--check [도메인]` 일괄 점검 옵션 추가.
+- **`yunhee sql` 별칭 없는 동명 열 덮어쓰기 버그 수정 (`src/yunhee/tools/sql_runner.py`)**:
+  - `dict_row`로 인해 같은 이름 열(`count`, `count`)이 뒤 값으로 합쳐지던 문제를 튜플 커서 + 동명 열 자동 구분(`count`, `count_2`) 및 stderr 경고 출력으로 해결.
+- **`test-coverage` 이중 집계 수정 및 `--scenario`·`--junit`·`--log` 실행 커버리지 추가 (`src/yunhee/tools/test/coverage.py`, `src/yunhee/cli.py`)**:
+  - `parse_xml_statements`의 짧은 ID와 네임스페이스 키 중복을 제거해 문장 수가 2배(9,334 $\rightarrow$ 4,667, EMP 472)로 집계되던 버그 수정.
+  - `--junit`: `TEST-*.xml`의 통과 테스트 및 `<system-out>` 내 `==> Preparing:` SQL 로그 반영.
+  - `--scenario`: 통과 시나리오 ID의 `tools/tests/scenario/*.py` 함수 내 API 호출 역추적 연결 및 0건 시 안내 경고 출력.
+  - `--log <파일|docker> [--from ...] [--to ...] [--since-run <id>]`: 서버 로그의 `==> Preparing:` 문장을 수집하고 축약 로거(`k.c.k.a.b.e.m.E.selectNextId`)를 도메인·매퍼 이니셜·SQL 테이블/컬럼 대조로 **시험됨(확실)**과 **상한(모호 포함)**으로 구분 집계.
+
+## [0.9.8] - 2026-11-16
+수정사항 067 반영: 시험(테스트) 작업용 명령 `test-*` 묶음 신설 및 검증 도구 고도화:
+- **공통 기반: Java 매퍼 시그니처 정적 파서 및 캐싱 (`src/yunhee/tools/test/signature.py`)**:
+  - MyBatis namespace로부터 Java 매퍼 인터페이스 및 Record/DTO 소스를 탐색하여 statement 파라미터명과 Java/PostgreSQL 타입 정적 추출.
+  - 파일 mtime 기반 캐싱 지원 및 불리언('true'/'false')·날짜·숫자 매핑 표준화.
+- **`sql-check` Java 타입 바인딩 및 기계용 TSV 출력 (`src/yunhee/tools/as_is/sql_checker.py`, `src/yunhee/tools/as_is/mybatis_render.py`)**:
+  - Java 시그니처 타입을 EXPLAIN 파라미터(`NULL::numeric` 등)에 자동 바인딩하여 UNION/INSERT 타입 불일치 거짓경보 해소 (기본 활성화, `--no-java-types` 지원).
+  - `-o tsv` 기계용 출력 모드 추가 (`매퍼\t문장ID\t결과(ok|fail|skip)\t분류(missing|type|syntax|other)\t오류 첫 줄`).
+- **`test-params` 신설 및 `mapper-run --auto-params` (`src/yunhee/tools/test/params.py`, `src/yunhee/tools/as_is/mapper_runner.py`, `src/yunhee/cli.py`)**:
+  - SQL 조건절 비교 열, 동일 행 묶기, 기본 규칙(회사/재직사원/날짜 등), Java 서비스 상수 추적을 통해 DB에서 유효한 시험 파라미터 자동 탐색 (`-o text|json|args`).
+  - `mapper-run --auto-params`: 자동 추론된 값을 기본 바인딩하고 사용자가 입력한 `-p`가 우선 적용되도록 병합하여 실행.
+- **`test-gen-mapper` JUnit5 스모크 테스트 뼈대 자동 생성 (`src/yunhee/tools/test/gen_mapper.py`, `src/yunhee/cli.py`)**:
+  - 매퍼/도메인별 `@MybatisTest` 기반 스모크 테스트(`*SmokeDbTest.java`) 소스 생성.
+  - 리터럴 자동 변환, 값 미결정 문장 `@Disabled`, 프로젝트 불변 관례(Record 생성자 위주, Setter/Data/Map 배제) 준수.
+- **`test-scenario-skel` 업무분석 이벤트 기반 시나리오 파이썬 뼈대 생성 (`src/yunhee/tools/test/scenario_skel.py`, `src/yunhee/cli.py`)**:
+  - 업무분석 이벤트 YAML로부터 시나리오 파이썬 테스트 함수 뼈대 생성 (`--print` 및 `scenario/<module>.py`, `all.py` 자동 등록).
+  - 컨트롤러 `@RequestBody` Record 구성요소 정적 분석 및 누락 필드 `# TODO` 처리, YAML 1.1 `no` 불리언 충돌 및 플로우 시퀀스 물음표 보정.
+- **`test-coverage` 매퍼 문장 및 화면별 시험 커버리지 분석 (`src/yunhee/tools/test/coverage.py`, `src/yunhee/cli.py`)**:
+  - 소스 내 직접/서비스 경유 호출(정적) 및 JUnit XML 결과(동적)를 추적하여 도메인/매퍼/화면 단위 시험 커버리지 집계 (`--by domain|mapper|screen`, `-o md|tsv`).
+- **`test-compare` 조회 API vs AS-IS SQL 일괄 대조 및 JUnit/TSV 리포팅 (`src/yunhee/tools/test/batch_compare.py`, `src/yunhee/cli.py`)**:
+  - TSV 목록 기반 일괄 대조 및 JUnit XML(`TEST-test-compare.xml`) 생성 (0=0은 `skip` 처리, 단일 로그인 세션 유지).
+- **`api` 계정 잠금 방지 경고 포맷 표준화 (`src/yunhee/tools/api_client.py`)**:
+  - 계정 실패 3/5회 이상 시 사전 차단 및 경고 안내 (`⚠ <회사>/<사번> 실패 3/5 — 더 부르면 잠길 수 있음. 비밀번호 출처: ... (계속하려면 --force-login)`).
+
 ## [0.9.7] - 2026-11-14
 수정사항 066 반영 및 안정화:
 - **`biz-appr` 연결 API 메서드 지정 및 KFS 기본 계정 지원 (`src/yunhee/tools/biz/appr.py`, `src/yunhee/cli.py`)**:

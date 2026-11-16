@@ -12,12 +12,14 @@ from yunhee.config import LOCAL_DB, SCHEMA_ENV
 from yunhee.tools.as_is.sql_drift import check_sql_drift
 from yunhee.tools.as_is.src_indexer import find_app
 from yunhee.tools.base import ToolResult
+from yunhee.tools.test.signature import get_method_signature
 
 __all__ = [
     "check_sql",
     "check_sql_drift",
     "check_statement_db_objects",
     "check_tobe_sql",
+    "classify_sql_error",
     "resolve_service_to_sql_id",
 ]
 
@@ -28,6 +30,27 @@ SCHEMA_ERROR_RE = re.compile(
 )
 
 
+def classify_sql_error(err_msg: str) -> str:
+    """PostgreSQL 에러 메시지를 missing, type, syntax, other 중 하나로 분류한다."""
+    err_lc = err_msg.lower()
+    if (
+        "does not exist" in err_lc
+        or "missing from-clause" in err_lc
+        or ("procedure" in err_lc and "not exist" in err_lc)
+    ):
+        return "missing"
+    if (
+        "cannot be matched" in err_lc
+        or "is of type" in err_lc
+        or "type mismatch" in err_lc
+        or "datatype mismatch" in err_lc
+    ):
+        return "type"
+    if "syntax error" in err_lc or "unterminated" in err_lc:
+        return "syntax"
+    return "other"
+
+
 from yunhee.tools.as_is.mybatis_render import (
     STATEMENT_TAGS,
     Node,
@@ -36,6 +59,7 @@ from yunhee.tools.as_is.mybatis_render import (
     parse_xml,
     render_node,
 )
+from yunhee.tools.as_is.mybatis_render import render as mr_render
 
 
 def render(node: Node, ns: str, statements: dict[str, Statement], seen: tuple[str, ...] = ()) -> str:
@@ -870,6 +894,8 @@ def check_tobe_sql(
     only: list[str] | None = None,
     changed: bool = False,
     summary: bool = False,
+    java_types: bool = True,
+    output_format: str = "text",
 ) -> ToolResult:
     """TOBE 매퍼 XML을 대상 DB에서 EXPLAIN 및 검증한다."""
     import fnmatch
@@ -1069,10 +1095,31 @@ def check_tobe_sql(
     success_count_by_cls: dict[str, int] = defaultdict(int)
     failure_count_by_cls: dict[str, int] = defaultdict(int)
     has_failure = bool(xml_errors_by_cls)
+    tsv_rows: list[str] = []
+
+    for cls_name, errs in xml_errors_by_cls.items():
+        for err_line in errs:
+            tsv_rows.append(f"{cls_name}\t*\tfail\tsyntax\t{err_line}")
 
     for st in sorted(targets, key=lambda s: (s.ns, s.line)):
         cls_name = st.ns.split(".")[-1]
-        raw_sql = to_sql(st, statements)
+        unknown_params: list[str] = []
+
+        if java_types:
+            sig = get_method_signature(st.ns, st.sid, src_root=mapper_dir)
+            p_types = {k: v.pg_type for k, v in sig.param_map.items()} if sig else {}
+            if hasattr(st, "node"):
+                try:
+                    raw_sql, unknown_params = mr_render(
+                        st.key, mode="explain", statements=statements, param_types=p_types
+                    )
+                except Exception:  # noqa: BLE001
+                    raw_sql = to_sql(st, statements)
+            else:
+                raw_sql = to_sql(st, statements)
+        else:
+            raw_sql = to_sql(st, statements)
+
         has_unresolved_include = bool(re.search(r"/\*\s*include\s+.*?\s+없음\s*\*/", raw_sql))
 
         call_m = re.match(r"^\s*call\s+([a-zA-Z0-9_]+)", raw_sql, re.IGNORECASE)
@@ -1087,6 +1134,7 @@ def check_tobe_sql(
         if has_unresolved_include and err is not None:
             results_by_cls[cls_name].append(f"{st.sid} ? include 미해결 — mapper-run으로 확인")
             success_count_by_cls[cls_name] += 1
+            tsv_rows.append(f"{cls_name}\t{st.sid}\tskip\tother\tinclude 미해결")
             continue
 
         warn = ""
@@ -1131,21 +1179,42 @@ def check_tobe_sql(
                         else:
                             warn = f" ⚠ (필드 누락: {missing_str})"
 
+        type_hint = f" (타입 모름: {', '.join(sorted(set(unknown_params)))})" if unknown_params and err else ""
+
         if err is None and record_err is None:
             results_by_cls[cls_name].append(f"{st.sid} ✅{warn}")
             success_count_by_cls[cls_name] += 1
+            tsv_rows.append(f"{cls_name}\t{st.sid}\tok\t\t")
         elif record_err is not None:
             has_failure = True
             fail_msg = f"{st.sid} ❌ {record_err}"
             results_by_cls[cls_name].append(fail_msg)
             failure_details_by_cls[cls_name].append(fail_msg)
             failure_count_by_cls[cls_name] += 1
+            tsv_rows.append(f"{cls_name}\t{st.sid}\tfail\tmissing\t{record_err.splitlines()[0]}")
         else:
             has_failure = True
-            fail_msg = f"{st.sid} ❌ {err} (L{st.line})"
+            fail_msg = f"{st.sid} ❌ {err}{type_hint} (L{st.line})"
             results_by_cls[cls_name].append(fail_msg)
             failure_details_by_cls[cls_name].append(fail_msg)
             failure_count_by_cls[cls_name] += 1
+            first_err = err.splitlines()[0] if err else ""
+            cat = classify_sql_error(first_err)
+            tsv_rows.append(f"{cls_name}\t{st.sid}\tfail\t{cat}\t{first_err}")
+
+    if output_format == "tsv":
+        tsv_text = "\n".join(tsv_rows)
+        return ToolResult(
+            ok=not has_failure,
+            data={
+                "summary": tsv_text,
+                "tsv": tsv_text,
+                "total": len(targets) + sum(len(v) for v in xml_errors_by_cls.values()),
+                "results": results_by_cls,
+                "xml_errors": xml_errors_by_cls,
+            },
+            error=None if not has_failure else "일부 SQL 또는 매퍼 XML 검증 실패",
+        )
 
     lines = []
     all_classes = sorted(set(list(results_by_cls.keys()) + list(xml_errors_by_cls.keys())))

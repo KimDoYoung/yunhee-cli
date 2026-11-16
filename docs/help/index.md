@@ -25,6 +25,7 @@
 | **TOBE 프로젝트 RAG 학습(카탈로그·ChromaDB) 및 상태 점검** | `yunhee rag-index`, `rag-reset`, `rag-status`, `rag-search` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **자연어 화면/모달/그리드 조건 탐색 및 질의** | `yunhee agent "<질문>"`, `yunhee ask -a "<질문>"` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **업무분석 / API 권한 검증 / 결재 흐름 / 로컬 DB 쓰기 / 이벤트 문서** | `yunhee biz-endpoints`, `biz-authz`, `biz-appr`, `biz-patch`, `biz-code`, `biz-db-write`, `biz-event-new` | [`biz.md`](file:///home/kdy987/work/yunhee-cli/docs/help/biz.md) |
+| **시험 자동화 / 파라미터 추론 / 스모크·시나리오 뼈대 / 커버리지 / 일괄 대조** | `yunhee test-params`, `test-gen-mapper`, `test-scenario-skel`, `test-coverage`, `test-compare` | [`test.md`](file:///home/kdy987/work/yunhee-cli/docs/help/test.md) |
 
 ---
 
@@ -98,6 +99,13 @@
 - `biz-appr <link_code> --ref <id> -u <user> -c <company> [--confirm|--reject]`: 업무 문서와 결재 연동 상신·연결·승인/반려 단계 자동화
 - `biz-patch <method> <path> -d <json> [--where <cond>]`: API 엔드포인트 단일 객체/목록 필드 안전 수정 및 누락 검증
 - `biz-code [kind] [--like <pattern>] [-c <company>]`: 공통코드 분류 및 목록 조회 (회사별 명칭 지원)
+
+### 6. 시험 및 검증 자동화 (`test.md`)
+- `test-params <target> [-c <company>] [-o text|json|args]`: MyBatis 매퍼 statement 실행에 필요한 시험 파라미터 값을 DB에서 스스로 탐색
+- `test-gen-mapper <target> [--dry-run] [--force]`: 매퍼 스모크 시험(JUnit5 @MybatisTest) 클래스 소스 뼈대 자동 생성
+- `test-scenario-skel <event_id> [--print]`: 업무분석 이벤트 YAML로부터 시나리오 파이썬 테스트 함수 뼈대 생성
+- `test-coverage [--by domain|mapper|screen]`: 매퍼 문장 및 화면 단위 테스트 커버리지 분석
+- `test-compare <tsv_file> [-c <company>] [-o tsv|junit]`: 조회 API와 AS-IS SQL 결과 일괄 비교 대조 시험
 - `biz-db-write -f <file>|-e <sql> [--no-backup]`: 로컬 DB 대상 안전한 쓰기 실행 (자동 pg_dump 백업 및 안전 가드)
 - `biz-event-new <ID> --screens <screens> [--title <title>]`: AS-IS/TOBE 화면 색인을 바탕으로 비즈니스 이벤트 분석 문서 골격 생성
 - `api` (확장): `--password` 직접 지정 및 3회 연속 로그인 실패 시 계정 잠금 방지 가드(`--force-login`) 지원

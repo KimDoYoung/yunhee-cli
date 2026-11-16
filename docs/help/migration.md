@@ -97,6 +97,8 @@ AS-IS GXT 화면 파일의 생성자 라이프사이클(E0), 위젯 이벤트(E1
 MyBatis 매퍼 XML의 동적 SQL(`<if>`, `<choose>`, `<foreach>`)을 펼쳐 대상 DB에서 `psql EXPLAIN` 정합성 및 소스 간 SQL Drift를 검증합니다.
 - **주요 옵션**:
   - `--tobe <DIR>`: TOBE 매퍼 디렉터리 경로 (TOBE SQL 정합성 및 DTO 매핑 검증 모드 — Java `record` DTO의 열 누락은 런타임 500 방지를 위해 `❌` 오류 및 비-0 종료코드로 판정하며, 일반 setter 클래스 필드 누락은 `⚠` 경고로 표시, 남는 별칭은 무시, `<include><property/></include>` 전개 및 미해결 include `?` 표시 지원)
+  - `--java-types / --no-java-types`: TOBE 매퍼 Java 인터페이스의 파라미터 타입을 정적으로 읽어 EXPLAIN에 타입 캐스트(`NULL::numeric` 등)를 적용합니다 (기본 켬). UNION/INSERT의 타입 불일치 거짓경보를 원천 방지하며, 옛 동작은 `--no-java-types`로 확인합니다.
+  - `-o, --output tsv`: 기계용 TSV 출력 (`매퍼\t문장ID\t결과(ok|fail|skip)\t분류(missing|type|syntax|other)\t오류 첫 줄`).
   - `--changed`: git diff (+untracked) 변경된 매퍼 XML만 검증
   - `--new-since-index`, `--changed-asis`: 마지막 `sql-check.md` 생성 이후 AS-IS에 새로 추가·변경된 매퍼 XML만 빠르게 검증 (`git pull` 직후 추천)
   - `--old <DIR> --new <DIR>`: 이전 소스와 새 소스 간 SQL Drift 검증 모드
@@ -105,12 +107,14 @@ MyBatis 매퍼 XML의 동적 SQL(`<if>`, `<choose>`, `<foreach>`)을 펼쳐 대�
   ```bash
   yunhee sql-check ~/workspace26/Asset-OMS --db asseterpdb
   yunhee sql-check --new-since-index
-  yunhee sql-check --tobe src/main/resources/mapper --changed
+  yunhee sql-check --tobe src/main/resources/mapper --summary
+  yunhee sql-check --tobe src/main/resources/mapper -o tsv
   ```
 
 ### `yunhee mapper-run <target>`
 TOBE MyBatis 매퍼 statement를 직접 실행하고 AS-IS SQL 결과와 건수/데이터를 비교합니다.
 - **주요 옵션**:
+  - `--auto-params`: `test-params`가 DB 및 Java 시그니처에서 스스로 찾은 유효한 파라미터 값으로 자동 바인딩하여 실행 (직접 입력한 `-p`가 우선).
   - `-p, --param <key=val>`: 쿼리 파라미터 (반복 가능. `<foreach>` 컬렉션은 `-p <collection>=a,b,c` 또는 `-p 'collection=[a,b]'`)
   - `--compare <ASIS_SQL_ID>`: 비교할 AS-IS SQL ID
   - `--rollback`: 트랜잭션 실행 후 롤백 (쓰기 쿼리 필수)

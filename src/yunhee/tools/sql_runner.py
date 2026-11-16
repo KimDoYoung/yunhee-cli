@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import psycopg
-from psycopg.rows import dict_row
 
 from yunhee import config
 from yunhee.tools.base import ToolResult
@@ -234,9 +233,35 @@ def _escape_tsv_cell(val: Any, null_str: str = "") -> str:
     )
 
 
+def _dedup_columns(raw_cols: list[str]) -> tuple[list[str], list[str]]:
+    """같은 이름의 열이 여러 개일 때 순서대로 count, count_2처럼 구분하고 경고 목록을 반환한다."""
+    counts: dict[str, int] = {}
+    deduped: list[str] = []
+    for c in raw_cols:
+        cnt = counts.get(c, 0) + 1
+        counts[c] = cnt
+        deduped.append(c if cnt == 1 else f"{c}_{cnt}")
+
+    dup_warns: list[str] = []
+    for c, cnt in counts.items():
+        if cnt > 1:
+            names = [c] + [f"{c}_{i}" for i in range(2, cnt + 1)]
+            dup_warns.append(f"⚠ 같은 이름 열 '{c}' ({cnt}개) → {', '.join(names)} 로 구분")
+    return deduped, dup_warns
+
+
+def _row_cell(row: Any, idx: int, col_name: str) -> Any:
+    """행이 tuple/list이면 위치(idx)로, dict이면 열 이름(col_name)으로 값을 꺼낸다."""
+    if isinstance(row, (tuple, list)):
+        return row[idx] if idx < len(row) else None
+    if isinstance(row, dict):
+        return row.get(col_name)
+    return None
+
+
 def format_tsv(
     cols: list[str],
-    rows: list[dict[str, Any]],
+    rows: list[Any],
     no_header: bool = False,
     null_str: str = "",
 ) -> str:
@@ -245,13 +270,13 @@ def format_tsv(
     if not no_header and cols:
         lines.append("\t".join(_escape_tsv_cell(c, "") for c in cols))
     for r in rows:
-        lines.append("\t".join(_escape_tsv_cell(r.get(c), null_str) for c in cols))
+        lines.append("\t".join(_escape_tsv_cell(_row_cell(r, i, c), null_str) for i, c in enumerate(cols)))
     return "\n".join(lines)
 
 
 def format_csv(
     cols: list[str],
-    rows: list[dict[str, Any]],
+    rows: list[Any],
     no_header: bool = False,
     null_str: str = "",
 ) -> str:
@@ -268,7 +293,7 @@ def format_csv(
     if not no_header and cols:
         writer.writerow(cols)
     for r in rows:
-        writer.writerow([null_str if r.get(c) is None else str(r.get(c)) for c in cols])
+        writer.writerow([null_str if _row_cell(r, i, c) is None else str(_row_cell(r, i, c)) for i, c in enumerate(cols)])
     return buf.getvalue().rstrip("\n")
 
 
@@ -285,9 +310,10 @@ def _to_json_val(val: Any) -> Any:
     return str(val)
 
 
-def format_json(cols: list[str], rows: list[dict[str, Any]]) -> str:
+def format_json(cols: list[str], rows: list[Any]) -> str:
     """객체 배열 JSON 문자열을 생성한다."""
-    payload = [{c: _to_json_val(r.get(c)) for c in cols} for r in rows]
+    dedup_cols, _ = _dedup_columns(cols)
+    payload = [{c: _to_json_val(_row_cell(r, i, c)) for i, c in enumerate(dedup_cols)} for r in rows]
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -456,8 +482,10 @@ def run_sql(
     if not rollback:
         conn.read_only = True
 
+    dup_col_warnings: list[str] = []
+
     try:
-        with conn.cursor(row_factory=dict_row) as cur:
+        with conn.cursor() as cur:
             # 타임아웃 설정
             timeout_ms = int(timeout * 1000)
             cur.execute(f"SET statement_timeout = '{timeout_ms}ms'")
@@ -468,7 +496,7 @@ def run_sql(
                     cur.execute(v_val)
                     row = cur.fetchone()
                     if row:
-                        variables[v_name] = next(iter(row.values()))
+                        variables[v_name] = next(iter(row.values())) if isinstance(row, dict) else row[0]
 
             for stmt in stmts:
                 is_gset = False
@@ -499,7 +527,10 @@ def run_sql(
                 if is_gset:
                     row = cur.fetchone()
                     if row:
-                        for col_k, col_v in row.items():
+                        raw_cols = [desc.name for desc in cur.description] if cur.description else []
+                        cols_g, _ = _dedup_columns(raw_cols)
+                        pairs = row.items() if isinstance(row, dict) else zip(cols_g, row)
+                        for col_k, col_v in pairs:
                             variables[col_k] = col_v
                             output_lines.append(f"\\gset: {col_k}={col_v}")
                     continue
@@ -516,8 +547,15 @@ def run_sql(
                 elif upper == "SELECT" or cur.description:
                     rows = cur.fetchall()
                     total_rows = len(rows)
-                    preview_rows = rows[:eff_limit] if eff_limit is not None else rows
-                    cols = [desc.name for desc in cur.description] if cur.description else []
+                    preview_raw = rows[:eff_limit] if eff_limit is not None else rows
+                    raw_cols = [desc.name for desc in cur.description] if cur.description else []
+                    cols, d_warns = _dedup_columns(raw_cols)
+                    if d_warns:
+                        dup_col_warnings.extend(d_warns)
+                    preview_rows = [
+                        r if isinstance(r, dict) else dict(zip(cols, r))
+                        for r in preview_raw
+                    ]
                     last_table_data = {
                         "total_rows": total_rows,
                         "columns": cols,
@@ -542,7 +580,7 @@ def run_sql(
         except Exception:  # noqa: BLE001, S110
             pass
 
-    warnings: list[str] = []
+    warnings: list[str] = list(dup_col_warnings)
 
     # 062 #3: 읽기 전용 실행에서 쓰기 함수(f_create_seq 등)가 조용히 NULL을 반환할 때 경고
     if not rollback and last_table_data:

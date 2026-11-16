@@ -1136,6 +1136,7 @@ def render_with_meta(
     src_root: Path | None = None,
     statements: dict[str, Statement] | None = None,
     branch_overrides: dict[str, bool] | None = None,
+    param_types: dict[str, str] | None = None,
 ) -> tuple[str, list[str], list[str]]:
     """statement를 렌더링하고 (SQL, 누락 파라미터 목록, 분기 판정 로그)를 반환한다."""
     if statements is None:
@@ -1152,6 +1153,8 @@ def render_with_meta(
     missing_params: list[str] = []
     branch_log: list[str] = []
     local_params = dict(params)
+    if param_types and "__param_types__" not in local_params:
+        local_params["__param_types__"] = param_types
     if "isPostgreSql" not in local_params:
         local_params["isPostgreSql"] = True
     if "isOracle" not in local_params:
@@ -1178,11 +1181,28 @@ def render_with_meta(
         sql = rendered
         if local_params.get("__keep_params__"):  # 파라미터 이름을 남긴다 (상태값 추적용): #{statCd} → "__p_statCd" (따옴표로 대소문자 유지)
             sql = re.sub(r"#\{\s*([^},\s]+)[^}]*\}", lambda m: '"__p_' + re.sub(r"\W", "_", m.group(1)) + '"', sql)
-        sql = re.sub(r"#\{[^}]*\}", "NULL", sql)
+
+        p_types = local_params.get("__param_types__")
+        unknown_p: list[str] = []
+        if isinstance(p_types, dict) and p_types:
+            def replace_typed(m: re.Match) -> str:
+                raw_expr = m.group(1).strip()
+                v = raw_expr.split(",")[0].strip()
+                t = p_types.get(v)
+                if not t and "." in v:
+                    t = p_types.get(v.split(".")[-1])
+                if t:
+                    return f"NULL::{t}"
+                unknown_p.append(v)
+                return "NULL"
+            sql = re.sub(r"#\{\s*([^}]+)\}", replace_typed, sql)
+        else:
+            sql = re.sub(r"#\{[^}]*\}", "NULL", sql)
+
         sql = re.sub(r"(?i)\bin\s*\$\{[^}]*\}", "IN (1)", sql)
         sql = re.sub(r"(?i)\bin\s+NULL\b", "IN (NULL)", sql)
         sql = re.sub(r"\$\{[^}]*\}", "1", sql)
-        return sql.strip().rstrip(";"), [], branch_log
+        return sql.strip().rstrip(";"), unknown_p, branch_log
 
     # mode == "params" 파라미터 대입
     def replace_sharp(m: re.Match) -> str:
@@ -1238,6 +1258,7 @@ def render(
     src_root: Path | None = None,
     statements: dict[str, Statement] | None = None,
     branch_overrides: dict[str, bool] | None = None,
+    param_types: dict[str, str] | None = None,
 ) -> tuple[str, list[str]]:
     """statement 또는 SQL 조각을 렌더링한다.
 
@@ -1250,6 +1271,7 @@ def render(
         src_root=src_root,
         statements=statements,
         branch_overrides=branch_overrides,
+        param_types=param_types,
     )
     return sql, unique_missing
 
