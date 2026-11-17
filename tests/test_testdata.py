@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import datetime
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -89,7 +90,7 @@ def test_synthesize_table_rows_clone_and_mutate() -> None:
         emp_no="121",
         emp_nm="홍길동",
         org_id=3012,
-        today=datetime.date(2026, 11, 17),
+        today=date(2026, 11, 17),
     )
 
     sample_rows = [
@@ -124,7 +125,9 @@ def test_synthesize_table_rows_clone_and_mutate() -> None:
     assert rows[0]["ast01_company_id"] == 1004
     assert rows[0]["ast01_emp_id"] == 5021
     assert rows[0]["ast01_org_id"] == 3012
-    assert rows[0]["ast01_std_dt"] == "20261117"
+    # 최근 1개월 이내로 행마다 다르게 분산 (오늘 2026-11-17 기준 -1일, -3일)
+    assert rows[0]["ast01_std_dt"] == "20261116"
+    assert rows[1]["ast01_std_dt"] == "20261114"
     assert rows[0]["ast01_del_yn"] == "N"
     assert rows[0]["ast01_asset_nm"].startswith("[TEST-1234-1]")
     assert rows[0]["ast01_amt"] == 500000
@@ -169,8 +172,8 @@ def test_insert_and_rollback_cycle(tmp_path: Path) -> None:
     mock_cur.__enter__.return_value = mock_cur
     mock_conn.cursor.return_value = mock_cur
     mock_cur.fetchone.side_effect = [
-        {"ast01_asset_id": 900001},
-        {"ast01_asset_id": 900002},
+        {"ast01_asset_id": Decimal(900001)},
+        {"ast01_asset_id": Decimal(900002)},
     ]
     mock_cur.rowcount = 2
 

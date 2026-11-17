@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -74,6 +75,7 @@ class LoginContext:
     emp_id: int = 0
     emp_no: str = ""
     emp_nm: str = ""
+    emp_email: str = ""
     org_id: int = 0
     today: datetime.date = field(default_factory=datetime.date.today)
 
@@ -210,7 +212,7 @@ def resolve_login_context(
             # 2. 사원 조회 (emp01_person)
             cur.execute(
                 """
-                SELECT emp01_person_id, emp01_emp_no, emp01_kor_nm
+                SELECT emp01_person_id, emp01_emp_no, emp01_kor_nm, emp01_email_addr
                 FROM emp01_person
                 WHERE emp01_company_id = %s
                   AND (emp01_emp_no = %s OR emp01_person_id::text = %s)
@@ -226,6 +228,7 @@ def resolve_login_context(
             ctx.emp_id = int(emp_row["emp01_person_id"])
             ctx.emp_no = str(emp_row.get("emp01_emp_no") or user)
             ctx.emp_nm = str(emp_row.get("emp01_kor_nm") or "테스트사원")
+            ctx.emp_email = str(emp_row.get("emp01_email_addr") or "").strip()
 
             # 3. 부서/겸직 조회 (emp04_add_title 또는 emp00_trans_info)
             try:
@@ -406,9 +409,18 @@ def analyze_screen_targets(
 
         target_tables = _order_tables_by_dependency(conn, existing_tables)
 
-    # 너무 많은 보조 테이블에 불필요하게 넣지 않도록 기본은 상위 2개(메인 + 주요 상세) 테이블로 제한 (단, override_tables 제외)
-    if not override_tables and len(target_tables) > 2:
-        target_tables = target_tables[:2]
+    # 너무 많은 보조 테이블에 불필요하게 넣지 않도록 제한 (단, override_tables 제외)
+    # 특히 화면 접두어(예: dcr10_)와 일치하는 메인 테이블이 존재하면 그 테이블(및 동일 접두어 테이블)만 선택하여
+    # 팝업에서 딸려온 무관한 테이블(예: dcr01_class_tree)에 불필요한 INSERT가 일어나는 것을 방지한다.
+    if not override_tables and target_tables:
+        m_scr = re.match(r"^([a-zA-Z]+\d+)_", screen_name or "")
+        if m_scr:
+            exact_prefix = m_scr.group(1).lower() + "_"
+            exact_matches = [t for t in target_tables if t.startswith(exact_prefix)]
+            if exact_matches:
+                target_tables = exact_matches
+        if len(target_tables) > 2:
+            target_tables = target_tables[:2]
 
     return {
         "screen_no": clean_no,
@@ -613,6 +625,23 @@ def _truncate_str(val: str, max_len: int | None) -> str:
     return val
 
 
+def _normalize_json_val(val: Any) -> Any:
+    """psycopg 반환값(Decimal, date, datetime 등)을 JSON 직렬화 가능한 기본 타입으로 변환한다."""
+    if isinstance(val, Decimal):
+        return int(val) if val == int(val) else float(val)
+    if isinstance(val, (datetime.date, datetime.datetime)):
+        return val.isoformat()
+    return val
+
+
+def _json_default(obj: Any) -> Any:
+    if isinstance(obj, Decimal):
+        return int(obj) if obj == int(obj) else float(obj)
+    if isinstance(obj, (datetime.date, datetime.datetime)):
+        return obj.isoformat()
+    return str(obj)
+
+
 def synthesize_table_rows(
     conn: psycopg.Connection,
     meta: TableMeta,
@@ -711,6 +740,9 @@ def synthesize_table_rows(
             if clower.endswith(("_emp_nm", "_writer_nm", "_reg_nm")) and ctx.emp_nm:
                 new_row[cname] = _truncate_str(ctx.emp_nm, col.max_length)
                 continue
+            if clower.endswith(("_sender_email", "_email_addr")) and ctx.emp_email:
+                new_row[cname] = _truncate_str(ctx.emp_email, col.max_length)
+                continue
 
             # 4. 부서 / 조직 ID 치환
             if (
@@ -738,9 +770,12 @@ def synthesize_table_rows(
                     new_row[cname] = _truncate_str("Y", col.max_length)
                 continue
 
-            # 6. 날짜 / 기간 컬럼 오늘 날짜 기준 현재화
-            is_end_date = any(k in clower for k in ("_end_", "_to_", "_close_", "_exp_"))
-            target_date = ctx.today + datetime.timedelta(days=30) if is_end_date else ctx.today
+            # 6. 날짜 / 기간 컬럼: 오늘 기준 최근 1개월(오늘-28일 ~ 오늘-1일) 내로 행별 분산
+            # - 일반일/종료일: 오늘 - (1, 3, 5...)일
+            # - 시작일(_start_, _from_, _strt_, _bgn_): 종료일보다 앞선 오늘 - (10, 13, 16...)일
+            is_start_date = any(k in clower for k in ("_start_", "_from_", "_strt_", "_bgn_", "_open_"))
+            days_ago = min(10 + idx * 3, 28) if is_start_date else min(1 + idx * 2, 25)
+            target_date = ctx.today - datetime.timedelta(days=days_ago)
 
             if dtype == "date":
                 new_row[cname] = target_date
@@ -770,7 +805,7 @@ def synthesize_table_rows(
 
             # 7. 제목/명칭/비고 컬럼에 테스트 데이터 식별 표시 추가
             if dtype in ("character varying", "varchar", "character", "char", "text") and clower.endswith(
-                ("_nm", "_title", "_subj", "_rmk", "_note", "_desc", "_memo", "_reason", "_content")
+                ("_nm", "_title", "_title_text", "_subj", "_rmk", "_note", "_desc", "_memo", "_reason", "_content")
             ):
                 orig = str(base_row.get(cname) or "").strip()
                 prefix = f"[TEST-{screen_no}-{idx + 1}]"
@@ -928,7 +963,7 @@ def insert_test_data(
                             cur.execute(stmt, vals)
                             ret_row = cur.fetchone()
                             if ret_row:
-                                pk_tuple = [ret_row[pk] for pk in t_meta.pk_cols]
+                                pk_tuple = [_normalize_json_val(ret_row[pk]) for pk in t_meta.pk_cols]
                                 inserted_pks.append(pk_tuple)
 
                         cur.execute(f"RELEASE SAVEPOINT sp_table_{seq_idx};")
@@ -956,37 +991,36 @@ def insert_test_data(
                 conn.rollback()
                 return ToolResult(ok=False, error=f"화면 [{clean_screen}] 대상 테이블에 삽입된 행이 없습니다.")
 
+            manifest: dict[str, Any] = {
+                "tx_code": tx_code,
+                "status": "DRY_RUN" if dry_run else "ACTIVE",
+                "screen_no": clean_screen,
+                "screen_name": screen_info.get("screen_name") or "",
+                "menu_title": screen_info.get("menu_title") or "",
+                "login": raw_login,
+                "login_key": ctx.login_key,
+                "company_cd": ctx.company_cd,
+                "company_id": ctx.company_id,
+                "emp_no": ctx.emp_no,
+                "emp_id": ctx.emp_id,
+                "org_id": ctx.org_id,
+                "created_at": now.isoformat(timespec="seconds"),
+                "rolled_back_at": None,
+                "operations": operations,
+                "sql_preview": generated_sql_preview[:5],
+            }
+
             if dry_run:
                 conn.rollback()
             else:
+                manifest_path = get_test_data_dir(work_dir) / f"{tx_code}.json"
+                manifest_json = json.dumps(manifest, ensure_ascii=False, indent=2, default=_json_default)
+                manifest_path.write_text(manifest_json, encoding="utf-8")
+                manifest["manifest_path"] = str(manifest_path)
                 conn.commit()
         except Exception as exc:  # noqa: BLE001
             conn.rollback()
             return ToolResult(ok=False, error=str(exc))
-
-    manifest: dict[str, Any] = {
-        "tx_code": tx_code,
-        "status": "DRY_RUN" if dry_run else "ACTIVE",
-        "screen_no": clean_screen,
-        "screen_name": screen_info.get("screen_name") or "",
-        "menu_title": screen_info.get("menu_title") or "",
-        "login": raw_login,
-        "login_key": ctx.login_key,
-        "company_cd": ctx.company_cd,
-        "company_id": ctx.company_id,
-        "emp_no": ctx.emp_no,
-        "emp_id": ctx.emp_id,
-        "org_id": ctx.org_id,
-        "created_at": now.isoformat(timespec="seconds"),
-        "rolled_back_at": None,
-        "operations": operations,
-        "sql_preview": generated_sql_preview[:5],
-    }
-
-    if not dry_run:
-        manifest_path = get_test_data_dir(work_dir) / f"{tx_code}.json"
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        manifest["manifest_path"] = str(manifest_path)
 
     # 4. 선택적 조회 API 검증
     if verify_api and not dry_run and screen_info.get("apis"):
@@ -1189,7 +1223,10 @@ def rollback_test_data(
                     manifest["status"] = "ROLLED_BACK"
                     manifest["rolled_back_at"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
                     manifest["deleted_details"] = deleted_details
-                    m_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+                    m_path.write_text(
+                        json.dumps(manifest, ensure_ascii=False, indent=2, default=_json_default),
+                        encoding="utf-8",
+                    )
 
                 rolled_back_results.append(
                     {
