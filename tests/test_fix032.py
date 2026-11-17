@@ -192,7 +192,7 @@ def test_032_1_index_src_metadata_and_frontmatter(tmp_path: Path):
     readme_text = (target / "README.md").read_text(encoding="utf-8")
     assert f"소스 커밋: {source_json['commit']} (ioc," in readme_text
     assert "색인 생성:" in readme_text
-    assert "yunhee 0." in readme_text
+    assert "yunhee " in readme_text
 
     # 3. 화면 .md frontmatter 확인
     sys27_md = target / "sys" / "screens" / "Sys27_Tab_LoginManage.md"

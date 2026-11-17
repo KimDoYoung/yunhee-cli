@@ -1589,6 +1589,67 @@ def test_gen_mapper_cmd(
         raise typer.Exit(code=1)
 
 
+@app.command(name="test-gen-screen")
+def test_gen_screen_cmd(
+    targets: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help="생성할 화면번호 또는 화면 클래스명 (쉼표 ',', 공백 ' ' 혼합 구분 가능, 예: 1023,1282 1100)"
+        ),
+    ] = None,
+    target_dir: Annotated[
+        Path | None,
+        typer.Option("--target", "-t", help="출력 폴더 경로 (기본: tools/tests/screen-test/gen/)"),
+    ] = None,
+    tobe: Annotated[
+        Path | None,
+        typer.Option("--tobe", help="TOBE 프로젝트 루트 경로 (기본: YUNHEE_TOBE_SRC_DIR 또는 WORK_DIR)"),
+    ] = None,
+    stdout: Annotated[
+        bool,
+        typer.Option("--stdout", help="파일로 저장하지 않고 생성된 .gen.cjs 내용을 표준 출력으로 표시"),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="기존 파일 내용 동일 여부와 무관하게 무조건 재작성"),
+    ] = False,
+    all_screens: Annotated[
+        bool,
+        typer.Option("--all", help="변환된 모든 TOBE 메뉴 화면에 대해 일괄 생성"),
+    ] = False,
+    summary: Annotated[
+        bool,
+        typer.Option("--summary", "-s", help="화면별 단계 수·위험 단계·unknown 비율 요약 표 출력"),
+    ] = False,
+    rules: Annotated[
+        Path | None,
+        typer.Option("--rules", help="버튼 위험 분류 및 공통 부품 규칙 설정 JSON 경로"),
+    ] = None,
+) -> None:
+    """화면번호 → 화면 시험 단계 목록(.gen.cjs) 정적 생성 (LLM 미사용, 결정적)"""
+    from yunhee.tools.test.gen_screen import run_test_gen_screen
+
+    res = run_test_gen_screen(
+        targets=targets,
+        target_dir=target_dir,
+        tobe=tobe,
+        stdout=stdout,
+        force=force,
+        all_screens=all_screens,
+        summary=summary,
+        rules_path=rules,
+    )
+    if not res.ok and not res.data:
+        typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    out_text = (res.data or {}).get("output", "")
+    if out_text:
+        typer.echo(out_text)
+    if not res.ok:
+        raise typer.Exit(code=1)
+
+
 @app.command(name="test-scenario-skel")
 def test_scenario_skel_cmd(
     event_id: Annotated[str | None, typer.Argument(help="업무분석 이벤트 ID (예: EMP-BZ-0018) 또는 --check 시 도메인명 (예: EMP)")] = None,

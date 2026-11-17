@@ -2,6 +2,25 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [1.0.3] - 2026-11-17
+수정사항 071 반영: `test-gen-screen` 주석 기반 이름 추출 금지, label 없는 입력 요소 위치(index) 대체, 동적 모달 `expectModal: true` 및 경고 핸들러 `mayWarn: true` 지원:
+- **주석 기반 라벨 추출 완전 차단 (`src/yunhee/tools/test/gen_screen.py`)**:
+  - 이름은 JSX 속성 값(글자 상수: `label`, `placeholder`, `title`, `aria-label`, 버튼 자식 글자, 그리드 열 헤더)에서만 가져오도록 엄격히 제한.
+  - 파일 헤더/인라인 주석(`//`, `/* */`, `{/* */}`, JSDoc)에서 라벨을 추측하던 로직(`_extract_comment_combo_labels`, `_extract_header_title`, JSX 앞쪽 태그 텍스트 추측) 완전 제거.
+- **label 없는 입력 요소의 위치(index) 기반 대체 및 `unknown` 기록**:
+  - `SearchBar.Field` 등으로 감싸지지 않아 label이 없는 컨트롤(`<Select>`, `<SystemCodeComboBox>` 등)은 상위 컨테이너(예: `SearchBar`, `Space`) 내 탑레벨 입력 요소 순서(0부터 시작하는 index)로 가리킴 (`in: "SearchBar"`, `index: 1`, `id: "<컴포넌트>/selectEach:#1"`).
+  - 위치 대체 시 `unknown` 배열에 `{ src, reason: "label 없음 — 위치로 대신" }`을 남겨 수동 확인이 필요한 지표로 활용.
+- **동적 모달 제목의 `expectModal: true` 지정 및 `unknown` 기록**:
+  - 모달의 타이틀이 글자 상수가 아닌 변수/JSX/템플릿 리터럴(`title={title}` 등)인 경우, 문자열을 추측하지 않고 `expectModal: true`(아무 모달이나 열리면 통과)로 결정적 직렬화.
+  - `unknown` 배열에 `{ src, reason: "모달 제목이 동적 — expectModal:true" }` 자동 기록.
+- **경고 메시지로 끝나는 셀·버튼 `mayWarn: true` 감지**:
+  - 핸들러(인라인 화살표 함수 또는 같은 파일의 로컬 함수) 본문에서 `message.warning|info|error` 또는 `Modal.warning|info` 호출이 감지되는 경우 `mayWarn: true`를 부착하여 실행기가 모달 미팝업/경고 메시지 발생 시에도 정상 처리하도록 보완.
+수정사항 070 반영: 화면번호 → 화면 시험 단계 목록(`.gen.cjs`) 정적 생성기(`test-gen-screen`) 신설:
+- **`test-gen-screen` 신설 (`src/yunhee/tools/test/gen_screen.py`, `src/yunhee/data/screen-test-rules.json`, `src/yunhee/cli.py`)**:
+  - `yunhee test-gen-screen <화면번호...>` (`1023`, `1023,1282 1100`, `--all`, `--stdout`, `--force`, `-t`, `--summary`): 로컬 LLM 없이 TSX 소스·화면 카탈로그·`docs/button-types.md`·`screen-test-rules.json`을 정적으로 분석해 브라우저 시험 단계 목록(`tools/tests/screen-test/gen/screen-test-<번호>.gen.cjs`)을 결정적으로 생성.
+  - **공통 부품 내장 버튼 및 입력 요소 자동 추출 (9.1절)**: `<SearchBar onSearch>` / `<SearchPanel onSearch>`의 조회(및 초기화) 버튼(`via: "SearchBar"`), `SearchBar.Field`·`Form.Item`·`EditField`·`Cell`·`Row`·`Field` 안팎의 `DatePicker`(`date`/`dateRange`), `Select`·`SystemCodeComboBox`(`selectEach`), `LookupInput`·`CompanyPopupField`(`lookup` + `expectModal`), `SearchBar.Input`·`Input`·`InputNumber`(`fill` + `then` 조회 연결), `PageTabs`·`Tabs`(`tabEach`), 그리드 `rowClick` 및 `iconCell`·`dynamicIconCell`·`ModalEditGrid`(`cellIcon` + `expectModal`) 추출.
+  - **컴포넌트 범위 기반 안정 ID 및 위험 type 가드 (4절·8절·9.2절)**: 메인 Tab과 인라인 하위 Page/TabPage/Grid/Edit 폼을 모두 순회하며 `<컴포넌트>/<do>:<라벨>` 형식의 흔들리지 않는 ID 부여(동일 컴포넌트 내 중복 시 `#2` 및 `unknown` 기록, 복수 인스턴스 하위 컴포넌트는 `key`/`title` 구분자 부여). 데이터를 바꾸거나 외부 발송하는 위험 버튼(및 `type` 미지정/AntD 기본 버튼)은 `danger: true, enabled: false`로 안전하게 비활성 생성, 조건부 렌더링 요소는 `conditional: true` 표시.
+
 ## [1.0.1] - 2026-11-17
 화면별 테스트 데이터 자동 생성(`test-insert-data`) 및 트랜잭션 코드 기반 롤백(`test-rollback-data`) 기능 추가:
 - **`test-insert-data` 신설 (`src/yunhee/tools/biz/testdata.py`, `src/yunhee/cli.py`)**:

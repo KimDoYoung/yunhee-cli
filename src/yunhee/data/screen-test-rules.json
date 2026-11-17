@@ -1,0 +1,131 @@
+{
+  "buttonTypes": {
+    "safe": [
+      "search",
+      "view",
+      "expand",
+      "collapse",
+      "close",
+      "cancel",
+      "reset",
+      "select",
+      "selectNone",
+      "org",
+      "settings",
+      "shortcut",
+      "goto",
+      "print",
+      "download"
+    ],
+    "danger": [
+      "save",
+      "delete",
+      "removeRow",
+      "send",
+      "register",
+      "generate",
+      "calculate",
+      "assign",
+      "unassign",
+      "change",
+      "move",
+      "upload",
+      "attach",
+      "bookmark",
+      "plus",
+      "minus",
+      "group",
+      "addRow"
+    ]
+  },
+  "implicitComponents": {
+    "SearchBar": {
+      "triggerProp": "onSearch",
+      "do": "click",
+      "buttonProp": "searchText",
+      "defaultButton": "조회",
+      "type": "search",
+      "resetProp": "onReset",
+      "resetButton": "초기화",
+      "resetType": "reset",
+      "resetMinChildren": 3
+    },
+    "SearchPanel": {
+      "triggerProp": "onSearch",
+      "do": "click",
+      "buttonProp": "searchText",
+      "defaultButton": "조회",
+      "type": "search"
+    },
+    "LookupInput": {
+      "triggerProp": "onOpen",
+      "do": "lookup"
+    },
+    "CompanyPopupField": {
+      "do": "lookup",
+      "defaultLabel": "고객사",
+      "expectModal": "고객사 찾기"
+    },
+    "ExpandCollapseButtons": {
+      "buttons": [
+        {
+          "triggerProp": "onExpandAll",
+          "buttonProp": "expandText",
+          "defaultButton": "모두펼치기",
+          "type": "expand"
+        },
+        {
+          "triggerProp": "onCollapseAll",
+          "buttonProp": "collapseText",
+          "defaultButton": "모두접기",
+          "type": "collapse"
+        }
+      ]
+    },
+    "TreeListControlButtons": {
+      "buttons": [
+        {
+          "triggerProp": "onExpandAll",
+          "defaultButton": "모두펼치기",
+          "type": "expand"
+        },
+        {
+          "triggerProp": "onCollapseAll",
+          "defaultButton": "모두접기",
+          "type": "collapse"
+        }
+      ]
+    },
+    "ModalEditGrid": {
+      "triggerProp": "editButton",
+      "handlerProp": "onEdit",
+      "do": "cellIcon",
+      "defaultCol": "수정"
+    },
+    "QuickMoveField": {
+      "do": "selectEach",
+      "defaultLabel": "기준년월"
+    },
+    "QuickMoveDateField": {
+      "do": "fill",
+      "kind": "date",
+      "defaultLabel": "일자"
+    }
+  },
+  "iconCell": {
+    "safeKinds": [
+      "view",
+      "history",
+      "down",
+      "edit"
+    ],
+    "dangerKinds": [
+      "delete",
+      "send",
+      "upload",
+      "add",
+      "check",
+      "move"
+    ]
+  }
+}

@@ -57,6 +57,7 @@ uv run yunhee log tail                                # 최근 전체 로그 흐
 uv run yunhee screen-capture 1029 login=kfstest/104/1111 # TOBE 화면 자동 로그인·겸직선택·오픈 및 조회/행선택/탭/팝업 순회 캡처 (--boxes 요소 좌표 json, 팝업 가려진 요소 배제 및 레이어 격리, --modal-only, --url, --out 지원)
 uv run yunhee mark 01_initial.png draw.json --out 01_initial-alpha.png # 캡처 이미지에 번호 원·강조 상자·화살표·말풍선·마스킹 렌더링 (A-Man 매뉴얼용, --boxes 자동 탐색, outside-* 바깥 앵커, 미지원 type 검증)
 uv run yunhee screen-desc 1002,1029, 1085 --format=md # 쉼표·공백 복수 화면번호의 메뉴명·파일명·사용 팝업·하위 컴포넌트·그리드·버튼·API·SQL·테이블·ASIS 종합 조회 (--format=json,md, --summary, --section 지원)
+uv run yunhee test-gen-screen 1023,1282              # 화면번호 → 화면 시험 단계 목록(tools/tests/screen-test/gen/screen-test-<번호>.gen.cjs) 정적 생성 (--stdout, --force, --all, --summary, -t 지원)
 uv run yunhee trace-crud --screen '#1353,#1404,#1298' # 화면별 C/R/U/D 테이블 작업 매트릭스 일괄 대조 (디스크 캐시 기반 고속 분석)
 
 uv run tools/parse_mapper.py     # ASIS mapper XML → sqlite mapper_index 빌드 (prepare grounding 검증용)
