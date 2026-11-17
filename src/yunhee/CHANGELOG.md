@@ -2,6 +2,12 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [1.0.4] - 2026-11-17
+수정사항 072 반영(Claude): `test-gen-screen` 1.0.3 검수에서 나온 3건:
+- **`mayWarn`에서 `message.error` 제외** (`_handler_may_warn`): `message.warning|info`·`Modal.warning|info`만 본다. 실행기는 mayWarn을 "메시지가 떠도 통과"로 보므로 error까지 넣으면 실제 실패(조회·다운로드 실패)가 PASS로 덮였다(예: 1049 `엑셀다운로드`, 1077 `새로고침`).
+- **`index` 세는 규칙 명시**: Field 계열 하나(안에 DatePicker 둘이 있어도) = 1칸, Field 밖 입력 요소 하나 = 1칸, 버튼·글자는 안 셈. `index` 단계가 있는 `.gen.cjs`에는 머리 주석 한 줄(`// index: …`)로 이 규칙을 적는다(실행기와의 계약).
+- **앞에 보이는 글자를 label로** (`_preceding_text_label`): 속성 label이 없는 입력 요소 바로 앞에 화면에 그려지는 글자 태그(`Typography.Text`·`Text`·`span`·`label`·`b`·`strong`)가 있으면 그 글자를 label로 쓴다(사이에는 공백·주석 자리만 허용, 주석은 여전히 안 씀). 예: 1077 `Sys01_Grid_CompanyMenu/selectEach:#0`(`in: "Space"`) → `selectEach:적용상품`.
+
 ## [1.0.3] - 2026-11-17
 수정사항 071 반영: `test-gen-screen` 주석 기반 이름 추출 금지, label 없는 입력 요소 위치(index) 대체, 동적 모달 `expectModal: true` 및 경고 핸들러 `mayWarn: true` 지원:
 - **주석 기반 라벨 추출 완전 차단 (`src/yunhee/tools/test/gen_screen.py`)**:

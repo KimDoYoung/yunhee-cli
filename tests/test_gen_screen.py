@@ -8,6 +8,9 @@ from typer.testing import CliRunner
 
 from yunhee.cli import app
 from yunhee.tools.test.gen_screen import (
+    _handler_may_warn,
+    _preceding_text_label,
+    _strip_comments_preserve_newlines,
     load_screen_test_rules,
     render_gen_cjs,
     run_test_gen_screen,
@@ -232,6 +235,8 @@ def test_gen_screen_searchbar_and_steps(tmp_path: Path) -> None:
     cjs_text = gen_file.read_text(encoding="utf-8")
     assert "module.exports = {" in cjs_text
     assert 'screenNo: "1023"' in cjs_text
+    # 072: index 세는 규칙을 머리 주석에 적는다(index 단계가 있을 때만)
+    assert "// index: 컨테이너(in) 안 최상위 입력 칸 순서(0부터)" in cjs_text
 
 
 def test_gen_screen_component_scope_danger_and_overwrite(tmp_path: Path) -> None:
@@ -296,3 +301,31 @@ def test_load_screen_test_rules_defaults(tmp_path: Path) -> None:
     assert "bookmark" in rules.danger_button_types
     assert not rules.is_safe_button_type("primary")
     assert not rules.is_safe_button_type(None)
+
+
+def test_may_warn_excludes_error_072() -> None:
+    """072: mayWarn은 warning·info만. message.error는 실제 실패라 넣지 않는다."""
+    assert _handler_may_warn("() => message.warning('선택된 행이 없습니다')", {}) is True
+    assert _handler_may_warn("() => message.info('x')", {}) is True
+    assert _handler_may_warn("() => Modal.warning({ title: 'x' })", {}) is True
+    assert _handler_may_warn("() => void createRdExcel()", {"createRdExcel": "try {} catch (e) { message.error('다운로드 실패') }"}) is False
+    assert _handler_may_warn("() => Modal.error({ title: 'x' })", {}) is False
+
+
+def test_preceding_text_label_072() -> None:
+    """072: 컨트롤 바로 앞에 화면에 보이는 글자(Typography.Text 등)를 label로. 주석은 쓰지 않는다."""
+    jsx = (
+        "<Space wrap>\n"
+        "  <Typography.Text strong>적용상품</Typography.Text>\n"
+        "  {/* [E1] erpProductComboBox 처음 \"전체\" */}\n"
+        "  <SystemCodeComboBox kindCd=\"ErpProductCode\" />\n"
+        "</Space>"
+    )
+    clean = _strip_comments_preserve_newlines(jsx)
+    assert _preceding_text_label(clean, clean.index("<SystemCodeComboBox")) == "적용상품"
+    # 앞에 다른 컨트롤이 끼어 있으면 쓰지 않는다
+    jsx2 = "<span>기준일</span><DatePicker /><Select />"
+    assert _preceding_text_label(jsx2, jsx2.index("<Select")) is None
+    # 주석만 있으면 label 없음
+    jsx3 = _strip_comments_preserve_newlines("<Space>{/* 메일구분 */}<Select /></Space>")
+    assert _preceding_text_label(jsx3, jsx3.index("<Select")) is None
