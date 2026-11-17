@@ -2,6 +2,14 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [1.0.1] - 2026-11-17
+화면별 테스트 데이터 자동 생성(`test-insert-data`) 및 트랜잭션 코드 기반 롤백(`test-rollback-data`) 기능 추가:
+- **`test-insert-data` 신설 (`src/yunhee/tools/biz/testdata.py`, `src/yunhee/cli.py`)**:
+  - `yunhee test-insert-data <login> <screen_no>` (예: `kfstest-121-1111 1023`): 로그인 스펙에서 회사(`sys01_company`)·사원(`emp01_person`)·부서(`emp00_trans_info`/`org01_org_code`) 컨텍스트를 해석하고, 화면번호의 대상 물리 테이블을 추출(공통/마스터 테이블 자동 제외, FK 부모→자식 순 정렬)하여 테스트 데이터를 삽입.
+  - **Clone & Mutate 및 스키마 합성**: 기존 샘플 행 복제 후 PK 채번·회사/사원/부서 ID·오늘 날짜·`[TEST-<화면번호>-<순번>]` 표시를 치환하며, `INSERT ... RETURNING <pk>`로 삽입된 실제 PK를 `.yunhee/test-data/<tx_code>.json` 매니페스트에 기록 후 `transaction-code` 반환.
+- **`test-rollback-data` 신설 (`src/yunhee/tools/biz/testdata.py`, `src/yunhee/cli.py`)**:
+  - `yunhee test-rollback-data <login> <tx_code>` (또는 `--last`, `--screen <화면번호>`, `--list`): 매니페스트에 기록된 테이블과 PK를 자식→부모 역순으로 원자적 `DELETE` 수행 및 화면 테스트 중 파생된 FK 자식 행(`--cascade-children`) 자동 정리.
+
 ## [0.9.9] - 2026-11-16
 수정사항 068 · 069 반영: `test-scenario-skel` 뼈대 품질 고도화, `yunhee sql` 동명 열 구분, `test-coverage` 이중 집계 수정 및 서버 로그 실행 커버리지 추가:
 - **`test-scenario-skel` 뼈대 품질 대폭 개선 (`src/yunhee/tools/test/scenario_skel.py`, `src/yunhee/cli.py`)**:

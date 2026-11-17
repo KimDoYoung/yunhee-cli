@@ -4052,5 +4052,179 @@ def biz_event_new(
         raise typer.Exit(code=1) from exc
 
 
+@app.command(name="test-insert-data")
+def test_insert_data_cmd(
+    login: Annotated[
+        str,
+        typer.Argument(help="로그인 스펙 (예: kfstest-121-1111 또는 kfstest/121/1111)"),
+    ],
+    screen_no: Annotated[
+        str,
+        typer.Argument(help="대상 화면번호 (예: 1234, 1029) 또는 화면 클래스명"),
+    ],
+    count: Annotated[
+        int,
+        typer.Option("-n", "--count", help="테이블당 생성할 테스트 데이터 행 수"),
+    ] = 3,
+    table: Annotated[
+        str | None,
+        typer.Option("-t", "--table", help="자동 추론 대신 강제 지정할 테이블명 (쉼표 구분 가능)"),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="커밋하지 않고 트랜잭션 내에서 INSERT 검증만 수행 후 롤백"),
+    ] = False,
+    verify_api: Annotated[
+        bool,
+        typer.Option("--verify-api/--no-verify-api", help="생성 직후 화면 GET API 호출로 조회 여부 확인"),
+    ] = True,
+    db: Annotated[
+        str | None,
+        typer.Option("--db", help="대상 데이터베이스 환경변수 이름"),
+    ] = None,
+) -> None:
+    """로그인 계정·테넌트 컨텍스트에 맞춰 지정한 화면번호의 테이블에 테스트 데이터를 INSERT하고 transaction-code를 반환"""
+    from yunhee.tools.biz.testdata import insert_test_data
+
+    override_tables = [t.strip() for t in table.split(",") if t.strip()] if table else None
+    res = insert_test_data(
+        raw_login=login,
+        screen_no=screen_no,
+        count=count,
+        override_tables=override_tables,
+        dry_run=dry_run,
+        verify_api=verify_api,
+        db_name=db,
+        work_dir=config.WORK_DIR,
+    )
+    if not res.ok or not isinstance(res.data, dict):
+        typer.secho(res.error or "테스트 데이터 생성 실패", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    d = res.data
+    scr_disp = f"[{d['screen_no']}]" + (f" {d['screen_name']}" if d.get("screen_name") else "")
+    typer.secho(f"🔍 화면 분석: {scr_disp}", fg=typer.colors.CYAN, bold=True)
+    typer.echo(
+        f"👤 로그인 컨텍스트: company={d['company_cd']} (company_id={d['company_id']}), "
+        f"emp_no={d['emp_no']} (emp_id={d['emp_id']}, org_id={d['org_id']})"
+    )
+
+    mode_label = "드라이런(롤백됨)" if dry_run else "생성 완료"
+    typer.secho(f"📝 데이터 {mode_label}:", fg=typer.colors.GREEN, bold=True)
+    for op in d.get("operations", []):
+        pk_preview = ", ".join(
+            str(p[0]) if len(p) == 1 else "(" + ",".join(map(str, p)) + ")"
+            for p in op["inserted_pks"][:5]
+        )
+        typer.echo(f"  - {op['table']}: {op['row_count']}건 INSERT (pk: {pk_preview})")
+
+    if d.get("api_verification"):
+        typer.secho(f"✅ 화면 조회 검증: {d['api_verification']}", fg=typer.colors.GREEN)
+
+    if dry_run:
+        typer.secho("💡 --dry-run 모드로 실행되어 DB에 커밋되지 않았습니다.", fg=typer.colors.YELLOW)
+        for sql_line in d.get("sql_preview", []):
+            typer.echo(f"  SQL: {sql_line}")
+    else:
+        typer.secho(f"🔑 Transaction Code: {d['tx_code']}", fg=typer.colors.YELLOW, bold=True)
+        typer.echo(f"👉 롤백 명령어: yunhee test-rollback-data {login} {d['tx_code']}")
+
+
+@app.command(name="test-rollback-data")
+def test_rollback_data_cmd(
+    login: Annotated[
+        str | None,
+        typer.Argument(help="생성 시 사용한 로그인 스펙 (예: kfstest-121-1111)"),
+    ] = None,
+    tx_code: Annotated[
+        str | None,
+        typer.Argument(help="롤백할 transaction-code (예: tx-1234-20261117-a8f2)"),
+    ] = None,
+    list_tx: Annotated[
+        bool,
+        typer.Option("--list", "-l", help="테스트 데이터 트랜잭션 생성/롤백 이력 조회"),
+    ] = False,
+    last: Annotated[
+        bool,
+        typer.Option("--last", help="해당 계정의 가장 최근 활성(ACTIVE) 트랜잭션 롤백"),
+    ] = False,
+    screen: Annotated[
+        str | None,
+        typer.Option("--screen", "-s", help="해당 화면번호의 활성(ACTIVE) 트랜잭션 일괄 롤백"),
+    ] = None,
+    cascade_children: Annotated[
+        bool,
+        typer.Option("--cascade-children/--no-cascade-children", help="화면 테스트 중 파생된 FK 자식 행도 함께 정리"),
+    ] = True,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="커밋하지 않고 삭제될 대상과 건수만 확인 후 롤백"),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="계정 불일치 또는 이미 롤백된 트랜잭션에 대해 강제 실행"),
+    ] = False,
+    db: Annotated[
+        str | None,
+        typer.Option("--db", help="대상 데이터베이스 환경변수 이름"),
+    ] = None,
+) -> None:
+    """test-insert-data로 생성한 테스트 데이터를 transaction-code 기반으로 역순 삭제(롤백)"""
+    from yunhee.tools.biz.testdata import list_test_transactions, rollback_test_data
+
+    if list_tx:
+        items = list_test_transactions(
+            work_dir=config.WORK_DIR,
+            screen_no=screen,
+            login_spec=login,
+        )
+        if not items:
+            typer.echo("저장된 테스트 데이터 트랜잭션 이력이 없습니다.")
+            return
+        typer.echo("| Transaction Code | 상태 | 화면번호 | 계정 | 대상 테이블(건수) | 생성 시각 |")
+        typer.echo("|:---|:---|:---|:---|:---|:---|")
+        for it in items:
+            ops_str = ", ".join(f"{op['table']}({op['row_count']})" for op in it.get("operations", []))
+            typer.echo(
+                f"| `{it.get('tx_code')}` | {it.get('status')} | {it.get('screen_no')} "
+                f"| {it.get('login')} | {ops_str} | {it.get('created_at')} |"
+            )
+        return
+
+    if not login:
+        typer.secho("오류: 로그인 인자(예: kfstest-121-1111)를 지정하거나 --list 옵션을 사용하세요.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    res = rollback_test_data(
+        raw_login=login,
+        tx_code=tx_code,
+        last=last,
+        screen_no=screen,
+        cascade_children=cascade_children,
+        dry_run=dry_run,
+        force=force,
+        db_name=db,
+        work_dir=config.WORK_DIR,
+    )
+    if not res.ok or not isinstance(res.data, dict):
+        typer.secho(res.error or "테스트 데이터 롤백 실패", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    for tx_res in res.data.get("transactions", []):
+        typer.secho(
+            f"⏪ 롤백 실행: {tx_res['tx_code']} (화면: {tx_res['screen_no']}, 계정: {tx_res['login']})",
+            fg=typer.colors.CYAN,
+            bold=True,
+        )
+        for det in tx_res.get("deleted_details", []):
+            extra = f" (부모 {det['cascade_from']} 참조 자식 정리)" if det.get("cascade_from") else ""
+            typer.echo(f"  - DELETE FROM {det['table']} → {det['deleted_count']}건 삭제{extra}")
+        typer.secho(
+            f"✔ 롤백 완료: {tx_res['tx_code']} (상태: {tx_res['status']})",
+            fg=typer.colors.GREEN,
+            bold=True,
+        )
+
+
 if __name__ == "__main__":
     app()

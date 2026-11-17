@@ -127,3 +127,22 @@ yunhee test-compare tests/tests_compare.tsv -c kfstest -o tsv
 - 입력 TSV 형식: `이름\tMETHOD path\tAS-IS SQL ID\t파라미터\t옵션`
 - 판정 규칙: 행 수 및 컬럼 커버리지 일치 시 `ok`, 불일치 시 `fail`, `0 == 0`인 경우 확인 불가로 판단하여 `skip`.
 - 단일 로그인 세션을 재활용하여 대량 검증 시 서버 부하를 최소화합니다.
+
+---
+
+## 6. `test-insert-data` / `test-rollback-data`
+
+특정 로그인 계정과 화면번호에 맞춰 화면에서 즉시 조회 가능한 테스트 데이터를 생성하고, 테스트가 끝나면 발급된 `transaction-code`로 깨끗하게 삭제(롤백)합니다.
+
+```bash
+# kfstest 회사의 121 사원 컨텍스트로 1023 화면의 대상 테이블에 테스트 데이터 3건 생성
+yunhee test-insert-data kfstest-121-1111 1023
+
+# 발급된 transaction-code로 생성했던 데이터 역순 삭제
+yunhee test-rollback-data kfstest-121-1111 tx-1023-20261117-160000-a1b2
+
+# 생성/롤백 트랜잭션 이력 조회 및 최근 트랜잭션 즉시 롤백
+yunhee test-rollback-data --list
+yunhee test-rollback-data kfstest-121-1111 --last
+```
+
