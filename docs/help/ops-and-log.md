@@ -107,13 +107,18 @@ PostgreSQL 읽기 전용 쿼리를 실행하거나 `--rollback` 트랜잭션 격
 ### `yunhee api <method> <path>`
 자동 로그인 세션 기반으로 API를 호출하고 응답 요약(HTTP 상태, 행 수, 키 목록)만 2~3줄로 압축 출력합니다.
 - **주요 옵션**:
+  - `-u, --as <ROLE>`: 로그인 계정/사번 지정 (기본: `admin`)
   - `-c, --company <CODE>`: 로그인 회사 코드 (예: `kfstest`, `kalpa`). `-t`를 생략하면 테넌트도 해당 회사로 기본 설정됩니다. base URL에 서브도메인이 있으면 해당 서브도메인이 테넌트로 자동 반영됩니다.
   - `-t, --tenant <TENANT>`: 테넌트 식별자 (미지정 시 `-c` 회사 코드 또는 base URL 서브도메인, 기본 `admin`)
+  - `--password <PW>`: DB 조회나 환경변수 기본값을 타지 않고 명시적으로 로그인 비밀번호 전달
   - `--fresh` / `--no-session`: 로그인 세션을 재사용하지 않고 이번 호출 전에 새로 로그인 (머리 줄에 `login=new|reused` 표시)
   - `--force-login`: 직전 로그인 실패 누적이 3회 이상이어도 계정 잠금 경고를 건너뛰고 강제 로그인 시도 (기본적으로 3/5회 이상 실패 시 잠금 방지를 위해 차단)
+  - `--no-login`: 로그인 없이 엔드포인트 직접 호출 (배치/공개 API 등)
+  - `-H, --header <Name: Value>`: 추가 요청 헤더 지정 (반복 가능, 값 내 `$env:VAR` 또는 `$VAR` 환경변수 자동 치환)
   - `-p, --param <key=val>`: 쿼리 파라미터 (**LIKE용 `%`는 `-p k=%`로 준다**. `%25` 등 이미 `%XX` 인코딩된 값은 이중 인코딩하지 않으며, 문자 그대로 `%25`를 보내야 할 때만 `--raw-param` 사용)
   - `--raw-param`: `-p` 값의 `%XX` 패턴을 디코딩하지 않고 문자 그대로 다시 URL 인코딩
   - `-b, --body <JSON>`: JSON 요청 본문
+  - `--get <path>`: 응답 JSON에서 특정 키/경로의 값만 단일 텍스트로 출력 (예: `data.trId`, `data.items[0].id`)
   - `--fields <a,b,c>`: 응답 배열의 지정된 필드들만 TSV 탭 구분 형태로 출력
   - `--where <k=v>`: 응답 배열에서 특정 키=값 조건에 맞는 행만 필터링
   - `--count-by <k>`: 응답 배열에서 특정 키의 값별 건수를 집계 요약 출력
@@ -167,6 +172,7 @@ Headless Chromium(Playwright)으로 TOBE 프론트엔드에 자동 로그인하�
   - `--range, -r <YYYY-MM-DD~YYYY-MM-DD>`: 조회 줄(SearchBar)의 모든 날짜 범위(시작일~종료일) 입력을 해당 범위로 채운 뒤 `[조회]` 클릭 (라벨명을 몰라도 일괄 캡처 가능)
   - `--set, -s <라벨=값>`: 조회 줄(SearchBar) 안의 특정 라벨 입력 지정 (반복 가능, 텍스트·단일날짜·날짜범위·Select·체크박스 자동 판별, 중복 라벨은 `라벨#2`, `--range`와 함께 주면 `--set` 우선, 라벨 미발견 시 후보 라벨 목록 경고 후 계속 진행)
   - `--modal-only`: 팝업/Lookup 캡처 시 전체 페이지 대신 모달 영역(`.ant-modal-content`)만 잘라 저장하여 이미지 토큰 크기 절감
+  - `--boxes`: 캡처 이미지에 보이는 DOM 요소(버튼, 인풋, 그리드, 모달 등 16종)의 픽셀 좌표 파일(`*.boxes.json`)을 함께 저장 (`--modal-only` 상대 좌표 보정, 팝업 가려진 요소 배제, 레이어별 네이밍 격리 지원)
   - `--click-all`: 팝업 순회 시 기본 제외되는 위험/저장 버튼도 클릭 시도 (네트워크 CUD 차단 가드는 유지)
   - `--viewport <크기>`: 뷰포트 크기 (`1920x1080`, `1440x810`, `1280x720`, 또는 프리셋 `720p`, `810p`, `1080p`)
   - `--url, -u`: 접속할 TOBE 기본 URL (기본: `http://localhost:8082/AssetERP`)
@@ -177,22 +183,39 @@ Headless Chromium(Playwright)으로 TOBE 프론트엔드에 자동 로그인하�
   - `--headed`: 브라우저 창을 화면에 표시 (디버깅용)
 - **예시**:
   ```bash
-  yunhee screen-capture 1131 --login kfstest/104/1111 --range 2025-01-01~2026-12-31 --modal-only
+  yunhee screen-capture 1131 --login kfstest/104/1111 --range 2025-01-01~2026-12-31 --modal-only --boxes
   yunhee screen-capture 1131 --login kfstest/104/1111 --set 승인기간=2025-06-01~2025-07-31 --set 검색=신한
   yunhee screen-capture Fnd01_Tab_FundCode login=kfstest/104/1111 --viewport 810p --json
   ```
 
+### `yunhee mark <png> <draw.json>`
+`screen-capture --boxes`로 캡처한 PNG 이미지 위에 `boxes.json`의 요소 이름(`target`, `from`/`to`) 또는 직접 좌표를 참조하여 **번호 원(`circle`)·강조 상자(`rect`)·화살표(`arrow`)·말풍선(`callout`)·마스킹(`mask`)**을 A-Man 매뉴얼 호환 규격으로 렌더링합니다.
+- **주요 옵션**:
+  - `-b, --boxes <PATH>`: 요소 좌표 파일(`*.boxes.json`) 경로 (생략 시 `<png>.boxes.json` 자동 탐색)
+  - `-o, --out <PATH>`: 마킹 결과 저장 파일 경로 (생략 시 `<원본이름>-alpha.png`)
+  - `--json`: 해석된 최종 요소 좌표 목록을 JSON으로 출력
+- **특징**:
+  - `outside-left`, `outside-right`, `outside-top`, `outside-bottom` 바깥 앵커 및 `gap` 지원으로 버튼 글자를 가리지 않고 번호 원을 배치할 수 있습니다.
+  - 미지원 `type` 입력 시 즉시 에러로 차단하고 유사한 유효 타입을 추천합니다.
+- **예시**:
+  ```bash
+  yunhee mark 01_initial.png draw.json --out 01_initial-alpha.png
+  yunhee mark .yunhee/screen-capture/1029_Emp00_Tab_TransInfo/01_initial.png draw.json --json
+  ```
+
 ---
 
-## 5. 환경 설정 및 유틸리티 (`config`, `value`, `changelog`, `init`, `intro`)
+## 5. 환경 설정 및 유틸리티 (`config`, `value`, `agent-guide`, `changelog`, `init`, `intro`)
 
+- `yunhee agent-guide`: 상용 AI 코딩 어시스턴트(Claude, Antigravity, Gemini 등)가 준수해야 할 토큰 절약 행동 수칙(Markdown) 출력
 - `yunhee init`: 현재 작업 디렉터리를 yunhee 프로젝트로 등록 및 필수 폴더/파일(`.yunhee/project.json`, `mcp.json`, `memory.md`, `sessions/`, `runs/`, `.gitignore`) 초기화
 - `yunhee rag-index [--no-vector] [--reset] [--reset-all]`: TOBE 프로젝트 전체(화면·메뉴번호·컴포넌트·그리드·모달·API·백엔드)를 `.yunhee/tobe_catalog.json`, `docs/to-be/`, ChromaDB(`yunhee_tobe_kb`)에 증분 학습시킵니다. (`yunhee-cli` 폴더나 대상 프로젝트 폴더 어디서 실행해도 동일하게 `YUNHEE_TOBE_SRC_DIR` 기준으로 동작)
 - `yunhee rag-reset [--all] [--no-reindex]`: ChromaDB `yunhee_tobe_kb` 컬렉션과 카탈로그 스냅샷을 완전히 삭제한 뒤 처음부터 다시 학습합니다 (`--all` 지정 시 수동 노하우 컬렉션까지 초기화).
 - `yunhee rag-status [--json]`: 마지막 RAG 학습 시각, 인덱싱된 화면/ChromaDB 벡터 건수, 마지막 학습 이후 변경된 TOBE 파일(Stale) 건수를 확인합니다.
 - `yunhee rag-search "<질문>" [-n 5]`: 화면번호(예: `1002`), 메뉴명, 컴포넌트명 또는 자연어 질문에 대해 에이전트가 소환할 지식 카드(결정적 매칭 + ChromaDB 벡터 검색)를 조회합니다.
 - `yunhee agent "<질문>"` (`yunhee ask -a "<질문>"`): 로컬 LLM(`qwen2.5-coder:14b`) 자율 에이전트 모드로 질의를 수행합니다. 단건 질문(`"1002 화면의 파일명은?"`)은 사전 학습된 TOBE RAG 카드로 즉시 답변하며, 복합 조건 질문(모달 제목, 그리드 체크박스·글자수 등)은 에이전트가 Python 스크립트를 작성·실행(`execute_python` + `screen_catalog`)하여 **화면번호(`#번호`), 메뉴명, 파일 경로, 일치 상세**를 표로 출력합니다 (기본 타겟: TOBE).
+- `yunhee index "<텍스트>"` / `yunhee search "<쿼리>" [-n 3]` / `yunhee vec "<텍스트>"`: ChromaDB 수동 노하우(`yunhee_knowledge`) 저장·유사도 검색 및 `bge-m3` 임베딩 벡터 확인
 - `yunhee config`: 작업 디렉터리(Work Dir), TOBE/ASIS 소스 경로 및 브랜치 상태, DB 접속 정보 등 환경 설정 확인
 - `yunhee value [KEY]`: 단일 설정값 텍스트 출력 (`--list` 시 전체 목록, `tobe-src`, `asis-src`, `work-dir` 등 지원)
 - `yunhee intro`: yunhee 에이전트 자기소개 및 전문 영역 안내 (`자기소개?` 도 지원)
-- `yunhee changelog`: 버전별 변경 이력 및 릴리즈 노트 확인
+- `yunhee changelog [VERSION] [--since <VER>] [--all]`: 버전별 변경 이력 및 릴리즈 노트 확인

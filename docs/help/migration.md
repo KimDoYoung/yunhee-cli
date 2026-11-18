@@ -39,7 +39,7 @@ AS-IS MyBatis SQL(또는 화면 주석의 서비스 이름 `dom.Class.method`)�
 ## 2. 화면 스타일 및 정적 이벤트 추출
 
 ### `yunhee page-style <targets...>`
-화면 파일(.tsx / .java)의 컴포넌트·레이아웃을 정적 분석하여 페이지 스타일 ID(SID 19종: SG, SGP, SGVF, SGEF, SGTP, SGT, TG, GG, CG, STP, TP, SR, GCG, SGHF, TO, GO, DSBRD, GDP, IN)를 판별하고 대조합니다.
+화면 파일(.tsx / .java)의 컴포넌트·레이아웃을 정적 분석하여 페이지 스타일 ID(SID 20종: SG, SGP, SGVF, SGEF, SGTP, SGT, TG, GG, GGH, CG, STP, TP, SR, GCG, SGHF, TO, GO, DSBRD, GDP, IN)를 판별하고 대조합니다.
 - **주요 SID (20종)**:
   - `SG`: SearchBar + 그리드 하나
   - `SGP`: SG + 편집 팝업(`*_Edit_*`)
@@ -87,6 +87,23 @@ AS-IS GXT 화면 파일의 생성자 라이프사이클(E0), 위젯 이벤트(E1
   ```bash
   yunhee events src/main/java/.../Sys01_Tab_Company.java
   yunhee events Sys01_Tab_Company --ids
+  ```
+
+### `yunhee index-db [dbml]` / `yunhee index-src [src_root]`
+대용량 DBML 마크다운과 AS-IS GXT 레거시 소스를 도메인·화면별 소형 마크다운(`docs/as-is/db/`, `docs/as-is/src/`)으로 분할 색인합니다 (`analysis`, `trace-*`, `drift` 등의 기반 데이터).
+- **`index-db` 주요 옵션**:
+  - `-t, --target <DIR>`: 색인 출력 폴더 (기본: `{WORK_DIR}/docs/as-is/db`, pgcrypto 암호키 자동 마스킹)
+- **`index-src` 주요 옵션**:
+  - `-t, --target <DIR>`: 색인 출력 폴더 (기본: `{WORK_DIR}/docs/as-is/src`)
+  - `--menus <PATH>` / `--menus-from-db <ENV>`: 메뉴 TSV 파일 지정 또는 DB `sys06_menu`에서 직접 추출
+  - `--db-index <DIR>`: DB 색인 폴더 경로
+  - `--events / --no-events`: 화면 파일 UI 절에 `yunhee events` 결과(이벤트·메서드·Grid Spec·버튼) 포함 (기본: 켬)
+  - `-b, --button-types <PATH>`: 버튼 타입 매핑 TSV 경로
+  - `--vcs-root <DIR>`: 소스 루트가 git 저장소의 하위 폴더일 때 저장소 루트 지정
+- **예시**:
+  ```bash
+  yunhee index-db .yunhee/LOCAL_DB-dbml.md -t docs/as-is/db
+  yunhee index-src ~/workspace26/Asset-OMS -t docs/as-is/src
   ```
 
 ---

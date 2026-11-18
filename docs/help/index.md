@@ -15,17 +15,17 @@
 | **빌드 / 테스트 / 명령 실행** | `yunhee run "<명령>"`, `yunhee last-run` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **API 스모크 테스트 / 서버 로그 / 쓰기 행 추적** | `yunhee api [--track <table>]`, `yunhee log <trace\|req\|errors\|tail>` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **AS-IS 화면 구조 / 폼 레이아웃 / 그리드 / 창 호출부** | `yunhee analysis <screen\|ui\|grid\|layout\|callers>` | [`analysis.md`](file:///home/kdy987/work/yunhee-cli/docs/help/analysis.md) |
-| **AS-IS 메서드 로직 / 실행 가능 SQL 전개 (서비스명 지원)** | `yunhee analysis <method\|sql\|model\|servlet>` | [`analysis.md`](file:///home/kdy987/work/yunhee-cli/docs/help/analysis.md) |
+| **AS-IS 메서드 로직 / 실행 가능 SQL / DB 함수 전개** | `yunhee analysis <method\|sql\|model\|servlet\|function\|save-script>` | [`analysis.md`](file:///home/kdy987/work/yunhee-cli/docs/help/analysis.md) |
 | **업무 흐름 추적 (메뉴→화면→이벤트→RPC→SQL→DB)** | `yunhee screen-desc`, `yunhee trace-menu`, `trace-screen`, `trace-flow` | [`trace.md`](file:///home/kdy987/work/yunhee-cli/docs/help/trace.md) |
 | **테이블 CRUD 매트릭스 / 컬럼 상태 전이 로직** | `yunhee trace-table`, `trace-crud`, `trace-state` | [`trace.md`](file:///home/kdy987/work/yunhee-cli/docs/help/trace.md) |
 | **AS-IS ↔ TOBE 비교 / 갭(Gap) 및 미연결 자리(--stubs)** | `yunhee trace-pair`, `trace-diff`, `trace-gap [--stubs]` | [`trace.md`](file:///home/kdy987/work/yunhee-cli/docs/help/trace.md) |
-| **AS-IS SQL/CUD → TOBE 매퍼/DTO 코드 생성 (서비스명·DB 객체 검증)** | `yunhee port-sql`, `yunhee port-save` | [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
+| **AS-IS SQL/CUD → TOBE 매퍼/DTO 생성 및 색인 빌드** | `yunhee port-sql`, `yunhee port-save`, `yunhee index-db`, `yunhee index-src` | [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
 | **화면 스타일 판별 / AS-IS 원본 변경(Drift)·신규 매퍼 검증** | `yunhee page-style`, `yunhee drift`, `yunhee drift-*`, `yunhee sql-check [--new-since-index]`| [`migration.md`](file:///home/kdy987/work/yunhee-cli/docs/help/migration.md) |
-| **TOBE 화면 자동 오픈 & 버튼/팝업 순회 캡처 검수** | `yunhee screen-capture <screen_id> login=<comp>/<id>/<pw>` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
+| **TOBE 화면 자동 오픈 & 캡처 검수 / 매뉴얼 이미지 마킹** | `yunhee screen-capture <screen_id> [--boxes]`, `yunhee mark <png> <draw.json>` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **TOBE 프로젝트 RAG 학습(카탈로그·ChromaDB) 및 상태 점검** | `yunhee rag-index`, `rag-reset`, `rag-status`, `rag-search` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **자연어 화면/모달/그리드 조건 탐색 및 질의** | `yunhee agent "<질문>"`, `yunhee ask -a "<질문>"` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
-| **업무분석 / API 권한 검증 / 결재 흐름 / 로컬 DB 쓰기 / 이벤트 문서** | `yunhee biz-endpoints`, `biz-authz`, `biz-appr`, `biz-patch`, `biz-code`, `biz-db-write`, `biz-event-new` | [`biz.md`](file:///home/kdy987/work/yunhee-cli/docs/help/biz.md) |
-| **시험 자동화 / 파라미터 추론 / 스모크·시나리오 뼈대 / 커버리지 / 일괄 대조** | `yunhee test-params`, `test-gen-mapper`, `test-scenario-skel`, `test-coverage`, `test-compare` | [`test.md`](file:///home/kdy987/work/yunhee-cli/docs/help/test.md) |
+| **업무분석 / API 권한·고아행 검증 / 결재 흐름 / 로컬 DB 쓰기 / 이벤트 문서** | `yunhee biz-endpoints`, `biz-authz`, `biz-appr`, `biz-orphans`, `biz-patch`, `biz-code`, `biz-db-write`, `biz-event-new` | [`biz.md`](file:///home/kdy987/work/yunhee-cli/docs/help/biz.md) |
+| **시험 자동화 / 파라미터 추론 / 매퍼·화면·시나리오 뼈대 / 테스트 데이터 / 커버리지 / 대조** | `yunhee test-params`, `test-gen-mapper`, `test-gen-screen`, `test-scenario-skel`, `test-coverage`, `test-compare`, `test-insert-data`, `test-rollback-data` | [`test.md`](file:///home/kdy987/work/yunhee-cli/docs/help/test.md) |
 
 ---
 
@@ -37,13 +37,18 @@
 - `grep <pattern> <paths...>`: 패턴이 일치하는 줄과 앞뒤 문맥(`-C`/`-A`/`-B`, 상한 80줄)을 `파일:줄: 내용` 형식으로 추출합니다.
 - `table <names...> [--page <PAGE>]`: 스키마 스냅샷에서 지정 테이블 또는 화면 연관 테이블 DBML만 추출합니다.
 - `sql [query]`: PostgreSQL 읽기 전용 쿼리 실행 또는 `--rollback` 트랜잭션 시험 실행을 지원합니다.
+- `make-dbml <ENV_VAR>`: 환경변수의 PostgreSQL 스키마를 추출하여 DBML 마크다운 및 JSON 스냅샷으로 저장합니다.
 - `run "<command>"`: 외부 명령을 실행하고 로그를 파일에 격리하며, 성공 시 1줄 / 실패 시 핵심 에러만 요약합니다.
 - `last-run` / `runs`: 직전 실행 결과 확인 및 최근 실행 이력 테이블을 표시합니다.
 - `api <method> <path> [--track <tables>]`: 자동 로그인 세션 기반으로 API를 호출하고 응답 요약(상태, 행 수, 키 목록) 및 `--track` 테이블 행 수/신규 PK 변화를 출력합니다.
 - `compare <method> <path> --sql <sql_id|dom.Class.method>`: TOBE 조회 API 응답과 AS-IS SQL 결과를 대조하여 행 수 및 컬럼 커버리지를 검증합니다.
 - `log <trace|req|errors|tail>`: 서버 로그에서 trace ID 상세(실행 SQL/파라미터), 최근 요청, 에러 묶음, 접은 흐름을 분석합니다.
-- `screen-capture <screen_id> [login=company/user/pw]`: TOBE 화면에 자동 로그인(겸직선택 자동 통과) 후 화면을 열고 초기·조회·행선택·내부탭·팝업/Lookup 모달을 순회 캡처하여 `--out/<화면폴더>/`에 저장합니다.
-- `config` / `value [KEY]`: Target/Source 경로, 브랜치 상태, DB 접속 정보 등 환경 설정을 조회합니다.
+- `screen-capture <screen_id> [login=company/user/pw] [--boxes]`: TOBE 화면에 자동 로그인(겸직선택 자동 통과) 후 초기·조회·행선택·내부탭·팝업/Lookup 모달을 순회 캡처하고 품질 신호 및 요소 좌표(`*.boxes.json`)를 저장합니다.
+- `mark <png> <draw.json> [--boxes <path>] [--out <path>]`: 캡처 PNG 이미지 위에 `boxes.json` 요소 이름을 참조하여 번호 원·강조 상자·화살표·말풍선·마스킹을 렌더링합니다.
+- `rag-index` / `rag-reset` / `rag-status` / `rag-search`: TOBE 프로젝트 전체 카탈로그·ChromaDB 증분 학습, 초기화, Stale 상태 점검 및 지식 카드 검색을 수행합니다.
+- `agent "<질문>"` / `ask [-a] "<질문>"`: 로컬 LLM(`qwen2.5-coder:14b`) 단발 질의 및 Python 도구 활용 자율 에이전트 탐색을 수행합니다.
+- `index "<텍스트>"` / `search "<쿼리>"` / `vec "<텍스트>"`: ChromaDB 수동 노하우 저장·유사 검색 및 `bge-m3` 임베딩 벡터를 확인합니다.
+- `config` / `value [KEY]` / `agent-guide` / `init` / `intro` / `changelog`: 환경 설정 조회, AI 에이전트 행동 수칙 출력, 프로젝트 초기화, 자기소개 및 버전별 변경 이력을 확인합니다.
 
 ### 2. 정적 분석 전문 (`analysis.md`)
 - `analysis method <클래스.메서드>`: AS-IS 메서드 본문 요약, 호출 흐름 및 클라이언트/서버 연계 분석
@@ -57,6 +62,7 @@
 - `analysis run [last|run_id]`: 외부 명령 실행 결과 로그에서 stdout/stderr/json 분리 추출
 - `analysis save-script <메서드>`: 서버 저장 메서드의 모든 CUD 쓰기 SQL을 파라미터 대입 단일 롤백 스크립트로 생성
 - `analysis servlet <서블릿클래스>`: 서블릿 클래스 및 fileType 분기 처리 로직 분석
+- `analysis function <함수명>`: 색인된 PostgreSQL DB 함수(Stored Procedure/Function) 요약 및 본문 소스 추출
 
 ### 3. 업무 파악 및 종합 추적 (`trace.md`)
 - `screen-desc <targets...> [--format=md|json] [--summary] [--section ...]`: 쉼표·공백으로 구분된 복수 화면번호(예: `1111,2222,3333, 4444`)의 메뉴명·파일명·사용 팝업·하위 컴포넌트·그리드·버튼·API·SQL·테이블·ASIS 정보를 일괄 반환 (--summary 축약 및 --section 필터링 지원)
@@ -77,14 +83,16 @@
 - `trace-rule <action> [target]`: 마이그레이션 규칙을 저장·조회하고 근거의 정합성을 검증 (`verify` 등)
 - `trace-term [term]`: 화면 라벨, DB 컬럼명, 공통 코드명 간의 용어 교차 참조 사전 검색
 - `trace-doc <domain>`: 신규 담당자를 위해 카탈로그와 팩트를 체계적인 업무 인수인계 문서 골격으로 자동 조립
+- `trace-guide`: 에이전트용 업무파악 표준 워크플로우 지침 출력
 
 ### 4. 마이그레이션 코드 생성 및 형상 관리 (`migration.md`)
 - `port-sql <sql_id|dom.Class.method>`: AS-IS MyBatis SQL(또는 서비스명)을 TOBE 매퍼 XML 조각 및 Java 21 Record DTO로 결정적 변환 (DB 부재 객체 자동 경고 포함)
 - `port-save <table> --cols <cols>`: 테이블 스키마 기반으로 명시적인 INSERT/UPDATE/DELETE 및 채번/사이드이펙트 생성
-- `mapper-run <target>`: TOBE 매퍼 statement 실행 및 AS-IS SQL 결과 비교
+- `mapper-run <target>`: TOBE 매퍼 statement 실행 및 AS-IS SQL 결과 비교 (`--auto-params` 지원)
 - `sql-check [src_root] [--new-since-index]`: MyBatis 매퍼 XML의 동적 SQL을 펼쳐 대상 DB에서 EXPLAIN 정합성 및 SQL Drift 검증 (`--new-since-index`: 색인 이후 신규/변경 매퍼만)
-- `page-style <targets...>`: 화면 파일(.tsx / .java)의 구조를 정적 분석하여 페이지 스타일 ID(SID) 판별 및 대조
+- `page-style <targets...>`: 화면 파일(.tsx / .java)의 구조를 정적 분석하여 페이지 스타일 ID(SID 20종) 판별 및 대조
 - `events <target>`: AS-IS GXT 화면 파일의 이벤트(E0~En), 메서드 테이블, Grid Spec, 버튼 목록 추출
+- `index-db [dbml]` / `index-src [src_root]`: 대용량 DBML 마크다운 및 AS-IS GXT 소스를 도메인·화면별 소형 파일(`docs/as-is/db`, `docs/as-is/src`)로 분할 색인
 - `drift [screens...]`: 색인 또는 기준선(baseline) 대비 AS-IS 화면 및 의존 파일의 변경(drift) 감지
 - `drift-unit`: 바뀐 파일을 SQL ID·메서드·UI·모델 단위로 세분화하고 영향 화면 및 TOBE 대응 탐색
 - `drift-done <keys|units>`: 단위 또는 파일 기준선을 갱신하고 반영대장의 상태·처리일·비고 기록
@@ -94,19 +102,23 @@
 - `drift-log`: 기준선/커밋 이후 변경된 파일들을 커밋별 종류(DB·SQL·LOGIC·MODEL·UI·ETC)로 요약
 
 ### 5. 업무분석 및 비즈니스 검증 (`biz.md`)
-- `biz-endpoints <target> [--path <path>] [-o md|json|tsv]`: Spring Boot 컨트롤러 엔드포인트·DTO·서비스·권한 가드 정적 분석
-- `biz-authz <target> -u <user> -c <company> [--probe-write]`: API URL과 메뉴 인가를 대조하여 허용 여부 판정 및 취약 엔드포인트 진단
+- `biz-endpoints [target] [--path <path>] [--screen <no>] [-o md|json|tsv]`: Spring Boot 컨트롤러 엔드포인트·DTO·서비스·권한 가드 정적 분석
+- `biz-authz <target> -u <user> -c <company> [--probe-write] [--lint-delete-by-id]`: API URL과 메뉴 인가를 대조하여 허용 여부 판정 및 취약 엔드포인트 진단
 - `biz-appr <link_code> --ref <id> -u <user> -c <company> [--confirm|--reject]`: 업무 문서와 결재 연동 상신·연결·승인/반려 단계 자동화
-- `biz-patch <method> <path> -d <json> [--where <cond>]`: API 엔드포인트 단일 객체/목록 필드 안전 수정 및 누락 검증
+- `biz-orphans <parent_table> [-c <company>]`: FK 부모-자식 관계 기반 고아(Orphan) 행 탐색 및 정리 SQL 출력
+- `biz-patch <method> <path> --set <k=v> [--where <cond>]`: API 엔드포인트 단일 객체/목록 필드 안전 수정 및 누락 검증
 - `biz-code [kind] [--like <pattern>] [-c <company>]`: 공통코드 분류 및 목록 조회 (회사별 명칭 지원)
+- `biz-db-write -f <file>|-e <sql> [--no-backup]`: 로컬 DB 대상 안전한 쓰기 실행 (자동 `pg_dump` 백업 및 안전 가드)
+- `biz-event-new <ID> --screens <screens> [--title <title>]`: AS-IS/TOBE 화면 색인을 바탕으로 비즈니스 이벤트 분석 문서 골격 생성
 
 ### 6. 시험 및 검증 자동화 (`test.md`)
 - `test-params <target> [-c <company>] [-o text|json|args]`: MyBatis 매퍼 statement 실행에 필요한 시험 파라미터 값을 DB에서 스스로 탐색
-- `test-gen-mapper <target> [--dry-run] [--force]`: 매퍼 스모크 시험(JUnit5 @MybatisTest) 클래스 소스 뼈대 자동 생성
-- `test-scenario-skel <event_id> [--print]`: 업무분석 이벤트 YAML로부터 시나리오 파이썬 테스트 함수 뼈대 생성
-- `test-coverage [--by domain|mapper|screen]`: 매퍼 문장 및 화면 단위 테스트 커버리지 분석
+- `test-gen-mapper <target> [--dry-run] [--force]`: 매퍼 스모크 시험(JUnit5 `@MybatisTest`) 클래스 소스 뼈대 자동 생성
+- `test-gen-screen [targets...] [--all] [--summary] [--stdout] [-t <dir>]`: 화면번호 → 브라우저 화면 시험 단계 목록(`tools/tests/screen-test/gen/screen-test-<번호>.gen.cjs`) 정적 생성
+- `test-scenario-skel <event_id> [--print] [--check]`: 업무분석 이벤트 YAML로부터 시나리오 파이썬 테스트 함수 뼈대 생성 및 점검
+- `test-coverage [--by domain|mapper|screen] [--junit ...] [--scenario ...] [--log ...]`: 매퍼 문장 및 화면 단위 정적·동적·서버로그 테스트 커버리지 분석
 - `test-compare <tsv_file> [-c <company>] [-o tsv|junit]`: 조회 API와 AS-IS SQL 결과 일괄 비교 대조 시험
-- `biz-db-write -f <file>|-e <sql> [--no-backup]`: 로컬 DB 대상 안전한 쓰기 실행 (자동 pg_dump 백업 및 안전 가드)
-- `biz-event-new <ID> --screens <screens> [--title <title>]`: AS-IS/TOBE 화면 색인을 바탕으로 비즈니스 이벤트 분석 문서 골격 생성
-- `api` (확장): `--password` 직접 지정 및 3회 연속 로그인 실패 시 계정 잠금 방지 가드(`--force-login`) 지원
+- `test-insert-data <login> <screen_no> [-n <count>] [--dry-run]`: 로그인 계정·테넌트 컨텍스트에 맞춰 지정 화면 테이블에 테스트 데이터 INSERT 및 `transaction-code` 발급
+- `test-rollback-data [login] [tx_code|--last|--screen <no>|--list]`: `test-insert-data`로 생성한 테스트 데이터를 `transaction-code` 기반으로 역순 삭제(롤백)
+- `api` (확장): `--password` 직접 지정, `-H/--header`, `--no-login`, `--get` 및 3회 연속 로그인 실패 시 계정 잠금 방지 가드(`--force-login`) 지원
 

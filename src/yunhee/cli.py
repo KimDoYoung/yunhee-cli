@@ -46,21 +46,22 @@ def _version_callback(value: bool) -> None:
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    model: str = OLLAMA_MODEL,
+    model: Annotated[str, typer.Option("--model", help="사용할 로컬 Ollama 모델명")] = OLLAMA_MODEL,
     version: bool = typer.Option(
         False, "--version", callback=_version_callback, is_eager=True, help="버전 출력"
     ),
 ):
     """[bold cyan]yunhee[/bold cyan]: AI 에이전트 토큰 절약용 로컬 CLI (무인자 실행: REPL `=chat-cmd`)
 
-[bold yellow]🤖 AI Agent 권장 워크플로우 (상세: `yunhee agent-guide`)[/bold yellow]
-  1. [bold green]코드 파악[/bold green]: [cyan]yunhee outline <경로>[/cyan] (시그니처·줄 번호 추출, 전체 읽기 금지)
-  2. [bold green]DB 스키마[/bold green]: [cyan]yunhee table <패턴>[/cyan] (필요한 테이블 DBML만 추출)
-  3. [bold green]빌드/테스트[/bold green]: [cyan]yunhee run "<명령>"[/cyan] (1줄 성공/에러 요약, 셸 직실행 금지)
+[bold yellow]🤖 AI Agent 권장 워크플로우 (상세: `yunhee agent-guide` · 문서: `docs/help/index.md`)[/bold yellow]
+  1. [bold green]코드 파악[/bold green]: [cyan]yunhee outline <경로>[/cyan] · [cyan]yunhee cat <파일:A-B>[/cyan] · [cyan]yunhee grep <패턴> <경로>[/cyan] (전체 읽기 금지)
+  2. [bold green]DB 스키마[/bold green]: [cyan]yunhee table <패턴>[/cyan] · [cyan]yunhee sql "<쿼리>" [--rollback][/cyan] (필요한 테이블 DBML만 추출)
+  3. [bold green]빌드/테스트[/bold green]: [cyan]yunhee run "<명령>"[/cyan] (1줄 성공/에러 요약, 셸 직실행 금지) · [cyan]yunhee last-run[/cyan]
   4. [bold green]API/로그[/bold green]: [cyan]yunhee api <METHOD> <경로> [--log] [--track <테이블>][/cyan] · [cyan]yunhee log trace|req|errors|tail[/cyan]
-  5. [bold green]AS-IS 분석[/bold green]: [cyan]yunhee analysis screen|ui|method|sql|grid|callers <대상>[/cyan] · [cyan]yunhee page-style <화면>[/cyan]
+  5. [bold green]화면/업무 분석[/bold green]: [cyan]yunhee screen-desc <번호>[/cyan] · [cyan]yunhee analysis screen|ui|method|sql|grid|callers|function <대상>[/cyan] · [cyan]yunhee page-style <화면>[/cyan]
   6. [bold green]미연결/원본변경[/bold green]: [cyan]yunhee trace-gap --stubs[/cyan] · [cyan]yunhee drift --all --base baseline[/cyan] · [cyan]yunhee sql-check --new-since-index[/cyan]
-  7. [bold green]설정/이력[/bold green]: [cyan]yunhee config[/cyan] · [cyan]yunhee changelog --since <버전>[/cyan]
+  7. [bold green]비즈니스/시험 자동화[/bold green]: [cyan]yunhee biz-*[/cyan] · [cyan]yunhee test-*[/cyan] · [cyan]yunhee screen-capture <번호> [--boxes][/cyan] · [cyan]yunhee mark <png> <draw.json>[/cyan]
+  8. [bold green]설정/이력[/bold green]: [cyan]yunhee config[/cyan] · [cyan]yunhee value [KEY][/cyan] · [cyan]yunhee changelog --since <버전>[/cyan]
 """
     if ctx.invoked_subcommand is None:
         from yunhee.ui.repl import run_repl
@@ -151,8 +152,8 @@ def _run_single_agent_query(prompt: str, model: str = OLLAMA_MODEL) -> None:
 
 @app.command()
 def ask(
-    prompt: str,
-    model: str = OLLAMA_MODEL,
+    prompt: Annotated[str, typer.Argument(help="로컬 LLM에게 질문할 프롬프트")],
+    model: Annotated[str, typer.Option("--model", help="사용할 로컬 Ollama 모델명")] = OLLAMA_MODEL,
     agent: Annotated[
         bool,
         typer.Option("--agent", "-a", help="도구 호출(execute_python 등)을 포함한 에이전트 모드로 실행"),
@@ -171,7 +172,7 @@ def agent_cmd(
         str,
         typer.Argument(help="에이전트에게 요청할 자연어 질문 (예: \"제목이 '계정과목'인 모달 찾아줘\")"),
     ],
-    model: str = OLLAMA_MODEL,
+    model: Annotated[str, typer.Option("--model", help="사용할 로컬 Ollama 모델명")] = OLLAMA_MODEL,
 ):
     """로컬 LLM 자율 에이전트 단발 실행 (Python 스크립트 생성·실행 및 도구 활용)"""
     _run_single_agent_query(prompt, model=model)
@@ -346,7 +347,9 @@ def rag_search_cmd(
 
 
 @app.command()
-def vec(text: str):
+def vec(
+    text: Annotated[str, typer.Argument(help="임베딩 벡터를 추출할 텍스트")],
+):
     """bge-m3 임베딩 벡터 확인"""
     vector = embed(text)
     print(f"dim={len(vector)}")
@@ -354,7 +357,9 @@ def vec(text: str):
 
 
 @app.command()
-def index(text: str):
+def index(
+    text: Annotated[str, typer.Argument(help="ChromaDB 수동 노하우 컬렉션에 저장할 텍스트")],
+):
     """텍스트를 ChromaDB에 저장"""
     from yunhee.store.vectorstore import add_texts
     add_texts([text])
@@ -362,7 +367,10 @@ def index(text: str):
 
 
 @app.command()
-def search(query_text: str, n: int = 3):
+def search(
+    query_text: Annotated[str, typer.Argument(help="ChromaDB에서 검색할 쿼리 텍스트")],
+    n: Annotated[int, typer.Option("-n", "--n", help="반환할 유사 결과 수")] = 3,
+):
     """ChromaDB 유사 텍스트 검색"""
     from yunhee.store.vectorstore import search as vector_search
     results = vector_search(query_text, n_results=n)
@@ -495,7 +503,10 @@ _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _make_dbml(
-    env_name: str,
+    env_name: Annotated[
+        str,
+        typer.Argument(help="PostgreSQL 접속 URL이 담긴 환경변수 이름 (예: LOCAL_DB, TEST_DB)"),
+    ],
     output: Annotated[
         Path | None, typer.Option("--output", "-o", help="출력 파일 (기본: <ENV_NAME>-dbml.md)")
     ] = None,
@@ -2917,7 +2928,7 @@ def page_style_cmd(
 def analysis_cmd(
     type_name: Annotated[
         str | None,
-        typer.Argument(help="분석 유형 (method, sql, model, grid, screen, ui, tobe, run 등)"),
+        typer.Argument(help="분석 유형 (method, sql, model, grid, screen, ui, callers, function, save-script, servlet, tobe, run)"),
     ] = None,
     target: Annotated[
         str | None,
@@ -3084,7 +3095,7 @@ def analysis_cmd(
         typer.Option("--lines", help="출력할 줄 번호 범위 (예: 1-50, function 분석 등)"),
     ] = None,
 ):
-    """AS-IS·TOBE 통합 분석 (method/sql/model/grid/screen/ui/tobe/run)
+    """AS-IS·TOBE 통합 분석 (method/sql/model/grid/screen/ui/callers/function/save-script/servlet/tobe/run)
 
 [bold yellow]🤖 AI Agent 권장사항:[/bold yellow]
   원본 소스를 직접 sed/grep/cat하지 마세요. 필요한 정보(메서드 본문 요약, 실행 가능 SQL, 그리드 컬럼 스펙 등)를

@@ -10,13 +10,13 @@
 | :--- | :--- | :--- |
 | `biz-endpoints [target]` | Spring Boot 컨트롤러 엔드포인트·DTO·서비스·권한 가드 정적 분석 (클래스명 직접 지원, target 생략 시 전체 컨트롤러 스캔) | `-o md\|json\|tsv`, `--path` (반복/쉼표), `--screen` (복수/쉼표) |
 | `biz-authz <target>` | API URL과 메뉴 인가를 대조하여 허용 여부 판정 및 취약 엔드포인트 진단 | `-u`, `-c`, `--probe-write`, `--probe-appr`, `--path`, `--screen`, `--dry-run`, `--lint-delete-by-id` |
-| `biz-appr <link_code>` | 업무 문서와 결재 연동 상신·연결·승인/반려 단계 자동화 | `--ref` (반복), `--pre`, `--link-path`, `--seed-arg`, `--title`, `--content`, `--link-body`, `-u`, `-c`, `--approver`, `--confirm`, `--reject` |
-| `biz-orphans <parent_table>` | FK 부모-자식 관계 기반 고아(Orphan) 행 탐색 및 누락된 자식 삭제 API 진단 | `-c`, `--children` |
+| `biz-appr <link_code>` | 업무 문서와 결재 연동 상신·연결·승인/반려 단계 자동화 | `--ref` (반복), `--pre`, `--link-path`, `--link-method`, `--seed-arg`, `--title`, `--content`, `--link-body`, `-u`, `-c`, `--approver`, `--confirm`, `--reject` |
+| `biz-orphans <parent_table>` | FK 부모-자식 관계 기반 고아(Orphan) 행 탐색 및 누락된 자식 삭제 API 진단 | `-c`, `--children`, `-o md\|json\|sql` |
 | `biz-patch <method> <path>` | 조회된 API 데이터를 수정하여 저장하고 필드 누락 검증 | `--set key=val`, `-b/--raw-body`, `--where "k=v"`, `--list`, `--drop-suffix` |
 | `biz-code [kind]` | 공통코드 종류(종류명/코드값) 및 상세 코드 목록 조회 (회사별 명칭 지원) | `--like`, `-c`, `--db` |
 | `biz-db-write` | 로컬 DB 대상 안전한 쓰기 실행 (자동 `pg_dump` 백업 및 되돌리기 안내) | `-f`, `-e`, `--no-backup`, `--dry-run` |
 | `biz-event-new <ID>` | AS-IS/TOBE 화면 색인을 바탕으로 비즈니스 이벤트 분석 문서 골격 생성 (정제된 단계, 관련 이벤트/의심번호 연동) | `--screens`, `--title`, `-c`, `--force`, `--out` |
-| `api` (확장) | 계정 보호(3회 실패 잠금 방지) 및 수동 비밀번호 지정 지원, 단일 텍스트 값 추출 | `--password`, `--force-login`, `--get` |
+| `api` (확장) | 계정 보호(3회 실패 잠금 방지), 수동 비밀번호·커스텀 헤더·무로그인 호출 및 단일 값 추출 | `--password`, `--force-login`, `-H/--header`, `--no-login`, `--get` |
 
 ---
 
@@ -120,7 +120,7 @@ yunhee biz-patch PUT /api/v1/pay/work-times -u admin -c admin \
 
 ---
 
-## 5. `biz-code` — 공통코드 조회 및 회사별 코드명 매핑
+## 6. `biz-code` — 공통코드 조회 및 회사별 코드명 매핑
 
 공통코드 분류(`sys08_code_kind`)와 상세 코드(`sys09_code`)를 조회하며, 회사별 오버라이드 명칭(`sys10_company_code`)을 대조하여 표시합니다.
 
@@ -134,7 +134,7 @@ yunhee biz-code --like Work
 
 ---
 
-## 6. `biz-db-write` — 안전한 로컬 DB 쓰기 및 자동 백업
+## 7. `biz-db-write` — 안전한 로컬 DB 쓰기 및 자동 백업
 
 로컬 PostgreSQL 개발 DB(`localhost` / `127.0.0.1`)에 한하여 자동 `pg_dump` 백업을 생성하고 SQL 쓰기(UPDATE, INSERT, DELETE)를 수행합니다.
 
@@ -151,7 +151,7 @@ YUNHEE_DB_WRITE=1 yunhee biz-db-write -e "UPDATE att01_work_policy SET att01_not
 
 ---
 
-## 7. `biz-event-new` — 비즈니스 이벤트 분석 문서 틀 생성
+## 8. `biz-event-new` — 비즈니스 이벤트 분석 문서 틀 생성
 
 AS-IS `menus.md` 및 화면 색인(이벤트 E0~En, 서비스, 메서드, 테이블)과 TOBE 컨트롤러/API 엔드포인트를 결합하여 이벤트 분석 마크다운 문서를 기계적으로 생성합니다. 버튼 이벤트만 단계로 정제하고, 확인창 결합, 팝업 단계명(`#{screen} → {popup}`) 표기, 관련 이벤트/의심 번호 연동, 화면 쓰기 API 표 및 biz-authz 후속 안내를 자동 삽입합니다.
 
@@ -166,8 +166,10 @@ yunhee biz-event-new ATT-BZ-0005 --screens 1270,1281,1285 --title "근태관리 
 
 ---
 
-## 8. `api` 명령 확장 (계정 보호 및 값 추출)
+## 9. `api` 명령 확장 (계정 보호, 헤더, 무로그인 및 값 추출)
 
 - `--password <비밀번호>`: DB 조회나 환경변수 기본값을 타지 않고 명시적으로 비밀번호 전달.
 - `--force-login`: 3회 이상 로그인 실패로 인한 계정 잠금 가드를 무시하고 강제 로그인 시도.
+- `-H, --header "Name: Value"`: 커스텀 요청 헤더 추가 (반복 가능, `$env:VAR` 또는 `$VAR` 환경변수 자동 치환).
+- `--no-login`: 로그인 세션을 거치지 않고 엔드포인트를 직접 호출.
 - `--get <path>`: 응답 JSON에서 특정 키/경로의 값만 단일 텍스트로 출력 (예: `data.trId`, `data.items[0].id`). 스크립트 변수 바인딩용.

@@ -45,7 +45,11 @@ def get_type_module(type_name: str) -> ModuleType | None:
 def list_types() -> list[dict[str, Any]]:
     """지원하는 모든 분석 유형의 메타데이터 목록을 반환한다."""
     items = []
+    seen_mods: set[ModuleType] = set()
     for k, mod in REGISTRY.items():
+        if mod in seen_mods:
+            continue
+        seen_mods.add(mod)
         items.append({
             "name": getattr(mod, "NAME", k),
             "description": getattr(mod, "DESCRIPTION", ""),

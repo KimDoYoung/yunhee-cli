@@ -2,6 +2,17 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [1.0.5] - 2026-11-18
+`--help` 및 `docs/help/` 전체 명령어(공개 80종) 문서 정합성 전수 점검 및 보완:
+- **`analysis --list` 중복 출력 수정 및 `--help` 보완 (`src/yunhee/tools/analysis/__init__.py`, `src/yunhee/cli.py`)**:
+  - `REGISTRY` 별칭(`save_script`, `caller`, `func`)으로 인해 `analysis --list`에서 `save-script`, `callers`, `function`이 2회씩 중복 출력되던 문제를 모듈 단위 중복 제거로 수정.
+  - `analysis` 요약 및 `type_name` 인자 설명에 12개 전체 분석 유형 명시, 최상위 `yunhee --help` 워크플로우 안내 최신화 및 초기 명령어 인자 `help` 보강.
+- **`docs/help/` 누락 명령어 6종 및 중앙 색인(`index.md`) 완비 (`docs/help/*.md`)**:
+  - `docs/help/test.md`: `test-gen-screen` 상세 가이드(`index` 세는 규칙, 컴포넌트 범위 ID, 위험 type 비활성화, JSX 속성/앞 글자 태그 label 추출, `expectModal: true`, `mayWarn: true`에서 `message.error` 제외) 신설 및 `test-insert-data` / `test-rollback-data` 옵션 보강.
+  - `docs/help/ops-and-log.md`: `mark` 매뉴얼 이미지 마킹 명령어, `screen-capture --boxes` 옵션, `api` 확장 옵션(`-H/--header`, `--no-login`, `--password`, `--get`), `agent-guide` 및 `vec`/`index`/`search` 안내 추가.
+  - `docs/help/migration.md`: `index-db`, `index-src` 색인 명령어 추가 및 `page-style` SID 20종 표기 일치화.
+  - `docs/help/index.md` & `docs/help/biz.md`: 섹션 오분류(`biz-db-write`, `biz-event-new`) 교정, `biz-orphans`·`test-gen-screen`·`test-insert-data`·`test-rollback-data` 등 누락 항목 반영하여 공개 명령어 80종 100% 커버리지 달성.
+
 ## [1.0.4] - 2026-11-17
 수정사항 072 반영(Claude): `test-gen-screen` 1.0.3 검수에서 나온 3건:
 - **`mayWarn`에서 `message.error` 제외** (`_handler_may_warn`): `message.warning|info`·`Modal.warning|info`만 본다. 실행기는 mayWarn을 "메시지가 떠도 통과"로 보므로 error까지 넣으면 실제 실패(조회·다운로드 실패)가 PASS로 덮였다(예: 1049 `엑셀다운로드`, 1077 `새로고침`).
