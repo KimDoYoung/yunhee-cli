@@ -2,9 +2,9 @@ import ast
 from pathlib import Path
 
 from yunhee.tools.test.batch_compare import parse_tsv_line, run_batch_compare
+from yunhee.tools.test.bz_event_skel import generate_bz_event_code
 from yunhee.tools.test.gen_mapper import _to_java_literal
 from yunhee.tools.test.params import format_params_output, resolve_params_for_statement
-from yunhee.tools.test.scenario_skel import generate_scenario_code
 from yunhee.tools.test.signature import get_method_signature
 
 
@@ -42,14 +42,15 @@ def test_to_java_literal():
     assert _to_java_literal("String", "test") == '"test"'
 
 
-def test_scenario_skel_code_and_ast():
+def test_bz_event_skel_code_and_ast():
     real_root = Path("/home/kdy987/work/framework-sprt/AssetERP")
     if not real_root.is_dir():
         return
-    res = generate_scenario_code("PAY-BZ-0005", src_root=real_root)
+    res = generate_bz_event_code("PAY-BZ-0005", src_root=real_root)
     assert res.ok
     code = res.data["code"]
     assert "def pay_bz_0005(emp):" in code
+    assert 'EventTest("PAY-BZ-0005"' in code
     # AST 검증
     parsed = ast.parse(code)
     assert isinstance(parsed, ast.Module)

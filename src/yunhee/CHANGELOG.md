@@ -2,6 +2,12 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [1.0.6] - 2026-11-22
+업무분석 이벤트 시험 뼈대 생성 명령어 및 내부 용어·경로 정리 (`test-scenario-skel` → `test-bz-event-skel`):
+- **`test-bz-event-skel`로 명령어 및 모듈 개명 (`src/yunhee/tools/test/bz_event_skel.py`, `src/yunhee/cli.py`, `docs/help/test.md`)**:
+  - `test-scenario-skel` 명령어를 `test-bz-event-skel`로 변경하고, 모듈 파일명(`scenario_skel.py` → `bz_event_skel.py`) 및 함수명(`generate_bz_event_code`, `check_bz_event_docs`, `apply_bz_event_skel`)에서 `scenario` 단어 제거.
+  - 생성되는 파이썬 테스트 클래스와 대상 경로·등록 배열을 TOBE `bz-events` 규격(`EventTest(...)`, `tools/tests/bz-events/<module>.py`, `all.py`의 `EVENTS = [...]`)에 맞춰 정렬.
+
 ## [1.0.5] - 2026-11-18
 `--help` 및 `docs/help/` 전체 명령어(공개 80종) 문서 정합성 전수 점검 및 보완:
 - **`analysis --list` 중복 출력 수정 및 `--help` 보완 (`src/yunhee/tools/analysis/__init__.py`, `src/yunhee/cli.py`)**:

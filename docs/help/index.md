@@ -25,7 +25,7 @@
 | **TOBE 프로젝트 RAG 학습(카탈로그·ChromaDB) 및 상태 점검** | `yunhee rag-index`, `rag-reset`, `rag-status`, `rag-search` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **자연어 화면/모달/그리드 조건 탐색 및 질의** | `yunhee agent "<질문>"`, `yunhee ask -a "<질문>"` | [`ops-and-log.md`](file:///home/kdy987/work/yunhee-cli/docs/help/ops-and-log.md) |
 | **업무분석 / API 권한·고아행 검증 / 결재 흐름 / 로컬 DB 쓰기 / 이벤트 문서** | `yunhee biz-endpoints`, `biz-authz`, `biz-appr`, `biz-orphans`, `biz-patch`, `biz-code`, `biz-db-write`, `biz-event-new` | [`biz.md`](file:///home/kdy987/work/yunhee-cli/docs/help/biz.md) |
-| **시험 자동화 / 파라미터 추론 / 매퍼·화면·시나리오 뼈대 / 테스트 데이터 / 커버리지 / 대조** | `yunhee test-params`, `test-gen-mapper`, `test-gen-screen`, `test-scenario-skel`, `test-coverage`, `test-compare`, `test-insert-data`, `test-rollback-data` | [`test.md`](file:///home/kdy987/work/yunhee-cli/docs/help/test.md) |
+| **시험 자동화 / 파라미터 추론 / 매퍼·화면·이벤트 뼈대 / 테스트 데이터 / 커버리지 / 대조** | `yunhee test-params`, `test-gen-mapper`, `test-gen-screen`, `test-bz-event-skel`, `test-coverage`, `test-compare`, `test-insert-data`, `test-rollback-data` | [`test.md`](file:///home/kdy987/work/yunhee-cli/docs/help/test.md) |
 
 ---
 
@@ -115,7 +115,7 @@
 - `test-params <target> [-c <company>] [-o text|json|args]`: MyBatis 매퍼 statement 실행에 필요한 시험 파라미터 값을 DB에서 스스로 탐색
 - `test-gen-mapper <target> [--dry-run] [--force]`: 매퍼 스모크 시험(JUnit5 `@MybatisTest`) 클래스 소스 뼈대 자동 생성
 - `test-gen-screen [targets...] [--all] [--summary] [--stdout] [-t <dir>]`: 화면번호 → 브라우저 화면 시험 단계 목록(`tools/tests/screen-test/gen/screen-test-<번호>.gen.cjs`) 정적 생성
-- `test-scenario-skel <event_id> [--print] [--check]`: 업무분석 이벤트 YAML로부터 시나리오 파이썬 테스트 함수 뼈대 생성 및 점검
+- `test-bz-event-skel <event_id> [--print] [--check]`: 업무분석 이벤트 YAML로부터 이벤트 파이썬 테스트 함수 뼈대 생성 및 점검
 - `test-coverage [--by domain|mapper|screen] [--junit ...] [--scenario ...] [--log ...]`: 매퍼 문장 및 화면 단위 정적·동적·서버로그 테스트 커버리지 분석
 - `test-compare <tsv_file> [-c <company>] [-o tsv|junit]`: 조회 API와 AS-IS SQL 결과 일괄 비교 대조 시험
 - `test-insert-data <login> <screen_no> [-n <count>] [--dry-run]`: 로그인 계정·테넌트 컨텍스트에 맞춰 지정 화면 테이블에 테스트 데이터 INSERT 및 `transaction-code` 발급

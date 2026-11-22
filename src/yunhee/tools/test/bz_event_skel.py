@@ -1,4 +1,4 @@
-"""test-scenario-skel: 업무분석 이벤트 문서로부터 파이썬 시나리오 테스트 뼈대 자동 생성."""
+"""test-bz-event-skel: 업무분석 이벤트 문서로부터 파이썬 이벤트 테스트 뼈대 자동 생성."""
 
 from __future__ import annotations
 
@@ -409,13 +409,13 @@ def _get_table_filter_col(table_name: str, db_name: str = "asseterpdb") -> tuple
     return None, "none"
 
 
-def generate_scenario_code(
+def generate_bz_event_code(
     event_id: str,
     company: str = "kova",
     module: str | None = None,
     src_root: Path | None = None,
 ) -> ToolResult:
-    """이벤트 문서의 YAML 시나리오 데이터를 분석하여 실행 가능한 파이썬 함수 코드를 생성한다."""
+    """이벤트 문서의 YAML 데이터를 분석하여 실행 가능한 파이썬 함수 코드를 생성한다."""
     doc_path = _find_event_doc(event_id, src_root)
     if not doc_path or not doc_path.is_file():
         return ToolResult(ok=False, error=f"업무분석 이벤트 문서를 찾을 수 없습니다: {event_id}")
@@ -424,10 +424,10 @@ def generate_scenario_code(
 
     title_m = re.search(r"^#\s+([^\n]+)", text, re.MULTILINE)
     title_raw = title_m.group(1).strip() if title_m else event_id
-    scenario_desc = re.sub(r"^[A-Z]+-BZ-\d+\s*[—\-:]?\s*", "", title_raw).strip()
+    event_desc = re.sub(r"^[A-Z]+-BZ-\d+\s*[—\-:]?\s*", "", title_raw).strip()
 
     yaml_match = re.search(
-        r"<details>\s*<summary>\s*시나리오\s*데이터.*?</summary>.*?(```yaml\s*\n.*?\n```)",
+        r"<details>\s*<summary>[^<]*?데이터.*?</summary>.*?(```yaml\s*\n.*?\n```)",
         text,
         re.DOTALL | re.IGNORECASE,
     )
@@ -435,7 +435,7 @@ def generate_scenario_code(
         yaml_match = re.search(r"```yaml\s*\nid:\s*" + re.escape(event_id) + r".*?\n```", text, re.DOTALL)
 
     if not yaml_match:
-        return ToolResult(ok=False, error=f"{doc_path.name} 내에서 '시나리오 데이터' yaml을 찾을 수 없습니다.")
+        return ToolResult(ok=False, error=f"{doc_path.name} 내에서 이벤트 데이터 yaml을 찾을 수 없습니다.")
 
     yaml_block = yaml_match.group(1) if "```yaml" in yaml_match.group(0) else yaml_match.group(0)
     yaml_content = re.sub(r"^```yaml\s*\n|```$", "", yaml_block.strip())
@@ -564,7 +564,7 @@ def generate_scenario_code(
 
     lines: list[str] = []
     lines.append(f"def {func_name}(emp):")
-    lines.append(f'    sc = Scenario("{event_id}", "{scenario_desc}")')
+    lines.append(f'    sc = EventTest("{event_id}", "{event_desc}")')
     lines.append("    try:")
     lhs = ", ".join(k for k, _ in client_inits)
     rhs = ", ".join(v for _, v in client_inits)
@@ -855,14 +855,14 @@ def generate_scenario_code(
                 writer_emp = step_emps[0] if len(step_emps) >= 1 else (line_actor if line_actor.isdigit() else "401")
                 approver_emp = step_emps[1] if len(step_emps) >= 2 else "301"
                 t_var = "t" if needs_tree else "0"
-                title_expr = 'seed["title"]' if "seed" in known_vars else f'"{scenario_desc}"'
+                title_expr = 'seed["title"]' if "seed" in known_vars else f'"{event_desc}"'
                 lines.append(
                     f'    body = apr.save_body("request", {t_var}, {title_expr}, '
                     f'[apr.line(emp["{writer_emp}"], "00", "001"), apr.line(emp["{approver_emp}"], "10", "002")], '
                     'new, message="신청합니다")'
                 )
                 lines.append(
-                    f'    body.update({{"linkCode": "{link_code}", "effectDate": "2026-12-01T00:00:00", "content": "<p>{scenario_desc}</p>"}})'
+                    f'    body.update({{"linkCode": "{link_code}", "effectDate": "2026-12-01T00:00:00", "content": "<p>{event_desc}</p>"}})'
                 )
                 body_code = "body"
             elif body_raw is not None and (len(expanded_apis) == 1 or api_idx == 0):
@@ -1063,7 +1063,7 @@ def generate_scenario_code(
     except SyntaxError as syn_exc:
         return ToolResult(
             ok=False,
-            error=f"생성된 시나리오 코드 문법 오류 ({event_id} line {syn_exc.lineno}): {syn_exc.msg}\n{full_code}",
+            error=f"생성된 이벤트 테스트 코드 문법 오류 ({event_id} line {syn_exc.lineno}): {syn_exc.msg}\n{full_code}",
         )
 
     return ToolResult(
@@ -1080,7 +1080,7 @@ def generate_scenario_code(
     )
 
 
-def check_scenario_docs(
+def check_bz_event_docs(
     target: str | None = None,
     src_root: Path | None = None,
 ) -> ToolResult:
@@ -1102,11 +1102,11 @@ def check_scenario_docs(
         m_id = re.match(r"^([A-Z]+-BZ-\d+)", doc.stem)
         ev_id = m_id.group(1) if m_id else doc.stem
         txt = doc.read_text(encoding="utf-8", errors="replace")
-        if "시나리오 데이터" not in txt and "```yaml" not in txt:
+        if "```yaml" not in txt:
             skip_cnt += 1
             continue
 
-        res = generate_scenario_code(ev_id, src_root=src_root)
+        res = generate_bz_event_code(ev_id, src_root=src_root)
         if not res.ok:
             fail_cnt += 1
             first_err = (res.error or "오류").splitlines()[0]
@@ -1137,15 +1137,15 @@ def check_scenario_docs(
     )
 
 
-def apply_scenario_skel(
+def apply_bz_event_skel(
     event_id: str,
     company: str = "kova",
     module: str | None = None,
     print_only: bool = False,
     src_root: Path | None = None,
 ) -> ToolResult:
-    """test-scenario-skel 진입 함수. --print면 코드 출력, 아니면 scenario/<module>.py 및 all.py에 등록."""
-    res = generate_scenario_code(event_id, company=company, module=module, src_root=src_root)
+    """test-bz-event-skel 진입 함수. --print면 코드 출력, 아니면 bz-events/<module>.py 및 all.py에 등록."""
+    res = generate_bz_event_code(event_id, company=company, module=module, src_root=src_root)
     if not res.ok:
         return res
 
@@ -1157,12 +1157,12 @@ def apply_scenario_skel(
         return ToolResult(ok=True, data={"summary": code, "code": code})
 
     root_dir = src_root or getattr(config, "TOBE_SRC_DIR", None) or config.WORK_DIR
-    scenario_dir = root_dir / "tools/tests/scenario"
-    if not scenario_dir.is_dir():
-        return ToolResult(ok=False, error=f"시나리오 디렉터리를 찾을 수 없습니다: {scenario_dir}")
+    events_dir = root_dir / "tools/tests/bz-events"
+    if not events_dir.is_dir():
+        return ToolResult(ok=False, error=f"이벤트 테스트 디렉터리를 찾을 수 없습니다: {events_dir}")
 
-    mod_file = scenario_dir / f"{mod_name}.py"
-    all_file = scenario_dir / "all.py"
+    mod_file = events_dir / f"{mod_name}.py"
+    all_file = events_dir / "all.py"
 
     if not mod_file.is_file():
         return ToolResult(ok=False, error=f"모듈 파일이 없습니다: {mod_file}")
@@ -1182,12 +1182,12 @@ def apply_scenario_skel(
 
     if all_file.is_file():
         all_content = all_file.read_text(encoding="utf-8", errors="replace")
-        reg_entry = f"{mod_name}.{func_name}"
-        if reg_entry not in all_content:
-            m = re.search(r"SCENARIOS\s*=\s*\[(.*?)\]", all_content, re.DOTALL)
+        reg_entry = f'("{event_id}", {mod_name}.{func_name})'
+        if f"{mod_name}.{func_name}" not in all_content:
+            m = re.search(r"EVENTS\s*=\s*\[(.*?)\]", all_content, re.DOTALL)
             if m:
                 bracket_content = m.group(1).rstrip()
-                new_bracket = bracket_content + f"\n    {reg_entry},\n"
+                new_bracket = bracket_content + f",\n    {reg_entry}"
                 all_content = all_content[:m.start(1)] + new_bracket + all_content[m.end(1):]
                 all_file.write_text(all_content, encoding="utf-8")
 

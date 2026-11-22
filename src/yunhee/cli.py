@@ -1661,22 +1661,22 @@ def test_gen_screen_cmd(
         raise typer.Exit(code=1)
 
 
-@app.command(name="test-scenario-skel")
-def test_scenario_skel_cmd(
+@app.command(name="test-bz-event-skel")
+def test_bz_event_skel_cmd(
     event_id: Annotated[str | None, typer.Argument(help="업무분석 이벤트 ID (예: EMP-BZ-0018) 또는 --check 시 도메인명 (예: EMP)")] = None,
-    company: Annotated[str, typer.Option("--company", help="시나리오 실행 가상회사 (기본: kova)")] = "kova",
-    module: Annotated[str | None, typer.Option("--module", help="시나리오 모듈 파일명 (미지정 시 이벤트 접두사 emp, pay 등)")] = None,
+    company: Annotated[str, typer.Option("--company", help="이벤트 테스트 실행 가상회사 (기본: kova)")] = "kova",
+    module: Annotated[str | None, typer.Option("--module", help="이벤트 테스트 모듈 파일명 (미지정 시 이벤트 접두사 emp, pay 등)")] = None,
     print_only: Annotated[bool, typer.Option("--print", help="파일에 추가하지 않고 생성된 파이썬 함수 코드만 출력")] = False,
     check: Annotated[bool, typer.Option("--check", help="이벤트 문서들의 YAML 문법·중복키·자리표시·AST 일괄 점검")] = False,
 ) -> None:
-    """업무분석 이벤트 YAML로부터 시나리오 파이썬 테스트 함수 뼈대 생성."""
-    from yunhee.tools.test.scenario_skel import (
-        apply_scenario_skel,
-        check_scenario_docs,
+    """업무분석 이벤트 YAML로부터 이벤트 파이썬 테스트 함수 뼈대 생성."""
+    from yunhee.tools.test.bz_event_skel import (
+        apply_bz_event_skel,
+        check_bz_event_docs,
     )
 
     if check:
-        res_chk = check_scenario_docs(target=event_id)
+        res_chk = check_bz_event_docs(target=event_id)
         if not res_chk.ok and not res_chk.data:
             typer.secho(f"[ERROR] {res_chk.error}", fg=typer.colors.RED, err=True)
             raise typer.Exit(code=1)
@@ -1689,7 +1689,7 @@ def test_scenario_skel_cmd(
         typer.secho("[ERROR] 이벤트 ID를 지정하세요 (예: EMP-BZ-0018) 또는 --check 옵션을 사용하세요.", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
-    res = apply_scenario_skel(event_id, company=company, module=module, print_only=print_only)
+    res = apply_bz_event_skel(event_id, company=company, module=module, print_only=print_only)
     if not res.ok:
         typer.secho(f"[ERROR] {res.error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)

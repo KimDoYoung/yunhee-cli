@@ -12,7 +12,7 @@
 | **매퍼 자동 파라미터 실행** | `yunhee mapper-run "<매퍼.xml>#<id>" --auto-params --rollback` | `test-params`가 찾은 파라미터를 자동 바인딩하여 롤백 실행 |
 | **JUnit 스모크 시험 뼈대 생성** | `yunhee test-gen-mapper <MapperName\|도메인> [--dry-run] [--force]` | JUnit5 `@MybatisTest` 기반 스모크 테스트 Java 클래스 자동 생성 |
 | **화면 시험 단계(.gen.cjs) 생성** | `yunhee test-gen-screen <화면번호...> [--all] [--summary] [--stdout]` | TSX 정적 분석 기반 브라우저 화면 시험 단계 목록(`.gen.cjs`) 결정적 생성 |
-| **시나리오 테스트 뼈대 생성** | `yunhee test-scenario-skel <이벤트ID> [--company kova] [--print]` | 업무분석 이벤트 YAML로부터 시나리오 파이썬 함수 뼈대 생성 |
+| **이벤트 테스트 뼈대 생성** | `yunhee test-bz-event-skel <이벤트ID> [--company kova] [--print]` | 업무분석 이벤트 YAML로부터 이벤트 파이썬 함수 뼈대 생성 |
 | **테스트 커버리지 분석** | `yunhee test-coverage [--by domain\|mapper\|screen] [-o md\|tsv]` | 소스 호출 관계(정적) 및 JUnit/시나리오/서버로그(동적) 기반 문장별 커버리지 집계 |
 | **AS-IS 대량 대조 시험** | `yunhee test-compare <목록.tsv> [-c <회사>] [-o tsv\|junit] [--out <폴더>]` | 목록 기반 조회 API vs AS-IS SQL 일괄 비교 (0=0은 skip, JUnit 리포트 지원) |
 | **화면별 테스트 데이터 생성/롤백** | `yunhee test-insert-data <login> <화면번호>` / `yunhee test-rollback-data` | 계정·테넌트 컨텍스트 맞춤 테스트 데이터 INSERT 및 `transaction-code` 기반 역순 롤백 |
@@ -117,19 +117,19 @@ yunhee test-gen-screen 1023 1049 1378 1077 1282 -t /tmp/gen --summary
 
 ---
 
-## 4. `test-scenario-skel`
+## 4. `test-bz-event-skel`
 
-업무분석 이벤트 문서(`docs/2-업무분석/biz-event/<도메인>/<ID>-*.md`)의 시나리오 YAML로부터 파이썬 테스트 코드를 자동 생성합니다.
+업무분석 이벤트 문서(`docs/2-업무분석/biz-event/<도메인>/<ID>-*.md`)의 이벤트 데이터 YAML로부터 파이썬 테스트 코드를 자동 생성합니다.
 
 ```bash
 # 생성된 파이썬 함수 코드 화면 출력
-yunhee test-scenario-skel EMP-BZ-0018 --print
+yunhee test-bz-event-skel EMP-BZ-0018 --print
 
-# 시나리오 파일(tools/tests/scenario/emp.py)에 함수를 추가하고 all.py에 등록
-yunhee test-scenario-skel EMP-BZ-0018
+# 이벤트 테스트 파일(tools/tests/bz-events/emp.py)에 함수를 추가하고 all.py에 등록
+yunhee test-bz-event-skel EMP-BZ-0018
 
 # 도메인 전체 이벤트 문서의 YAML 문법·중복키·자리표시·AST 일괄 점검
-yunhee test-scenario-skel EMP --check
+yunhee test-bz-event-skel EMP --check
 ```
 
 - **Actor 이어받기 및 역할어 해석**: `actor`가 생략된 단계는 직전 단계의 actor를 이어받으며, 주석(`# 301, { action: confirm }`)이나 단계 설명의 역할어(`직원`, `팀장`, `경영관리`)를 문서 상단 `누가` 행과 대조해 자동으로 클라이언트를 전환합니다. `company: admin`은 `Client("admin", "admin", PW)`로 보존하고 가상회사는 `COMPANY` 상수를 사용합니다.
