@@ -572,9 +572,11 @@ def test_032_5_multi_pc_commit_mismatch_warnings(tmp_path: Path, monkeypatch):
 
 def test_032_6_version_changelog_agent_guide():
     """032-6: 버전, changelog, agent-guide, drift --help 검증."""
+    from yunhee import project
+
     res_ver = runner.invoke(cli.app, ["--version"])
     assert res_ver.exit_code == 0
-    assert "0." in res_ver.output
+    assert f"yunhee {project.current_version()}" in res_ver.output
 
     res_cl = runner.invoke(cli.app, ["changelog", "0.3.8"])
     assert res_cl.exit_code == 0

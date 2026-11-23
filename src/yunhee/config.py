@@ -12,13 +12,10 @@ def _find_yunhee_dir() -> Path:
 
     1. YUNHEE_DIR 환경변수 우선
     2. 소스 트리 기준 (editable 설치 또는 개발 환경: parents[2]에 pyproject.toml이나 .env.yunhee/.env.local 존재)
-    3. 일반 패키지(site-packages)로 설치된 경우:
-       - ~/.yunhee/.env.yunhee 또는 ~/.yunhee/.env.local 이 존재하면 ~/.yunhee
-       - /home/kdy987/work/yunhee-cli (기본 개발 저장소)가 존재하면 해당 디렉터리
-    4. fallback: parents[2]
+    3. 일반 패키지(site-packages)로 설치된 경우: ~/.yunhee (표준 전역 홈 디렉터리)
     """
     if env_dir := os.getenv("YUNHEE_DIR"):
-        p = Path(env_dir).resolve()
+        p = Path(os.path.expandvars(env_dir)).expanduser().resolve()
         if p.is_dir():
             return p
 
@@ -30,15 +27,7 @@ def _find_yunhee_dir() -> Path:
     ):
         return source_root
 
-    home_yunhee = Path.home() / ".yunhee"
-    if (home_yunhee / ".env.yunhee").is_file() or (home_yunhee / ".env.local").is_file():
-        return home_yunhee
-
-    dev_root = Path("/home/kdy987/work/yunhee-cli")
-    if dev_root.is_dir():
-        return dev_root
-
-    return source_root
+    return Path.home() / ".yunhee"
 
 
 def _find_env_file(yunhee_dir: Path) -> Path:
@@ -93,7 +82,18 @@ def _find_local_env_file(work_dir: Path, global_env: Path | None = None) -> Path
                 resolved = f.resolve()
                 if global_resolved is None or resolved != global_resolved:
                     return resolved
+                # 이 디렉터리의 우선 설정 파일이 이미 전역 파일로 선택된 경우,
+                # 같은 디렉터리의 하위 호환 파일(.env.local)을 로컬 오버라이드로 읽지 않는다.
+                break
     return None
+
+
+def needs_global_init(home: Path | None = None) -> bool:
+    """~/.yunhee 디렉터리 또는 ~/.yunhee/.env.yunhee(.env.local)가 없으면 True."""
+    home_dir = (home or Path.home()) / ".yunhee"
+    if not home_dir.is_dir():
+        return True
+    return not ((home_dir / ".env.yunhee").is_file() or (home_dir / ".env.local").is_file())
 
 
 YUNHEE_DIR = _find_yunhee_dir()
@@ -114,6 +114,12 @@ if LOCAL_ENV_FILE and LOCAL_ENV_FILE.is_file() and LOCAL_ENV_FILE != GLOBAL_ENV_
     load_dotenv(LOCAL_ENV_FILE, override=True)
     LOADED_ENV_FILES.append(LOCAL_ENV_FILE)
 
+# .env.yunhee / .env.local 안에서 YUNHEE_DIR을 명시적으로 지정한 경우 반영
+if _post_env_dir := os.getenv("YUNHEE_DIR"):
+    _p_yunhee = Path(os.path.expandvars(_post_env_dir)).expanduser().resolve()
+    if _p_yunhee.is_dir():
+        YUNHEE_DIR = _p_yunhee
+
 # 하위 호환 단일 ENV_FILE 포인터 (로컬 우선, 없으면 전역, 없으면 기본 경로)
 ENV_FILE = LOCAL_ENV_FILE or GLOBAL_ENV_FILE or (YUNHEE_DIR / ".env.yunhee")
 
@@ -130,8 +136,8 @@ NUM_CTX = int(os.getenv("YUNHEE_NUM_CTX", "16384"))
 CHROMA_HOST = os.getenv("YUNHEE_CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("YUNHEE_CHROMA_PORT", "8000"))
 
-# Gotenberg PDF 변환 서비스 (docs/docker-compose.yml 및 examples/default.conf 참고)
-GOTENBERG_URL = os.getenv("YUNHEE_GOTENBERG_URL", "http://jskn.iptime.org/gotenberg")
+# Gotenberg PDF 변환 서비스 (docs/docker-compose.yml 참고, 미지정 시 빈 문자열)
+GOTENBERG_URL = os.getenv("YUNHEE_GOTENBERG_URL", "")
 
 # AssetERP 단일 데이터베이스 접속 URL (읽기 전용 조회용, PostgreSQL)
 # 1순위: YUNHEE_DB, 하위 호환: LOCAL_DB, TEST_DB
@@ -139,11 +145,26 @@ YUNHEE_DB = os.getenv("YUNHEE_DB") or os.getenv("LOCAL_DB") or os.getenv("TEST_D
 LOCAL_DB = YUNHEE_DB  # 하위 호환 별칭
 TEST_DB = os.getenv("TEST_DB") or YUNHEE_DB  # 하위 호환
 
+
+def _resolve_default_db_name() -> str:
+    """기본 PostgreSQL DB명을 결정한다 (YUNHEE_DB_NAME > YUNHEE_DB URL 경로 > asseterpdb)."""
+    if explicit := (os.getenv("YUNHEE_DB_NAME") or "").strip():
+        return explicit
+    if YUNHEE_DB:
+        try:
+            db_from_url = urlparse(YUNHEE_DB).path.lstrip("/")
+            if db_from_url:
+                return db_from_url
+        except Exception:  # noqa: BLE001, S110
+            pass
+    return "asseterpdb"
+
+
+DEFAULT_DB_NAME = _resolve_default_db_name()
+DB_WRITE_ALLOW = os.getenv("YUNHEE_DB_WRITE_ALLOW") or DEFAULT_DB_NAME
+
 # `table`/`prepare`/`get_db_definition`이 기본으로 읽을 스키마 스냅샷 이름
 SCHEMA_ENV = os.getenv("YUNHEE_SCHEMA_ENV") or ("YUNHEE_DB" if os.getenv("YUNHEE_DB") else "LOCAL_DB")
-
-# ASIS(AssetERP, GWT/GXT) 소스 루트 - yunhee가 레거시 페이지/매퍼를 찾는 기준
-ASIS_SRC_DIR = Path(os.getenv("YUNHEE_ASIS_SRC_DIR", "/home/kdy987/oms-data/src/Asset-ERP"))
 
 import tomllib
 
@@ -165,6 +186,18 @@ TOML_FILE, TOML_CONFIG = _find_yunhee_toml()
 _api_conf = TOML_CONFIG.get("api", {})
 _as_is_conf = TOML_CONFIG.get("as_is", {})
 _tobe_conf = TOML_CONFIG.get("tobe", {})
+
+# ASIS(AssetERP, GWT/GXT) 소스 루트 - yunhee가 레거시 페이지/매퍼를 찾는 기준
+_raw_asis_src = (_as_is_conf.get("src") or os.getenv("YUNHEE_ASIS_SRC_DIR") or "").strip()
+if _raw_asis_src:
+    _p_asis = Path(_raw_asis_src).expanduser()
+    if not _p_asis.is_absolute():
+        _base_asis = TOML_FILE.parent if (TOML_FILE and _as_is_conf.get("src")) else WORK_DIR
+        ASIS_SRC_DIR: Path | None = (_base_asis / _p_asis).resolve()
+    else:
+        ASIS_SRC_DIR = _p_asis
+else:
+    ASIS_SRC_DIR = None
 
 # ASIS 색인 디렉터리 (.yunhee.toml [as_is] src_index 우선, 없으면 YUNHEE_SRC_INDEX_DIR 환경변수)
 _raw_src_index = _as_is_conf.get("src_index") or os.getenv("YUNHEE_SRC_INDEX_DIR")
@@ -190,8 +223,8 @@ if _raw_tobe_src:
 else:
     TOBE_SRC_DIR = WORK_DIR
 
-# API 스모크 테스트 기본 설정 (.yunhee.toml 우선, 없으면 .env.local)
-API_BASE_URL = _api_conf.get("base") or os.getenv("YUNHEE_API_BASE_URL", "http://localhost:8082/AssetERP_1")
+# API 스모크 테스트 기본 설정 (.yunhee.toml 우선, 없으면 .env.yunhee / .env.local)
+API_BASE_URL = _api_conf.get("base") or os.getenv("YUNHEE_API_BASE_URL", "http://localhost:8082/AssetERP")
 # YUNHEE_API_TENANT는 0.1.9까지 쓰던 이름 (호환)
 API_DEFAULT_TENANT = (
     _api_conf.get("tenant") or os.getenv("YUNHEE_API_DEFAULT_TENANT") or os.getenv("YUNHEE_API_TENANT")
@@ -202,6 +235,7 @@ TEST_ADMIN_PASS = os.getenv("YUNHEE_TEST_ADMIN_PASS", "1111")
 TEST_DEFAULT_PASS = os.getenv("YUNHEE_TEST_DEFAULT_PASS", "")
 TEST_COMPANY = os.getenv("YUNHEE_TEST_COMPANY")
 API_TENANT_HOST = os.getenv("YUNHEE_API_TENANT_HOST", "{tenant}.localhost")
+JAVA_BASE_PACKAGE = _tobe_conf.get("java_package") or os.getenv("YUNHEE_JAVA_BASE_PACKAGE", "kr.co.kfs.asseterp")
 
 
 def _float_env(name: str, default: float) -> float:
@@ -248,15 +282,22 @@ API_TIMEOUT = _float_env("YUNHEE_API_TIMEOUT", 15.0)
 
 # 로그 리더 (yunhee log) 기본 설정
 _log_conf = TOML_CONFIG.get("log", {})
-LOG_DOCKER = _log_conf.get("docker") if "docker" in _log_conf else os.getenv("YUNHEE_LOG_DOCKER", "omen-tomcat")
-LOG_DIR = _log_conf.get("dir") if "dir" in _log_conf else os.getenv("YUNHEE_LOG_DIR", "/home/kdy987/tmp/asseterp-data/logs")
+LOG_DOCKER = _log_conf.get("docker") if "docker" in _log_conf else os.getenv("YUNHEE_LOG_DOCKER", "")
+_raw_log_dir = _log_conf.get("dir") if "dir" in _log_conf else os.getenv("YUNHEE_LOG_DIR", "")
+LOG_DIR = str(Path(_raw_log_dir).expanduser()) if _raw_log_dir else ""
 LOG_APP = _log_conf.get("app") if "app" in _log_conf else os.getenv("YUNHEE_LOG_APP", "AssetERP-backend")
 LOG_TZ = _log_conf.get("tz") if "tz" in _log_conf else os.getenv("YUNHEE_LOG_TZ", "")
-LOG_CONTEXT = _log_conf.get("context") if "context" in _log_conf else os.getenv("YUNHEE_LOG_CONTEXT", "/AssetERP_1")
+_default_log_context = urlparse(API_BASE_URL).path.rstrip("/") if API_BASE_URL else ""
+LOG_CONTEXT = _log_conf.get("context") if "context" in _log_conf else os.getenv("YUNHEE_LOG_CONTEXT", _default_log_context)
 LOG_TRACE_HEADER = _log_conf.get("trace_header") if "trace_header" in _log_conf else os.getenv("YUNHEE_LOG_TRACE_HEADER", "X-Trace-Id")
+LOG_ACCESS_LOGGER = (
+    _log_conf.get("access_logger")
+    if "access_logger" in _log_conf
+    else os.getenv("YUNHEE_LOG_ACCESS_LOGGER", f"{JAVA_BASE_PACKAGE}.access")
+)
 
 # 화면 자동 캡처 (yunhee screen-capture) 기본 설정
-CAPTURE_BASE_URL = os.getenv("YUNHEE_CAPTURE_URL", "http://localhost:8082/AssetERP")
+CAPTURE_BASE_URL = os.getenv("YUNHEE_CAPTURE_URL") or API_BASE_URL
 CAPTURE_OUT_DIR = os.getenv("YUNHEE_CAPTURE_OUT_DIR", ".yunhee/screen-capture")
 
 
@@ -293,13 +334,14 @@ def summary() -> dict[str, str]:
         "num-ctx": str(NUM_CTX),
         "chroma-host": CHROMA_HOST,
         "chroma-port": str(CHROMA_PORT),
-        "gotenberg-url": GOTENBERG_URL,
+        "gotenberg-url": GOTENBERG_URL or "(not set)",
         "yunhee-db": redact(YUNHEE_DB),
         "test-db": redact(TEST_DB),
         "local-db": redact(LOCAL_DB),
+        "db-name": DEFAULT_DB_NAME,
         "schema-env": SCHEMA_ENV,
-        "asis-src": str(ASIS_SRC_DIR),
-        "asis-branch": get_git_branch_sync_status(ASIS_SRC_DIR),
+        "asis-src": str(ASIS_SRC_DIR) if ASIS_SRC_DIR else "(not set)",
+        "asis-branch": get_git_branch_sync_status(ASIS_SRC_DIR) if ASIS_SRC_DIR else "(not set)",
         "tobe-src": str(TOBE_SRC_DIR),
         "tobe-branch": get_git_branch_sync_status(TOBE_SRC_DIR),
         "src-index": str(SRC_INDEX_DIR) if SRC_INDEX_DIR else "(auto)",
@@ -323,7 +365,7 @@ def summary() -> dict[str, str]:
             if TOML_FILE and "docker" in _log_conf
             else (f"{LOG_DOCKER} (from {ENV_FILE.name})" if LOG_DOCKER else "(local)")
         ),
-        "log-dir": LOG_DIR,
+        "log-dir": LOG_DIR or "(not set)",
         "log-app": LOG_APP,
     }
 
@@ -357,6 +399,8 @@ class ConfigItem:
 
 
 def _get_branch_status() -> str:
+    if not ASIS_SRC_DIR:
+        return "(not set)"
     try:
         from yunhee.tools.as_is.drift import get_git_branch_sync_status
 
@@ -378,7 +422,7 @@ CONFIG_ITEMS: list[ConfigItem] = [
     ConfigItem(
         key="YUNHEE_ASIS_SRC_DIR",
         aliases=["ASIS_SRC_DIR", "asis-src", "asis_src", "asis"],
-        getter=lambda: str(ASIS_SRC_DIR),
+        getter=lambda: str(ASIS_SRC_DIR) if ASIS_SRC_DIR else "",
         description="AS-IS 레거시 소스 루트 디렉터리",
     ),
     ConfigItem(
@@ -595,6 +639,24 @@ CONFIG_ITEMS: list[ConfigItem] = [
         aliases=["LOG_TRACE_HEADER", "log-trace-header", "log_trace_header"],
         getter=lambda: LOG_TRACE_HEADER,
         description="트레이스 헤더명",
+    ),
+    ConfigItem(
+        key="YUNHEE_DB_NAME",
+        aliases=["DEFAULT_DB_NAME", "db-name", "db_name"],
+        getter=lambda: DEFAULT_DB_NAME,
+        description="기본 PostgreSQL DB 이름",
+    ),
+    ConfigItem(
+        key="YUNHEE_LOG_ACCESS_LOGGER",
+        aliases=["LOG_ACCESS_LOGGER", "log-access-logger", "log_access_logger"],
+        getter=lambda: LOG_ACCESS_LOGGER,
+        description="접근 로그 Logger 이름",
+    ),
+    ConfigItem(
+        key="YUNHEE_JAVA_BASE_PACKAGE",
+        aliases=["JAVA_BASE_PACKAGE", "java-base-package", "java_base_package"],
+        getter=lambda: JAVA_BASE_PACKAGE,
+        description="TOBE Java 기본 패키지명",
     ),
     ConfigItem(
         key="YUNHEE_CAPTURE_URL",

@@ -36,6 +36,7 @@ def test_parse_log_records():
 
 def test_trace_summary_and_masking(monkeypatch):
     monkeypatch.setattr(config, "WORK_DIR", FIXTURES_DIR)
+    monkeypatch.setattr(config, "LOG_CONTEXT", "/AssetERP_1")
     log_reader._MAPPER_CACHE = None
 
     # 마스킹 켜짐

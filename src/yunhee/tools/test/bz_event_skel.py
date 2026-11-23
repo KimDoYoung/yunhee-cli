@@ -373,8 +373,11 @@ def _parse_comment_json_like(text: str) -> dict[str, Any] | None:
     return result if result else None
 
 
-def _get_table_filter_col(table_name: str, db_name: str = "asseterpdb") -> tuple[str | None, str]:
+def _get_table_filter_col(table_name: str, db_name: str | None = None) -> tuple[str | None, str]:
     """테이블의 행 수 확인 쿼리에 쓸 필터 열(person_id, company_id, parent_id)을 찾는다."""
+    from yunhee import config
+
+    db_name = db_name or config.DEFAULT_DB_NAME
     prefix = table_name.split("_")[0] if "_" in table_name else table_name
     conn_str = get_connection_string(db_name)
     cols: set[str] = set()

@@ -146,9 +146,12 @@ def resolve_params_for_statement(
     company: str | None = None,
     n_tries: int = 3,
     user_params: dict[str, Any] | None = None,
-    db_name: str = "asseterpdb",
+    db_name: str | None = None,
 ) -> ToolResult:
     """매퍼 statement의 파라미터 값을 추론하여 ResolvedParam 목록 반환."""
+    from yunhee import config
+
+    db_name = db_name or config.DEFAULT_DB_NAME
     if "#" not in target:
         return ToolResult(ok=False, error=f"매퍼 파일과 statement id는 #으로 구분해야 합니다: {target}")
 

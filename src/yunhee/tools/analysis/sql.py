@@ -277,9 +277,10 @@ def render(obj: dict[str, Any], fmt: str = "md", opts: dict[str, Any] | None = N
         if count_opt:
             import psycopg
 
+            from yunhee import config
             from yunhee.tools.sql_runner import get_connection_string
 
-            db_name = opts.get("db", "asseterpdb")
+            db_name = opts.get("db") or config.DEFAULT_DB_NAME
             conn_str = get_connection_string(db_name)
             try:
                 with psycopg.connect(conn_str, autocommit=False) as conn:

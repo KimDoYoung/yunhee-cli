@@ -35,8 +35,11 @@ def check_db_write_allowed(db_url: str) -> bool:
     if host not in allowed_hosts:
         raise ValueError(f"오류: 원격 DB 쓰기는 허용되지 않습니다 ({host}). 로컬 환경에서만 실행 가능합니다.")
 
+    from yunhee import config
+
     dbname = parsed.path.lstrip("/")
-    allowed_dbs = {db.strip() for db in os.getenv("YUNHEE_DB_WRITE_ALLOW", "asseterpdb").split(",") if db.strip()}
+    allowed_raw = os.getenv("YUNHEE_DB_WRITE_ALLOW") or config.DB_WRITE_ALLOW
+    allowed_dbs = {db.strip() for db in allowed_raw.split(",") if db.strip()}
 
     if dbname not in allowed_dbs:
         raise ValueError(f"오류: 허용되지 않은 DB 대상입니다 ({dbname}). 허용 목록: {', '.join(allowed_dbs)}")
@@ -80,8 +83,10 @@ def _split_statements(sql_text: str) -> list[str]:
 
 def run_backup(db_url: str) -> str:
     """DB 백업을 실행하고 백업 파일 경로를 반환한다."""
+    from yunhee import config
+
     parsed = urlparse(db_url)
-    dbname = parsed.path.lstrip("/") or "asseterpdb"
+    dbname = parsed.path.lstrip("/") or config.DEFAULT_DB_NAME
 
     # 1. 프로젝트 내 db_dump_backup.sh 확인
     sh_path = Path.cwd() / "tools" / "db_dump_backup.sh"

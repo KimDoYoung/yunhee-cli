@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 def find_screen_java_file(screen_code: str) -> Path | None:
     """ASIS 소스 루트에서 해당 화면 코드와 일치하는 대표 Java 파일을 찾습니다."""
+    if not config.ASIS_SRC_DIR:
+        return None
     asis_dir = Path(config.ASIS_SRC_DIR)
     if not asis_dir.is_dir():
         return None

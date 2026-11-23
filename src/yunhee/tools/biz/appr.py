@@ -126,7 +126,7 @@ def run_appr(
     from yunhee import config
 
     target_as_user = as_user or os.getenv("YUNHEE_TEST_ADMIN_USER", config.TEST_ADMIN_USER)
-    target_company = company or config.TEST_COMPANY or "kalpa"
+    target_company = company or config.TEST_COMPANY or config.API_DEFAULT_TENANT or "kalpa"
 
     # 0. --pre 처리 (061 #4: 상신 전 업무 행 생성 API 호출)
     if pre:

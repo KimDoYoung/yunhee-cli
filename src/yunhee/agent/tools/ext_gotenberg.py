@@ -180,6 +180,8 @@ def convert_markdown_to_pdf(
         (성공여부, 안내문자열)
     """
     url = (gotenberg_url or config.GOTENBERG_URL).rstrip("/")
+    if not url:
+        return False, "Gotenberg URL이 설정되어 있지 않습니다. .env.yunhee에 YUNHEE_GOTENBERG_URL을 설정하세요."
     target_api = f"{url}/forms/chromium/convert/html"
     out_file = Path(output_path).resolve()
     out_file.parent.mkdir(parents=True, exist_ok=True)

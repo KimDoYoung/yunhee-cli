@@ -37,7 +37,11 @@ def test_init_in_empty_directory():
             os.chdir(orig)
 
 
-def test_cascading_env_file_loading(tmp_path: Path):
+def test_cascading_env_file_loading(tmp_path: Path, monkeypatch):
+    empty_home = tmp_path / "empty_home"
+    empty_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: empty_home))
+
     global_dir = tmp_path / "global_yunhee"
     global_dir.mkdir()
     global_env = global_dir / ".env.yunhee"

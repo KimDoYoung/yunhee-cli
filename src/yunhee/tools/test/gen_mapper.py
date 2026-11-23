@@ -259,10 +259,11 @@ def generate_smoke_test_for_mapper(
     today_str = datetime.date.today().strftime("%Y-%m-%d")  # noqa: DTZ011
     comp_tag = company or "28000"
 
+    base_pkg = config.JAVA_BASE_PACKAGE
     src_lines = [
-        f"package kr.co.kfs.asseterp.biz.{domain};",
+        f"package {base_pkg}.biz.{domain};",
         "",
-        f"import kr.co.kfs.asseterp.biz.{domain}.mapper.{mapper_name};",
+        f"import {base_pkg}.biz.{domain}.mapper.{mapper_name};",
         "import org.junit.jupiter.api.Disabled;",
         "import org.junit.jupiter.api.Test;",
         "import org.mybatis.spring.boot.test.autoconfigure.MybatisTest;",

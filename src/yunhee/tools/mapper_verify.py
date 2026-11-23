@@ -114,7 +114,7 @@ def check_staleness() -> tuple[bool, str]:
     finally:
         conn.close()
 
-    if not ASIS_SRC_DIR.is_dir():
+    if not ASIS_SRC_DIR or not ASIS_SRC_DIR.is_dir():
         return False, ""
 
     newest_mtime = 0.0
