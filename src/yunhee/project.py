@@ -1,8 +1,10 @@
 import json
+import re
 from datetime import UTC, datetime
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 
+from yunhee import config
 from yunhee.config import WORK_DIR
 
 PROJECT_DIR = WORK_DIR / ".yunhee"
@@ -145,3 +147,118 @@ def init(root: Path | None = None) -> dict:
         data["gitignore_created"] = False
 
     return data
+
+
+GLOBAL_ENV_TEMPLATE = """\
+# yunhee 전역 기본 설정 파일 (~/.yunhee/.env.yunhee)
+# 프로젝트별 오버라이드가 필요하면 해당 프로젝트 루트에 .env.yunhee 를 두면 됩니다.
+
+# (선택) yunhee 전역 데이터 디렉터리 (미지정 시 개발 환경은 레포 루트, 설치본은 ~/.yunhee)
+# YUNHEE_DIR="$HOME/.yunhee"
+
+# AssetERP 단일 데이터베이스 접속 URL (읽기 전용 조회용, PostgreSQL)
+YUNHEE_DB="postgresql://user:password@localhost:5432/asseterpdb"
+# 기본 DB 이름 (미지정 시 YUNHEE_DB URL의 DB명 사용)
+# YUNHEE_DB_NAME="asseterpdb"
+
+# yunhee table / prepare / get_db_definition이 읽을 스키마 스냅샷 이름 (기본값: YUNHEE_DB)
+YUNHEE_SCHEMA_ENV="YUNHEE_DB"
+
+# 로그 조회 (yunhee log)
+# YUNHEE_LOG_DOCKER="your-tomcat-container"
+# YUNHEE_LOG_DIR="/path/to/app/logs"
+YUNHEE_LOG_APP="AssetERP-backend"
+# YUNHEE_LOG_CONTEXT="/AssetERP"
+# YUNHEE_LOG_ACCESS_LOGGER="kr.co.kfs.asseterp.access"
+
+# Ollama - qwen2.5-coder(추론/분석), bge-m3(임베딩)
+YUNHEE_OLLAMA_URL="http://localhost:11434"
+YUNHEE_OLLAMA_MODEL="qwen2.5-coder:14b"
+YUNHEE_EMBED_MODEL="bge-m3:latest"
+YUNHEE_NUM_CTX="16384"
+
+# ChromaDB (docker, docs/docker-compose.yml 참고)
+YUNHEE_CHROMA_HOST="localhost"
+YUNHEE_CHROMA_PORT="8000"
+
+# Gotenberg PDF 변환 (docker, docs/docker-compose.yml 참고)
+# YUNHEE_GOTENBERG_URL="http://localhost:3000"
+
+# ASIS(AssetERP, GWT/GXT) 소스 루트 - yunhee가 레거시 페이지/매퍼를 찾는 기준
+YUNHEE_ASIS_SRC_DIR="/path/to/Asset-ERP"
+# YUNHEE_SRC_INDEX_DIR="/path/to/project/docs/as-is/src"
+
+# TOBE(Spring Boot/React) 소스 루트 (미지정 시 현재 작업 디렉터리 WORK_DIR)
+# YUNHEE_TOBE_SRC_DIR="/path/to/AssetERP"
+# YUNHEE_JAVA_BASE_PACKAGE="kr.co.kfs.asseterp"
+
+# API 스모크 테스트 (yunhee api)
+YUNHEE_API_BASE_URL="http://localhost:8082/AssetERP"
+YUNHEE_API_LOGIN_PATH="/api/auth/login"
+YUNHEE_API_DEFAULT_TENANT="admin"
+YUNHEE_TEST_ADMIN_USER="admin"
+YUNHEE_TEST_ADMIN_PASS="password"
+YUNHEE_TEST_COMPANY="admin"
+YUNHEE_API_TENANT_HOST="{tenant}.localhost"
+YUNHEE_API_TIMEOUT=15
+YUNHEE_TEST_USER="user"
+YUNHEE_TEST_PASS="password"
+
+# 화면 자동 캡처 (yunhee screen-capture, 미지정 시 YUNHEE_API_BASE_URL 사용)
+YUNHEE_CAPTURE_URL="http://localhost:8082/AssetERP"
+YUNHEE_CAPTURE_OUT_DIR=".yunhee/screen-capture"
+"""
+
+_PASS_LINE_RE = re.compile(r"^(\s*[A-Z0-9_]*PASS(?:WORD)?\s*=\s*)(.+)$")
+_URL_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s\"']+:)([^@\s\"']+)(@)")
+
+
+def redact_env_content(text: str) -> str:
+    """기존 .env.yunhee 출력 시 비밀번호·DB 접속 비밀번호를 마스킹한다."""
+    out: list[str] = []
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#") or not stripped:
+            out.append(line)
+            continue
+        m = _PASS_LINE_RE.match(line)
+        if m:
+            out.append(f'{m.group(1)}"***"')
+            continue
+        out.append(_URL_CRED_RE.sub(r"\1***\3", line))
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+
+
+def _load_global_env_template() -> str:
+    sample = config.YUNHEE_DIR / ".env.yunhee.sample"
+    if sample.is_file():
+        return sample.read_text(encoding="utf-8")
+    return GLOBAL_ENV_TEMPLATE
+
+
+def init_global(home: Path | None = None, force: bool = False) -> dict:
+    """~/.yunhee 디렉터리와 ~/.yunhee/.env.yunhee 전역 설정 파일을 초기화한다."""
+    home_dir = (home or Path.home()) / ".yunhee"
+    env_file = home_dir / ".env.yunhee"
+    home_dir.mkdir(parents=True, exist_ok=True)
+
+    existed = env_file.is_file()
+    if existed and not force:
+        content = env_file.read_text(encoding="utf-8")
+        return {
+            "yunhee_dir": str(home_dir),
+            "env_file": str(env_file),
+            "created": False,
+            "overwritten": False,
+            "content": content,
+        }
+
+    content = _load_global_env_template()
+    env_file.write_text(content, encoding="utf-8")
+    return {
+        "yunhee_dir": str(home_dir),
+        "env_file": str(env_file),
+        "created": True,
+        "overwritten": existed and force,
+        "content": content,
+    }

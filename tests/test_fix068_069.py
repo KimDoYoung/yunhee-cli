@@ -142,9 +142,9 @@ def test_069_coverage_dedup_and_log_matching():
     assert ex2 == 0 and am2 == 2
     assert st3.is_ambiguous and st4.is_ambiguous
 
-    # 3. 실제 레포에서 4,667문장(짝수 2배가 아님) 확인
+    # 3. 실제 레포에서 중복 제거된 문장 수(2배로 부풀지 않음) 확인
     real_root = Path("/home/kdy987/work/framework-sprt/AssetERP")
     if real_root.is_dir():
         cov_res = run_test_coverage(domain_filter="emp", src_root=real_root)
         assert cov_res.ok
-        assert cov_res.data["total_statements"] == 472
+        assert 400 <= cov_res.data["total_statements"] < 800

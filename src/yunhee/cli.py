@@ -63,6 +63,12 @@ def main(
   7. [bold green]비즈니스/시험 자동화[/bold green]: [cyan]yunhee biz-*[/cyan] · [cyan]yunhee test-*[/cyan] · [cyan]yunhee screen-capture <번호> [--boxes][/cyan] · [cyan]yunhee mark <png> <draw.json>[/cyan]
   8. [bold green]설정/이력[/bold green]: [cyan]yunhee config[/cyan] · [cyan]yunhee value [KEY][/cyan] · [cyan]yunhee changelog --since <버전>[/cyan]
 """
+    if ctx.invoked_subcommand != "init" and config.needs_global_init():
+        typer.secho(
+            "⚠ 전역 설정(~/.yunhee/.env.yunhee)이 없습니다. 'yunhee init --global'을 실행해 초기화하세요.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
     if ctx.invoked_subcommand is None:
         from yunhee.ui.repl import run_repl
         run_repl(model=model)
@@ -96,9 +102,39 @@ def intro_cmd():
 
 
 @app.command(name="init")
-def init_cmd():
-    """현재 작업 디렉터리를 yunhee 프로젝트로 등록 및 필수 폴더/파일 초기화"""
+def init_cmd(
+    global_init: Annotated[
+        bool,
+        typer.Option("--global", "-g", help="전역 설정 디렉터리(~/.yunhee) 및 ~/.yunhee/.env.yunhee 초기화"),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="--global 시 기존 ~/.yunhee/.env.yunhee를 샘플로 덮어씀"),
+    ] = False,
+):
+    """현재 작업 디렉터리를 yunhee 프로젝트로 등록 및 필수 폴더/파일 초기화 (--global로 전역 ~/.yunhee 초기화)"""
     from yunhee import project
+
+    if global_init:
+        from rich.console import Console
+        from rich.panel import Panel
+
+        res = project.init_global(force=force)
+        env_path = res["env_file"]
+        if res["overwritten"]:
+            typer.secho(f"✔ 전역 설정 덮어쓰기 완료: {env_path}", fg=typer.colors.GREEN)
+        elif res["created"]:
+            typer.secho(f"✔ 전역 설정 초기화 완료: {env_path}", fg=typer.colors.GREEN)
+        else:
+            typer.secho(
+                f"ℹ 전역 설정 파일이 이미 존재합니다: {env_path} (샘플로 덮어쓰려면 --force)",
+                fg=typer.colors.YELLOW,
+            )
+
+        display_text = res["content"] if res["created"] else project.redact_env_content(res["content"])
+        Console().print(Panel(display_text.rstrip(), title=env_path, border_style="cyan", expand=False))
+        typer.echo(f"필요한 값(YUNHEE_DB, YUNHEE_ASIS_SRC_DIR 등)을 {env_path}에서 편집한 뒤 'yunhee config'로 확인하세요.")
+        return
 
     data = project.init()
     pdir = Path(data.get("project_dir", project.PROJECT_DIR))

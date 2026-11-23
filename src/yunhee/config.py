@@ -15,7 +15,7 @@ def _find_yunhee_dir() -> Path:
     3. 일반 패키지(site-packages)로 설치된 경우: ~/.yunhee (표준 전역 홈 디렉터리)
     """
     if env_dir := os.getenv("YUNHEE_DIR"):
-        p = Path(env_dir).expanduser().resolve()
+        p = Path(os.path.expandvars(env_dir)).expanduser().resolve()
         if p.is_dir():
             return p
 
@@ -82,7 +82,18 @@ def _find_local_env_file(work_dir: Path, global_env: Path | None = None) -> Path
                 resolved = f.resolve()
                 if global_resolved is None or resolved != global_resolved:
                     return resolved
+                # 이 디렉터리의 우선 설정 파일이 이미 전역 파일로 선택된 경우,
+                # 같은 디렉터리의 하위 호환 파일(.env.local)을 로컬 오버라이드로 읽지 않는다.
+                break
     return None
+
+
+def needs_global_init(home: Path | None = None) -> bool:
+    """~/.yunhee 디렉터리 또는 ~/.yunhee/.env.yunhee(.env.local)가 없으면 True."""
+    home_dir = (home or Path.home()) / ".yunhee"
+    if not home_dir.is_dir():
+        return True
+    return not ((home_dir / ".env.yunhee").is_file() or (home_dir / ".env.local").is_file())
 
 
 YUNHEE_DIR = _find_yunhee_dir()
@@ -105,7 +116,7 @@ if LOCAL_ENV_FILE and LOCAL_ENV_FILE.is_file() and LOCAL_ENV_FILE != GLOBAL_ENV_
 
 # .env.yunhee / .env.local 안에서 YUNHEE_DIR을 명시적으로 지정한 경우 반영
 if _post_env_dir := os.getenv("YUNHEE_DIR"):
-    _p_yunhee = Path(_post_env_dir).expanduser().resolve()
+    _p_yunhee = Path(os.path.expandvars(_post_env_dir)).expanduser().resolve()
     if _p_yunhee.is_dir():
         YUNHEE_DIR = _p_yunhee
 

@@ -2,6 +2,15 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [1.1.0] - 2026-11-23
+전역 설정 부트스트랩(`yunhee init --global`) 및 설정 로드 보완:
+- **`yunhee init --global` (`-g`, `--force`/`-f`) 추가 (`src/yunhee/project.py`, `src/yunhee/cli.py`)**:
+  - `~/.yunhee` 디렉터리와 `~/.yunhee/.env.yunhee` 전역 설정 파일을 템플릿으로 자동 생성하고 설정 내용을 패널로 출력(기존 파일 존재 시 비밀번호 마스킹 출력).
+  - `~/.yunhee` 또는 `~/.yunhee/.env.yunhee`가 없는 상태에서 `yunhee` 실행 시 `stderr`로 `yunhee init --global` 안내 출력.
+- **설정 탐색 버그 수정 (`src/yunhee/config.py`)**:
+  - 전역 설정 파일(`.env.yunhee`)과 같은 디렉터리의 구버전 `.env.local`이 로컬 오버라이드로 덮어쓰이던 문제 수정.
+  - `YUNHEE_DIR="$HOME/.yunhee"` 형태가 정상 확장되도록 `os.path.expandvars()` 적용.
+
 ## [1.0.9] - 2026-11-23
 소스 내 하드코딩 경로·환경값 제거 및 `~/.yunhee/.env.yunhee` 전역 설정 기반으로 통합:
 - **`YUNHEE_DIR` 탐색 및 설정 부트스트랩 정비 (`src/yunhee/config.py`, `src/yunhee/store/db.py`, `src/yunhee/agent/tools/core_exec.py`)**:

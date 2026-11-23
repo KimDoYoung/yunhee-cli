@@ -148,3 +148,74 @@ def test_no_personal_hardcoded_tokens_in_src():
                 if tok in line:
                     offenders.append(f"{py_file.relative_to(src_root)}:{idx} ({tok})")
     assert offenders == [], f"개인/머신 하드코딩 잔존: {offenders}"
+
+
+def test_local_env_does_not_fallback_to_env_local_in_same_global_dir(tmp_path: Path):
+    """같은 디렉터리의 .env.yunhee가 전역 파일이면 같은 폴더의 .env.local을 로컬 오버라이드로 읽지 않는다."""
+    env_yunhee = tmp_path / ".env.yunhee"
+    env_local = tmp_path / ".env.local"
+    env_yunhee.write_text('YUNHEE_DB="postgresql://u:p@localhost:5432/newdb"\n', encoding="utf-8")
+    env_local.write_text('YUNHEE_DB="postgresql://u:p@localhost:5432/olddb"\n', encoding="utf-8")
+
+    local_found = config._find_local_env_file(tmp_path, global_env=env_yunhee)
+    assert local_found is None
+
+
+def test_find_yunhee_dir_expands_dollar_home(tmp_path: Path, monkeypatch):
+    """YUNHEE_DIR="$HOME/.yunhee" 형태도 환경변수 확장으로 정상 인식된다."""
+    fake_home = tmp_path / "home"
+    target = fake_home / ".yunhee"
+    target.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("YUNHEE_DIR", "$HOME/.yunhee")
+
+    assert config._find_yunhee_dir() == target.resolve()
+
+
+def test_init_global_cli_and_missing_warning(tmp_path: Path, monkeypatch):
+    """~/.yunhee/.env.yunhee 미존재 시 안내 출력, yunhee init --global로 생성 및 내용 표시 검증."""
+    from typer.testing import CliRunner
+
+    from yunhee import project
+    from yunhee.cli import app
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+    runner = CliRunner()
+
+    # 1. ~/.yunhee 없을 때 일반 커맨드 실행 -> stdout은 깨끗하고 stderr에 안내 표시
+    assert config.needs_global_init() is True
+    res_before = runner.invoke(app, ["value", "WORK_DIR"])
+    assert res_before.exit_code == 0
+    assert res_before.stdout.strip() == str(config.WORK_DIR)
+    assert "yunhee init --global" in res_before.stderr
+
+    # 2. yunhee init --global 실행 -> 파일 생성 + 설정 내용 출력 (경고 없음)
+    res_init = runner.invoke(app, ["init", "--global"])
+    assert res_init.exit_code == 0
+    env_file = fake_home / ".yunhee" / ".env.yunhee"
+    assert env_file.is_file()
+    assert "YUNHEE_DB" in res_init.stdout
+    assert "yunhee init --global" not in res_init.stderr
+    assert config.needs_global_init() is False
+
+    # 3. 기존 파일에 실제 비밀번호 저장 후 재실행 -> 덮어쓰지 않고 마스킹된 내용 표시
+    env_file.write_text(
+        'YUNHEE_DB="postgresql://alice:s3cr3t@localhost:5432/prod"\nYUNHEE_TEST_ADMIN_PASS="myrealpass"\n',
+        encoding="utf-8",
+    )
+    res_again = runner.invoke(app, ["init", "--global"])
+    assert res_again.exit_code == 0
+    assert "이미 존재합니다" in res_again.stdout
+    assert "s3cr3t" not in res_again.stdout
+    assert "myrealpass" not in res_again.stdout
+    assert "postgresql://alice:***@localhost:5432/prod" in res_again.stdout
+
+    # 4. --force 실행 -> 샘플로 덮어쓰기
+    res_force = runner.invoke(app, ["init", "--global", "--force"])
+    assert res_force.exit_code == 0
+    assert "덮어쓰기 완료" in res_force.stdout
+    assert "alice" not in env_file.read_text(encoding="utf-8")
+    assert project.redact_env_content('YUNHEE_TEST_PASS="abc"\n') == 'YUNHEE_TEST_PASS="***"\n'
