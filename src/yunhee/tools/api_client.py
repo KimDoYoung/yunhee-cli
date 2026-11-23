@@ -286,8 +286,8 @@ def _get_account_credentials(role: str) -> tuple[str, str, dict[str, Any]]:
 
 def login(
     base_url: str = config.API_BASE_URL,
-    user: str = "admin",
-    password: str = "1111",
+    user: str = config.TEST_ADMIN_USER,
+    password: str = config.TEST_ADMIN_PASS,
     login_path: str = config.API_LOGIN_PATH,
     company_code: str | None = None,
     tenant: str | None = None,

@@ -24,7 +24,7 @@ from yunhee.tools.sql_runner import get_connection_string
 def run_mapper_statement(
     target: str,
     params: dict[str, str] | None = None,
-    db_name: str = "asseterpdb",
+    db_name: str = config.DEFAULT_DB_NAME,
     compare_sql: str | None = None,
     count_only: bool = False,
     limit_rows: int | None = None,

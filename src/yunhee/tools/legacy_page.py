@@ -39,7 +39,7 @@ def _priority(path: str) -> tuple[int, str]:
 
 
 def _collect_matches(page_code: str) -> list[str] | ToolResult:
-    if not ASIS_SRC_DIR.is_dir():
+    if not ASIS_SRC_DIR or not ASIS_SRC_DIR.is_dir():
         return ToolResult(ok=False, error=f"ASIS 소스 경로를 찾을 수 없습니다: {ASIS_SRC_DIR}")
 
     prefix = f"{page_code}_".lower()

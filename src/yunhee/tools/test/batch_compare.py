@@ -83,9 +83,12 @@ def run_batch_compare(
     company: str | None = None,
     output_format: str = "tsv",
     out_dir: Path | None = None,
-    db_name: str = "asseterpdb",
+    db_name: str | None = None,
 ) -> ToolResult:
     """test-compare 진입 함수."""
+    from yunhee import config
+
+    db_name = db_name or config.DEFAULT_DB_NAME
     if not tsv_path.is_file():
         return ToolResult(ok=False, error=f"TSV 파일을 찾을 수 없습니다: {tsv_path}")
 

@@ -52,7 +52,8 @@ def test_get_config_item_lookup():
 def test_get_config_value_raw_and_masked():
     # YUNHEE_ASIS_SRC_DIR
     val = config.get_config_value("YUNHEE_ASIS_SRC_DIR")
-    assert val == str(config.ASIS_SRC_DIR)
+    expected_asis = str(config.ASIS_SRC_DIR) if config.ASIS_SRC_DIR else ""
+    assert val == expected_asis
 
     # YUNHEE_TOBE_SRC_DIR
     val_tobe = config.get_config_value("tobe-src")
@@ -67,7 +68,8 @@ def test_get_config_value_raw_and_masked():
     raw_pass = config.get_config_value("TEST_ADMIN_PASS", raw=True)
     masked_pass = config.get_config_value("TEST_ADMIN_PASS", raw=False)
     assert raw_pass == config.TEST_ADMIN_PASS
-    assert masked_pass == "***"
+    if raw_pass:
+        assert masked_pass == "***"
 
 
 def test_get_config_value_env_fallback():
@@ -79,14 +81,15 @@ def test_get_config_value_env_fallback():
 
 def test_cli_value_single_key():
     # 단일 키 조회 -> 해당 값만 텍스트로 출력
+    expected_asis = str(config.ASIS_SRC_DIR) if config.ASIS_SRC_DIR else ""
     result = runner.invoke(app, ["value", "YUNHEE_ASIS_SRC_DIR"])
     assert result.exit_code == 0
-    assert result.stdout.strip() == str(config.ASIS_SRC_DIR)
+    assert result.stdout.strip() == expected_asis
 
     # 별칭으로 조회
     result_alias = runner.invoke(app, ["value", "asis-src"])
     assert result_alias.exit_code == 0
-    assert result_alias.stdout.strip() == str(config.ASIS_SRC_DIR)
+    assert result_alias.stdout.strip() == expected_asis
 
 
 def test_cli_value_list_no_args():

@@ -406,16 +406,18 @@ def config_cmd():
     table.add_row("소스 브랜치", cfg["asis-branch"], "원격 추적 브랜치(origin/<branch>) 대비 상태 (읽기 전용)")
     table.add_row("Yunhee DB", cfg.get("yunhee-db", cfg["local-db"]), "설정 파일(.env.yunhee)의 YUNHEE_DB")
     table.add_row("Local DB (호환)", cfg["local-db"], "YUNHEE_DB 하위 호환 별칭")
+    table.add_row("Default DB Name", cfg.get("db-name", config.DEFAULT_DB_NAME), "YUNHEE_DB_NAME (미지정 시 YUNHEE_DB에서 추출)")
     table.add_row("Schema Snapshot", cfg["schema-env"], "설정 파일의 YUNHEE_SCHEMA_ENV")
-    table.add_row("Yunhee Home", cfg["yunhee-dir"], "yunhee-cli 설치 경로")
-    table.add_row("Env File", cfg["env-file"], "설정 파일 (.env.yunhee / .env.local)")
-    table.add_row("Ollama URL", cfg["ollama-url"], ".env.local의 YUNHEE_OLLAMA_URL")
-    table.add_row("Ollama Model", cfg["ollama-model"], ".env.local의 YUNHEE_OLLAMA_MODEL")
-    table.add_row("API Base URL", cfg["api-base"], ".env.local의 YUNHEE_API_BASE_URL")
-    table.add_row("API Login Path", cfg["api-login-path"], ".env.local의 YUNHEE_API_LOGIN_PATH")
-    table.add_row("API Admin User", cfg["test-admin-user"], ".env.local의 YUNHEE_TEST_ADMIN_USER")
-    table.add_row("API Company", cfg["test-company"], ".env.local의 YUNHEE_TEST_COMPANY")
-    table.add_row("API Tenant Host", cfg["api-tenant-host"], ".env.local의 YUNHEE_API_TENANT_HOST")
+    table.add_row("Yunhee Home", cfg["yunhee-dir"], "yunhee 전역 설정/데이터 경로 (YUNHEE_DIR, 설치본 기본 ~/.yunhee)")
+    table.add_row("Env File", cfg["env-file"], "설정 파일 (~/.yunhee/.env.yunhee / 로컬 .env.yunhee)")
+    table.add_row("Ollama URL", cfg["ollama-url"], "설정 파일의 YUNHEE_OLLAMA_URL")
+    table.add_row("Ollama Model", cfg["ollama-model"], "설정 파일의 YUNHEE_OLLAMA_MODEL")
+    table.add_row("Gotenberg URL", cfg["gotenberg-url"], "설정 파일의 YUNHEE_GOTENBERG_URL")
+    table.add_row("API Base URL", cfg["api-base"], "설정 파일의 YUNHEE_API_BASE_URL")
+    table.add_row("API Login Path", cfg["api-login-path"], "설정 파일의 YUNHEE_API_LOGIN_PATH")
+    table.add_row("API Admin User", cfg["test-admin-user"], "설정 파일의 YUNHEE_TEST_ADMIN_USER")
+    table.add_row("API Company", cfg["test-company"], "설정 파일의 YUNHEE_TEST_COMPANY")
+    table.add_row("API Tenant Host", cfg["api-tenant-host"], "설정 파일의 YUNHEE_API_TENANT_HOST")
     table.add_row("Log Docker", cfg.get("log-docker", config.LOG_DOCKER), "설정 파일(.env.yunhee)의 YUNHEE_LOG_DOCKER")
     table.add_row("Log Dir", cfg.get("log-dir", config.LOG_DIR), "설정 파일(.env.yunhee)의 YUNHEE_LOG_DIR")
 
@@ -1406,7 +1408,7 @@ def compare_cmd(
     base: Annotated[str | None, typer.Option("--base", "-b", help="API 기본 URL")] = None,
     tenant: Annotated[str | None, typer.Option("--tenant", "-t", help="테넌트 식별자")] = None,
     company: Annotated[str | None, typer.Option("--company", "-c", help="회사 코드 (예: admin, kfstest — 회사 ID가 아님)")] = None,
-    db: Annotated[str, typer.Option("--db", help="대상 DB명 (기본: asseterpdb)")] = "asseterpdb",
+    db: Annotated[str, typer.Option("--db", help="대상 DB명 (미지정 시 YUNHEE_DB_NAME 또는 YUNHEE_DB의 DB명)")] = config.DEFAULT_DB_NAME,
     src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
     src_index: Annotated[Path | None, typer.Option("--src-index", help="AS-IS 색인 폴더 경로 (기본: docs/as-is/src)")] = None,
     grid: Annotated[str | None, typer.Option("--grid", help="대조할 화면/그리드 클래스 (예: Sys05_Page_UserRole)")] = None,
@@ -1512,7 +1514,7 @@ def mapper_run_cmd(
     rollback: Annotated[bool, typer.Option("--rollback", help="트랜잭션 실행 후 롤백 (쓰기 문장 필수)")] = False,
     auto_params: Annotated[bool, typer.Option("--auto-params", help="파라미터 값을 DB에서 스스로 찾아 바인딩")] = False,
     company: Annotated[str | None, typer.Option("--company", help="회사 코드 또는 회사 ID (미지정 시 기본 회사)")] = None,
-    db: Annotated[str, typer.Option("--db", "-c", help="대상 DB명 (기본: asseterpdb)")] = "asseterpdb",
+    db: Annotated[str, typer.Option("--db", "-c", help="대상 DB명 (미지정 시 YUNHEE_DB_NAME 또는 YUNHEE_DB의 DB명)")] = config.DEFAULT_DB_NAME,
     src: Annotated[Path | None, typer.Option("--src", "-s", help="AS-IS 소스 루트 경로")] = None,
 ) -> None:
     """TOBE 매퍼 statement 실행 및 AS-IS SQL 비교.
@@ -1562,7 +1564,7 @@ def test_params_cmd(
     company: Annotated[str | None, typer.Option("--company", "-c", help="회사 코드 또는 회사 ID")] = None,
     n: Annotated[int, typer.Option("--n", help="시도할 최대 조합 수")] = 3,
     output: Annotated[str, typer.Option("--output", "-o", help="출력 형식 (text, json, args)")] = "text",
-    db: Annotated[str, typer.Option("--db", help="대상 DB명 (기본: asseterpdb)")] = "asseterpdb",
+    db: Annotated[str, typer.Option("--db", help="대상 DB명 (미지정 시 YUNHEE_DB_NAME 또는 YUNHEE_DB의 DB명)")] = config.DEFAULT_DB_NAME,
 ) -> None:
     """MyBatis 매퍼 statement 실행에 필요한 시험 파라미터 값을 DB에서 찾아 출력."""
     from yunhee.tools.test.params import (
@@ -1736,7 +1738,7 @@ def test_compare_cmd(
     company: Annotated[str | None, typer.Option("--company", "-c", help="회사 코드 또는 회사 ID")] = None,
     output: Annotated[str, typer.Option("--output", "-o", help="출력 형식 (tsv, junit)")] = "tsv",
     out: Annotated[Path | None, typer.Option("--out", help="JUnit XML 저장 대상 디렉터리 (TEST-test-compare.xml)")] = None,
-    db: Annotated[str, typer.Option("--db", help="대상 DB명 (기본: asseterpdb)")] = "asseterpdb",
+    db: Annotated[str, typer.Option("--db", help="대상 DB명 (미지정 시 YUNHEE_DB_NAME 또는 YUNHEE_DB의 DB명)")] = config.DEFAULT_DB_NAME,
 ) -> None:
     """조회 API와 AS-IS SQL 결과 일괄 비교 대조 시험."""
     from yunhee.tools.test.batch_compare import run_batch_compare
@@ -1833,7 +1835,7 @@ def agent_guide():
     - `yunhee analysis ui <화면>`: TOBE 이벤트 구현율 및 `(생략 N)` (TOBE에서 생략하기로 결정된 이벤트 수) 확인 (연결 컴포넌트 포함(`(연결)` 표시)).
 
 ## 6. 서버 로그 및 실제 실행 SQL 확인 시 (grep 금지)
-- ❌ 절대 금지: docker logs나 서버 로그 파일을 직접 grep하지 마세요. (호스트 같은 경로는 로컬 테스트 로그이며, 배포본은 docker 컨테이너(YUNHEE_LOG_DOCKER, 예: omen-tomcat) 안에 있습니다)
+- ❌ 절대 금지: docker logs나 서버 로그 파일을 직접 grep하지 마세요. (호스트 같은 경로는 로컬 테스트 로그이며, 배포본은 docker 컨테이너(YUNHEE_LOG_DOCKER 설정값) 안에 있습니다)
 - ✅ 권장 명령:
   - `yunhee api <METHOD> <PATH> --log`: API 호출 직후 서버가 실제로 실행한 SQL과 바인딩 파라미터 요약 출력
   - `yunhee log trace <traceId>`: 특정 요청에서 실행된 모든 SQL 및 파라미터 확인
@@ -2538,8 +2540,8 @@ def sql_check_cmd(
     ] = None,
     db: Annotated[
         str,
-        typer.Option("--db", help="검증 대상 PostgreSQL DB 이름"),
-    ] = "asseterpdb",
+        typer.Option("--db", help="검증 대상 PostgreSQL DB 이름 (미지정 시 YUNHEE_DB_NAME 또는 YUNHEE_DB의 DB명)"),
+    ] = config.DEFAULT_DB_NAME,
     target: Annotated[
         Path | None,
         typer.Option("--target", "-t", help="출력 파일 경로 (기본: {repo_root}/docs/as-is/sql-check.md, --old 시 미지정하면 화면에만 출력)"),
@@ -3479,7 +3481,7 @@ def screen_capture_cmd(
     ] = None,
     url: Annotated[
         str,
-        typer.Option("--url", "-u", help="접속할 TOBE 기본 URL (기본: http://localhost:8082/AssetERP)"),
+        typer.Option("--url", "-u", help="접속할 TOBE 기본 URL (기본: YUNHEE_CAPTURE_URL 또는 YUNHEE_API_BASE_URL)"),
     ] = config.CAPTURE_BASE_URL,
     out: Annotated[
         str,
@@ -3820,7 +3822,7 @@ def biz_endpoints(
 def biz_authz(
     target: Annotated[str | None, typer.Argument(help="도메인명 (예: att, pay, ast) 또는 컨트롤러 클래스명/경로 — --lint-delete-by-id 시 생략 가능")] = None,
     as_user: Annotated[str, typer.Option("--as", "-u", help="낮은 권한 사번/계정 (예: 401)")] = "401",
-    company: Annotated[str, typer.Option("--company", "-c", help="회사 코드 (예: kalpa)")] = "kalpa",
+    company: Annotated[str, typer.Option("--company", "-c", help="회사 코드 (미지정 시 YUNHEE_TEST_COMPANY 또는 기본값)")] = config.TEST_COMPANY or config.API_DEFAULT_TENANT or "kalpa",
     password: Annotated[str | None, typer.Option("--password", help="계정 비밀번호")] = None,
     path: Annotated[list[str] | None, typer.Option("--path", help="경로 필터링 문자열 (반복 또는 쉼표 구분 가능)")] = None,
     screen: Annotated[str | None, typer.Option("--screen", help="화면 번호 기반 연관 API 경로 자동 필터링")] = None,
@@ -3951,8 +3953,8 @@ def biz_patch(
     drop_suffix: Annotated[str, typer.Option("--drop-suffix", help="제거할 읽기 전용 필드 접미사 (기본: Nm, 쉼표 구분)")] = "Nm",
     keep: Annotated[str | None, typer.Option("--keep", help="보존하여 전송할 키 목록 (쉼표 구분)")] = None,
     method: Annotated[str, typer.Option("--method", help="저장 HTTP 메서드 (기본: PUT)")] = "PUT",
-    as_user: Annotated[str, typer.Option("--as", "-u", help="로그인 계정/사번 (기본: admin)")] = "admin",
-    company: Annotated[str, typer.Option("--company", "-c", help="회사 코드 (기본: kalpa)")] = "kalpa",
+    as_user: Annotated[str, typer.Option("--as", "-u", help="로그인 계정/사번 (기본: YUNHEE_TEST_ADMIN_USER)")] = config.TEST_ADMIN_USER,
+    company: Annotated[str, typer.Option("--company", "-c", help="회사 코드 (기본: YUNHEE_TEST_COMPANY 또는 기본값)")] = config.TEST_COMPANY or config.API_DEFAULT_TENANT or "kalpa",
     password: Annotated[str | None, typer.Option("--password", help="계정 비밀번호")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="실제 저장하지 않고 전송할 본문 JSON만 확인")] = False,
 ) -> None:

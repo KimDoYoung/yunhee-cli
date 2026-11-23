@@ -1278,12 +1278,13 @@ def _load_all_dbml_tables() -> dict[str, set[str]]:
 
     tables: dict[str, set[str]] = {}
 
+    from yunhee.config import TOBE_SRC_DIR
+
     # 1. tables/*.md
     cand_dirs = [
         find_as_is_dir("db") / "tables",
         WORK_DIR / "docs" / "as-is" / "db" / "tables",
-        Path("/home/kdy987/work/framework-sprt/AssetERP/docs/as-is/db/tables"),
-        Path("/home/kdy987/work/framework-sprt/docs/as-is/db/tables"),
+        TOBE_SRC_DIR / "docs" / "as-is" / "db" / "tables",
     ]
     for c_dir in cand_dirs:
         _parse_dbml_tables_from_dir(c_dir, tables)
@@ -1292,8 +1293,7 @@ def _load_all_dbml_tables() -> dict[str, set[str]]:
     cand_dbmls = [
         *list(find_as_is_dir().glob("*-dbml.md")),
         *list(WORK_DIR.glob(".yunhee/*-dbml.md")),
-        Path("/home/kdy987/work/framework-sprt/AssetERP/.yunhee/asseterp-dbml.md"),
-        Path("/home/kdy987/work/framework-sprt/.yunhee/asseterp-dbml.md"),
+        *list(TOBE_SRC_DIR.glob(".yunhee/*-dbml.md")),
     ]
     for dbml in cand_dbmls:
         if not dbml.is_file():

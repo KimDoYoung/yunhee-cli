@@ -2,6 +2,17 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [1.0.9] - 2026-11-23
+소스 내 하드코딩 경로·환경값 제거 및 `~/.yunhee/.env.yunhee` 전역 설정 기반으로 통합:
+- **`YUNHEE_DIR` 탐색 및 설정 부트스트랩 정비 (`src/yunhee/config.py`, `src/yunhee/store/db.py`, `src/yunhee/agent/tools/core_exec.py`)**:
+  - 특정 개발자 PC 경로(`/home/kdy987/...`), 개인 DDNS(`jskn.iptime.org`), 컨테이너명(`omen-tomcat`) 하드코딩 제거.
+  - 일반 설치본(`uv tool install`) 실행 시 `YUNHEE_DIR` 기본값을 `~/.yunhee`로 통일하고, `~/.yunhee/.env.yunhee` 내 `YUNHEE_DIR` 오버라이드 지원.
+  - `store/db.py`의 `DB_PATH`를 `config.YUNHEE_DIR / "data/db/yunhee.db"`로 변경하고, `core_exec.py`의 `PYTHONPATH`가 실제 로드된 패키지 루트를 사용하도록 수정.
+- **분산된 기본값을 `config` 설정으로 통합 (`src/yunhee/cli.py`, `src/yunhee/tools/`)**:
+  - `YUNHEE_DB_NAME`(`YUNHEE_DB` URL 자동 추출), `YUNHEE_LOG_ACCESS_LOGGER`, `YUNHEE_JAVA_BASE_PACKAGE` 설정 키 추가 및 `yunhee value` 등록.
+  - `API_BASE_URL` / `CAPTURE_BASE_URL` / `LOG_CONTEXT` 기본값 정합성 통일, `log_reader.py`의 컨텍스트 경로 경계 버그 수정.
+  - `events.py`, `log_reader.py`, `sql_checker.py`, `comparator.py`, `biz/*`, `test/*` 및 `.env.*.sample` 정리.
+
 ## [1.0.8] - 2026-11-23
 수정사항 075: drift 보관 대장 읽기, import·빈 줄·주석 hunk 단위 판정 제외.
 

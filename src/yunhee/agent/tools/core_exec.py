@@ -45,9 +45,9 @@ def execute_python(code: str, description: str = "", timeout_seconds: int = 30) 
     script_path.write_text(f"{header}{clean_code}\n", encoding="utf-8")
 
     env = os.environ.copy()
-    yunhee_src = str((Path(config.YUNHEE_DIR) / "src").resolve())
+    yunhee_pkg_root = str(Path(config.__file__).resolve().parents[1])
     prev_py_path = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{yunhee_src}:{prev_py_path}" if prev_py_path else yunhee_src
+    env["PYTHONPATH"] = f"{yunhee_pkg_root}:{prev_py_path}" if prev_py_path else yunhee_pkg_root
 
     start_time = time.time()
     try:

@@ -105,12 +105,14 @@ def parse_pg_url(url: str | None) -> dict[str, str]:
 
 
 def get_db_env(db_name: str | None = None) -> tuple[str, dict[str, str]]:
-    """db_name과 .env.local의 설정(SCHEMA_ENV, LOCAL_DB)을 결합하여 (최종 DB명, PG 환경변수) 반환."""
+    """db_name과 설정(YUNHEE_DB, SCHEMA_ENV, DEFAULT_DB_NAME)을 결합하여 (최종 DB명, PG 환경변수) 반환."""
+    from yunhee import config
+
     url = os.getenv(SCHEMA_ENV) or LOCAL_DB or os.getenv("LOCAL_DB") or os.getenv("TEST_DB")
     pg_env = parse_pg_url(url)
 
-    final_db = db_name or "asseterpdb"
-    if (db_name is None or db_name == "asseterpdb") and pg_env.get("PGDATABASE"):
+    final_db = db_name or config.DEFAULT_DB_NAME
+    if (db_name is None or db_name == config.DEFAULT_DB_NAME) and pg_env.get("PGDATABASE"):
         final_db = pg_env["PGDATABASE"]
 
     return final_db, pg_env
@@ -429,7 +431,7 @@ def md_cell(v: Any) -> str:
 def check_sql(
     src_root: Path,
     target_file: Path,
-    db: str = "asseterpdb",
+    db: str | None = None,
     src_index_dir: Path | None = None,
     new_since_index: bool = False,
 ) -> ToolResult:
@@ -890,7 +892,7 @@ def extract_select_aliases_from_sql(sql: str) -> set[str] | None:
 
 def check_tobe_sql(
     mapper_dir: Path,
-    db: str = "asseterpdb",
+    db: str | None = None,
     only: list[str] | None = None,
     changed: bool = False,
     summary: bool = False,

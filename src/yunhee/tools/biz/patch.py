@@ -72,19 +72,23 @@ def run_patch(
     drop_suffixes: list[str] | None = None,
     keep_keys: list[str] | None = None,
     method: str = "PUT",
-    as_user: str = "admin",
-    company: str = "kalpa",
+    as_user: str | None = None,
+    company: str | None = None,
     password: str | None = None,
     dry_run: bool = False,
 ) -> tuple[list[str], list[str]]:
     """GET으로 데이터를 조회하여 일부 필드를 수정하고 저장한다."""
+    from yunhee import config
+
     output_lines: list[str] = []
     warnings: list[str] = []
 
     drop_suffixes = drop_suffixes or ["Nm"]
+    target_user = as_user or config.TEST_ADMIN_USER
+    target_company = company or config.TEST_COMPANY or config.API_DEFAULT_TENANT or "kalpa"
 
     # 1. GET 데이터 조회
-    kw: dict[str, Any] = {"as_role": as_user, "company_code": company}
+    kw: dict[str, Any] = {"as_role": target_user, "company_code": target_company}
     if password:
         kw["password"] = password
 

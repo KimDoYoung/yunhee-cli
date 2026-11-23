@@ -1314,7 +1314,7 @@ def resolve_log_source(
     if source == "local":
         docker = ""
     elif source == "docker" and not docker:
-        docker = os.getenv("YUNHEE_LOG_DOCKER") or "omen-tomcat"
+        docker = os.getenv("YUNHEE_LOG_DOCKER") or config.LOG_DOCKER
 
     app_str = app or config.LOG_APP
     if log_dir:
@@ -1378,16 +1378,17 @@ def get_trace_summary(
         except Exception:  # noqa: BLE001
             records = []
         if not records:
-            local_cand = os.getenv("YUNHEE_LOG_DIR") or str(Path.home() / "tmp/asseterp-data/logs")
-            if Path(local_cand).is_dir():
-                l_text = read_logs_local(Path(local_cand), app_str, trace_id=trace_id, archived=archived)
+            local_cand = os.getenv("YUNHEE_LOG_DIR") or config.LOG_DIR
+            if local_cand and Path(local_cand).expanduser().is_dir():
+                local_path = Path(local_cand).expanduser()
+                l_text = read_logs_local(local_path, app_str, trace_id=trace_id, archived=archived)
                 l_recs = parse_log_records(l_text)
                 if l_recs:
                     records = l_recs
                     src_type = "local"
-                    dir_str = local_cand
+                    dir_str = str(local_path)
                     docker = None
-                    sys.stderr.write(f"(docker 소스에서 없어 로컬 로그 {local_cand}에서 찾음)\n")
+                    sys.stderr.write(f"(docker 소스에서 없어 로컬 로그 {dir_str}에서 찾음)\n")
     else:
         src_type = "local"
         log_text = read_logs_local(Path(dir_str), app_str, trace_id=trace_id, archived=archived)
@@ -1396,7 +1397,8 @@ def get_trace_summary(
     if not records:
         extra_hint = ""
         if src_type == "docker":
-            extra_hint = "\ndocker 소스에서 없음. --source local --dir ~/tmp/asseterp-data/logs 로 다시 찾아 보세요"
+            hint_dir = config.LOG_DIR or "<로그경로>"
+            extra_hint = f"\ndocker 소스에서 없음. --source local --dir {hint_dir} 로 다시 찾아 보세요"
         if archived:
             n_gz = count_archived_files(src_type, docker, dir_str, app_str)
             sys.stderr.write(f"trace {trace_id}: 로그에 없음 (오늘 파일 + archived gz {n_gz}개 검색){extra_hint}\n")
@@ -1432,7 +1434,7 @@ def get_trace_summary(
         return f"{header}\n{raw_body.strip()}"
 
     # 접근 로그 탐색
-    access_rec = next((r for r in records if r.logger == "kr.co.kfs.asseterp.access"), None)
+    access_rec = next((r for r in records if r.logger == config.LOG_ACCESS_LOGGER), None)
     req_line = ""
     req_path = ""
     if access_rec:
@@ -1440,9 +1442,9 @@ def get_trace_summary(
         if m_acc:
             meth, path, st_code, el_ms = m_acc.groups()
             req_path = path
-            context = config.LOG_CONTEXT
-            if context and path.startswith(context):
-                path = path[len(context):]
+            context = config.LOG_CONTEXT.rstrip("/")
+            if context and (path == context or path.startswith(context + "/")):
+                path = path[len(context):] or "/"
             time_part = format_time_pair(access_rec.ts, log_is_utc)
             req_line = f"요청: {meth} {path} → {st_code} ({el_ms}ms) · {access_rec.user} · {access_rec.ip} · {time_part} · trace {trace_id}"
     if not req_line:
@@ -1657,7 +1659,7 @@ def get_req_summary(
     # 접근 로그 필터링
     matches: list[tuple[LogRecord, str, int, int]] = []  # rec, path, status, elapsed_ms
     for r in records:
-        if r.logger != "kr.co.kfs.asseterp.access":
+        if r.logger != config.LOG_ACCESS_LOGGER:
             continue
         if start_dt and r.ts < start_dt:
             continue
@@ -1671,8 +1673,12 @@ def get_req_summary(
         if meth.upper() != method.upper():
             continue
 
-        context = config.LOG_CONTEXT
-        path = full_path[len(context):] if context and full_path.startswith(context) else full_path
+        context = config.LOG_CONTEXT.rstrip("/")
+        path = (
+            full_path[len(context):] or "/"
+            if context and (full_path == context or full_path.startswith(context + "/"))
+            else full_path
+        )
         if path_pattern not in path and path_pattern not in full_path:
             continue
 
@@ -1820,10 +1826,11 @@ def get_errors_summary(
             raw_text = ""
         records = parse_log_records(raw_text)
         if not records:
-            local_cand = os.getenv("YUNHEE_LOG_DIR") or str(Path.home() / "tmp/asseterp-data/logs")
-            if Path(local_cand).is_dir():
+            local_cand = os.getenv("YUNHEE_LOG_DIR") or config.LOG_DIR
+            if local_cand and Path(local_cand).expanduser().is_dir():
+                local_path = Path(local_cand).expanduser()
                 l_text = read_logs_local(
-                    Path(local_cand),
+                    local_path,
                     app_str,
                     error_only=True,
                     start_dt=start_dt,
@@ -1836,7 +1843,7 @@ def get_errors_summary(
                 if l_recs:
                     records = l_recs
                     src_type = "local"
-                    dir_str = local_cand
+                    dir_str = str(local_path)
                     docker = None
                     sys.stderr.write(f"(docker 소스에서 없어 로컬 로그 {local_cand}에서 찾음)\n")
     else:
@@ -2185,7 +2192,7 @@ def get_tail_summary(
     today_date = datetime.now(UTC).date() if tz_str.upper() == "UTC" else datetime.now(KST).date()
 
     for tid, recs in traces_map.items():
-        access_r = next((r for r in recs if r.logger == "kr.co.kfs.asseterp.access"), None)
+        access_r = next((r for r in recs if r.logger == config.LOG_ACCESS_LOGGER), None)
         t_sql_cnt = sum(1 for r in recs if "==>  Preparing:" in r.msg)
         first_r = recs[0]
         ts = access_r.ts if access_r else first_r.ts
