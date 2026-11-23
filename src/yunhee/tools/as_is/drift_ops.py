@@ -353,46 +353,131 @@ def load_tobe_matches(work_dir: Path | None = None) -> tuple[dict[str, list[str]
 
 
 def build_unit_screens_map(src_index: Path) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, list[str]]]:
-    """색인(_index.json, screens/*.md)에서 SQL ID -> [화면번호/이름], 서버메서드 -> [화면], 파일 -> [화면] 매핑 생성."""
+    """색인(_index.json, screens/*.md, components/*.md)에서 SQL ID -> [화면번호/이름], 서버메서드 -> [화면], 파일 -> [화면] 매핑 생성.
+
+    화면이 shared_links로 참조하는 공용 컴포넌트(팝업/창)의 서비스·SQL 호출도 재귀적으로 화면에 전파한다.
+    """
     sql_to_screens: dict[str, set[str]] = defaultdict(set)
     method_to_screens: dict[str, set[str]] = defaultdict(set)
     file_to_screens: dict[str, set[str]] = defaultdict(set)
 
-    # 1. 화면 md 파일 파싱 (메뉴 번호와 연결 서비스/SQL)
+    def _parse_md_calls(raw: str) -> tuple[set[str], set[str], list[str], list[str]]:
+        """마크다운에서 (service_keys, sql_keys, source_files, shared_links)를 추출한다."""
+        srv_keys: set[str] = set()
+        sql_keys: set[str] = set()
+        src_files: list[str] = []
+        s_links: list[str] = []
+
+        if raw.startswith("---\n"):
+            fm_part = raw.split("\n---\n", 1)[0]
+            section: str | None = None
+            for raw_line in fm_part.splitlines():
+                if not raw_line.strip():
+                    continue
+                if not raw_line.startswith(" "):
+                    section = None
+                    if raw_line.startswith("source_files:"):
+                        section = "source_files"
+                    elif raw_line.startswith("shared_links:"):
+                        section = "shared_links"
+                else:
+                    stripped = raw_line.strip()
+                    if section == "source_files" and ":" in stripped:
+                        p_cand = stripped.split(":", 1)[0].strip()
+                        if p_cand.startswith("application/") or "/" in p_cand:
+                            src_files.append(p_cand)
+                    elif section == "shared_links" and stripped.startswith("- "):
+                        s_links.append(stripped[2:].strip())
+
+        # 서비스 및 SQL ID 추출 (4번째 셀에 SQL이 여러 개 있을 수 있으므로 셀 전체를 파싱)
+        for line in raw.splitlines():
+            line_s = line.strip()
+            if not line_s.startswith("|"):
+                continue
+            m_row = re.match(
+                r"^\|\s*`([^`]+)`\s*\|\s*[^|]*\s*\|\s*\[`([^`]+)`\][^|]*\|(.*)$",
+                line_s,
+            )
+            if not m_row:
+                continue
+            srv_key = m_row.group(1).strip()
+            sql_col = m_row.group(3)
+            if srv_key:
+                srv_keys.add(srv_key)
+            for sm_sql in re.finditer(r"\[`([^`]+)`\]", sql_col):
+                sql_k = sm_sql.group(1).strip()
+                if sql_k:
+                    sql_keys.add(sql_k)
+
+        return srv_keys, sql_keys, src_files, s_links
+
+    def _register_calls(disp_name: str, srv_keys: set[str], sql_keys: set[str]) -> None:
+        for srv_key in srv_keys:
+            method_to_screens[srv_key].add(disp_name)
+            parts = srv_key.split(".")
+            if len(parts) >= 2:
+                cls_name, m_name = parts[-2], parts[-1]
+                method_to_screens[f"{cls_name}.{m_name}"].add(disp_name)
+                method_to_screens[f"{cls_name}#{m_name}()"].add(disp_name)
+                method_to_screens[f"{cls_name}#{m_name}"].add(disp_name)
+                method_to_screens[m_name].add(disp_name)
+        for sql_key in sql_keys:
+            sql_to_screens[sql_key].add(disp_name)
+            if "." in sql_key:
+                ns, sid = sql_key.rsplit(".", 1)
+                sql_to_screens[f"{ns}#{sid}"].add(disp_name)
+            bare = sql_key.split(".")[-1]
+            sql_to_screens[bare].add(disp_name)
+
+    # 1. 공용 컴포넌트(*/components/*.md) 먼저 파싱
+    comp_calls: dict[str, tuple[set[str], set[str], list[str]]] = {}
+    for comp_md in sorted(src_index.glob("*/components/*.md")):
+        if "_prev" in comp_md.parts:
+            continue
+        raw = comp_md.read_text(encoding="utf-8", errors="replace")
+        c_srvs, c_sqls, _c_files, c_links = _parse_md_calls(raw)
+        comp_calls[comp_md.stem] = (c_srvs, c_sqls, c_links)
+
+    def _collect_comp_calls(start_links: list[str]) -> tuple[set[str], set[str]]:
+        agg_srvs: set[str] = set()
+        agg_sqls: set[str] = set()
+        visited: set[str] = set()
+        queue = list(start_links)
+        while queue:
+            lk = queue.pop(0)
+            if lk in visited:
+                continue
+            visited.add(lk)
+            info = comp_calls.get(lk)
+            if not info:
+                continue
+            c_srvs, c_sqls, c_links = info
+            agg_srvs.update(c_srvs)
+            agg_sqls.update(c_sqls)
+            for nxt in c_links:
+                if nxt not in visited:
+                    queue.append(nxt)
+        return agg_srvs, agg_sqls
+
+    # 2. 화면 md 파일 파싱 (메뉴 번호와 연결 서비스/SQL + shared_links 컴포넌트 호출 전파)
     for md_file in sorted(src_index.glob("*/screens/*.md")):
+        if "_prev" in md_file.parts:
+            continue
         raw = md_file.read_text(encoding="utf-8", errors="replace")
         s_name = md_file.stem
-        # 메뉴 번호 탐색: #1029
         m_no = re.search(r"\(#(\d+)\)", raw)
         disp_name = f"#{m_no.group(1)}" if m_no else s_name
 
-        # 파일 목록 수집
-        fm_part = raw.split("\n---\n")[0] if raw.startswith("---\n") else ""
-        for line in fm_part.splitlines():
-            line = line.strip()
-            if line.endswith(":") and not line.startswith("source_"):
-                continue
-            if ":" in line:
-                p_cand = line.split(":", 1)[0].strip()
-                if p_cand.startswith("application/") or "/" in p_cand:
-                    file_to_screens[p_cand].add(disp_name)
+        srv_keys, sql_keys, src_files, s_links = _parse_md_calls(raw)
+        for p_cand in src_files:
+            file_to_screens[p_cand].add(disp_name)
 
-        # 서비스 및 SQL ID 추출
-        for sm in re.finditer(r"\|\s*`([^`]+)`\s*\|\s*[^|]*\s*\|\s*\[`([^`]+)`\][^|]*\|\s*\[`([^`]+)`\]", raw):
-            srv_key = sm.group(1).strip()
-            sql_key = sm.group(3).strip()
-            if srv_key:
-                method_to_screens[srv_key].add(disp_name)
-                # Class.method
-                parts = srv_key.split(".")
-                if len(parts) >= 2:
-                    cls_m = f"{parts[-2]}#{parts[-1]}()"
-                    method_to_screens[cls_m].add(disp_name)
-                    method_to_screens[parts[-1]].add(disp_name)
-            if sql_key:
-                sql_to_screens[sql_key].add(disp_name)
-                bare = sql_key.split(".")[-1]
-                sql_to_screens[bare].add(disp_name)
+        if s_links:
+            c_srvs, c_sqls = _collect_comp_calls(s_links)
+            srv_keys.update(c_srvs)
+            sql_keys.update(c_sqls)
+
+        _register_calls(disp_name, srv_keys, sql_keys)
 
     # _files.json 보강
     files_json = src_index / "_files.json"
@@ -846,6 +931,16 @@ def update_drift_done(
         if head_commit:
             unit_entry["commit"] = head_commit
 
+        f_clean_u = u.split(" · ")[0].strip("`")
+        if eff_src and ("/" in f_clean_u or f_clean_u.endswith((".java", ".xml", ".sql"))):
+            u_abs = eff_src / f_clean_u
+            if not u_abs.is_file():
+                u_abs_alt = eff_src / "application" / "src" / "main" / "java" / "myApp" / f_clean_u
+                if u_abs_alt.is_file():
+                    u_abs = u_abs_alt
+            if u_abs.is_file():
+                unit_entry["blob"] = compute_git_blob_file(u_abs)
+
         baseline_data["__units__"][u] = unit_entry
 
         # 파일 경로인 경우 __files__ 기록 여부 판정
@@ -865,8 +960,13 @@ def update_drift_done(
                 }
                 if head_commit:
                     file_entry["commit"] = head_commit
-                if eff_src and (eff_src / f_clean).is_file():
-                    file_entry["blob"] = compute_git_blob_file(eff_src / f_clean)
+                f_abs = eff_src / f_clean if eff_src else None
+                if f_abs and not f_abs.is_file() and eff_src:
+                    f_abs_alt = eff_src / "application" / "src" / "main" / "java" / "myApp" / f_clean
+                    if f_abs_alt.is_file():
+                        f_abs = f_abs_alt
+                if f_abs and f_abs.is_file():
+                    file_entry["blob"] = compute_git_blob_file(f_abs)
                 baseline_data["__files__"][f_clean] = file_entry
                 updated_files.append(f_clean)
 

@@ -178,7 +178,7 @@ class TestDriftDoneShared:
             encoding="utf-8",
         )
 
-        # baseline에 OtherScreen 완료 등록
+        # baseline에 OtherScreen 완료 등록 (__units__에 현재 blob 포함)
         baseline_file = tmp_path / ".yunhee" / "baseline.json"
         baseline_file.parent.mkdir(parents=True)
         baseline_file.write_text(
@@ -193,6 +193,7 @@ class TestDriftDoneShared:
                 "__units__": {
                     "Fnd00_Fund.java · selectBySearchText": {
                         "status": "해당없음",
+                        "blob": "h_shared_new",
                     }
                 },
             }),
@@ -200,16 +201,25 @@ class TestDriftDoneShared:
         )
 
         # OtherScreen md: selectBySearchText를 호출하지 않음
+        # AnotherScreen md: Fnd00_Fund.selectBySearchText를 호출함 (사용 화면 집합이 알려져 있음)
         sc_dir = idx_root / "fnd" / "screens"
         sc_dir.mkdir(parents=True)
         (sc_dir / "OtherScreen.md").write_text(
             "# OtherScreen (#1050)\n## 서비스\n| `fnd.OtherService.getList` | L10 | [`other.xml`] | [`selectList`] |\n",
             encoding="utf-8",
         )
+        (sc_dir / "AnotherScreen.md").write_text(
+            "# AnotherScreen (#1051)\n## 서비스\n| `fnd.Fnd00_Fund.selectBySearchText` | L20 | [`fnd00.xml`] | [`selectBySearchText`] |\n",
+            encoding="utf-8",
+        )
 
         monkeypatch.setattr("yunhee.tools.as_is.drift.is_git_repo", lambda *args, **kwargs: True)
         monkeypatch.setattr("yunhee.tools.as_is.drift._commit_object_exists", lambda *args, **kwargs: True)
         monkeypatch.setattr("yunhee.tools.as_is.drift._is_crlf_only_diff", lambda *args, **kwargs: False)
+        monkeypatch.setattr(
+            "yunhee.tools.as_is.drift._changed_units_for_file",
+            lambda *args, **kwargs: ["selectBySearchText"],
+        )
         # Fnd00_Fund.java 해시는 달라졌음 (변경 감지)
         monkeypatch.setattr(
             "yunhee.tools.as_is.drift.compute_git_blob_file",

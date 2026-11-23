@@ -2132,8 +2132,12 @@ def drift_cmd(
         bool,
         typer.Option("--show-baseline", help="기록된 완성 기준선과 이력 표시"),
     ] = False,
+    show_excluded: Annotated[
+        bool,
+        typer.Option("--show-excluded", help="대장과 보관/*.md에서 판단된 공유 변경 제외 목록 함께 출력"),
+    ] = False,
 ):
-    """색인·기준선(baseline) 대비 AS-IS 화면·파일 변경 감지"""
+    """색인·기준선(baseline) 대비 AS-IS 화면·파일 변경 감지 (대장과 보관/*.md에서 판단된 공유 변경 제외)"""
     from yunhee.tools.as_is.drift import (
         record_baseline,
         record_baseline_from_table,
@@ -2208,6 +2212,7 @@ def drift_cmd(
         fail_on_drift=fail_on_drift,
         ignore_space=ignore_space,
         strict=strict,
+        show_excluded=show_excluded,
         work_dir=WORK_DIR,
     )
     for w in warnings:

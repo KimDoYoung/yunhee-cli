@@ -2,6 +2,22 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [1.0.8] - 2026-11-23
+수정사항 075: drift 보관 대장 읽기, import·빈 줄·주석 hunk 단위 판정 제외.
+
+## [1.0.7] - 2026-11-23
+수정사항 074 반영: `drift`의 "판단 끝난 공유 변경" 제외가 이후 새 커밋·다른 메서드 변경까지 숨기던 문제 수정:
+- **판단 시점 이후 새 커밋·변경 시 제외 무효화 (`src/yunhee/tools/as_is/drift.py`, `src/yunhee/tools/as_is/drift_ops.py`)**:
+  - 대장 `AS-IS 커밋` 해시 기준으로 `git log <commit>..HEAD -- <file>`에 새 커밋이 있거나 working tree가 변경된 경우 제외하지 않고 보고.
+  - 커밋 해시가 없고 `처리일`만 있으면 같은 날 커밋을 새 커밋으로 간주(`last_commit_date < processed_date`일 때만 유효).
+  - `__units__`·`__files__` 기준선도 `blob`·`commit`·`updated_at` 검증을 적용하고, `drift-done`이 `__units__`에 `blob`도 함께 기록하도록 보강.
+- **실제 바뀐 단위 기준 제외 및 클래스 한정·공용 컴포넌트 호출 전파**:
+  - `base..HEAD` diff hunk를 메서드·SQL ID 단위로 매핑해, 바뀐 단위가 **모두** 유효하게 판단 끝났고 해당 화면이 쓰지 않을 때만 제외(메서드·SQL 밖 변경 포함 시 보고).
+  - `build_unit_screens_map`이 `*/components/*.md`를 파싱해 `shared_links` 공용 팝업의 서비스·SQL 호출을 화면으로 재귀 전파하고, 제외 판정 시 맨 메서드명 단독 조회를 금지하며 사용 화면을 찾지 못하면 보고("모르면 보고").
+- **제외 내역 가시화 및 `--done-only` 미연결 변경 요약 (`src/yunhee/cli.py`, `src/yunhee/tools/as_is/drift.py`)**:
+  - `-o json` 각 화면 객체에 `excluded_done_shared: [{path, unit, ledger_key, ledger_commit}]` 추가, 테이블 출력에 `--show-excluded` 옵션 신설.
+  - `--done-only` 출력 끝에 기준선 이후 어느 색인 화면에도 걸리지 않은 원본 커밋·파일 요약 한 줄 추가.
+
 ## [1.0.6] - 2026-11-22
 업무분석 이벤트 시험 뼈대 생성 명령어 및 내부 용어·경로 정리 (`test-scenario-skel` → `test-bz-event-skel`):
 - **`test-bz-event-skel`로 명령어 및 모듈 개명 (`src/yunhee/tools/test/bz_event_skel.py`, `src/yunhee/cli.py`, `docs/help/test.md`)**:

@@ -1335,6 +1335,341 @@ def _find_new_screens(src_root: Path, src_index: Path, indexed_screens: dict[str
     return new_items
 
 
+def _extract_commit_hash(raw: str) -> str | None:
+    """대장 'AS-IS 커밋' 셀 등에서 7~40자리 git 커밋 해시를 추출한다."""
+    if not raw:
+        return None
+    m_bt = re.search(r"`([0-9a-fA-F]{7,40})`", raw)
+    if m_bt:
+        return m_bt.group(1)
+    m_bare = re.search(r"\b([0-9a-fA-F]{7,40})\b", raw)
+    return m_bare.group(1) if m_bare else None
+
+
+def _extract_date_str(raw: str) -> str | None:
+    """문자열에서 YYYY-MM-DD 날짜를 추출한다."""
+    if not raw:
+        return None
+    m = re.search(r"(\d{4}-\d{2}-\d{2})", raw)
+    return m.group(1) if m else None
+
+
+def _is_done_record_still_valid(
+    src_root: Path,
+    rel_p: str,
+    rec: dict[str, Any],
+    git_mode: bool,
+    curr_blob: str | None,
+    cache: dict[str, Any],
+) -> bool:
+    """판단 완료 기록(대장 줄 또는 __units__/__files__) 이후 새 커밋·변경이 없는지 검증한다.
+
+    - blob이 기록되어 있으면 현재 파일 blob과 같을 때만 유효.
+    - 커밋 해시가 있으면 git log <commit>..HEAD -- <file>이 비어 있고 working tree도 깨끗할 때만 유효.
+    - 커밋 해시가 없고 처리일(YYYY-MM-DD)만 있으면 파일의 마지막 커밋 날짜가 처리일보다 엄격히 이전(<)일 때만 유효
+      (같은 날 커밋은 선후를 알 수 없으므로 새 커밋으로 간주).
+    - 판단 시점 근거(blob/커밋/처리일)가 하나도 없거나 확인 불가능하면 False(모르면 보고).
+    """
+    rec_blob = rec.get("blob")
+    if rec_blob:
+        if not curr_blob:
+            return False
+        return curr_blob == rec_blob
+
+    if not git_mode:
+        return False
+
+    # working tree dirty 여부 캐시 확인
+    dirty_key = ("dirty", rel_p)
+    if dirty_key not in cache:
+        rc_d, d_out, _ = _run_git(src_root, ["diff", "HEAD", "--", rel_p])
+        cache[dirty_key] = bool(rc_d != 0 or d_out.strip())
+    if cache[dirty_key]:
+        return False
+
+    ledger_commit = rec.get("ledger_commit")
+    if ledger_commit:
+        exists_key = ("exists", ledger_commit)
+        if exists_key not in cache:
+            cache[exists_key] = _commit_object_exists(src_root, ledger_commit)
+        if not cache[exists_key]:
+            return False
+        log_key = ("log_after", ledger_commit, rel_p)
+        if log_key not in cache:
+            rc_l, l_out, _ = _run_git(src_root, ["log", "--format=%H", f"{ledger_commit}..HEAD", "--", rel_p])
+            cache[log_key] = True if rc_l != 0 else bool(l_out.strip())
+        return not cache[log_key]
+
+    processed_date = rec.get("processed_date")
+    if processed_date:
+        date_key = ("last_date", rel_p)
+        if date_key not in cache:
+            rc_dt, dt_out, _ = _run_git(src_root, ["log", "-1", "--format=%cs", "--", rel_p])
+            cache[date_key] = dt_out.strip() if rc_dt == 0 and dt_out.strip() else None
+        last_date = cache[date_key]
+        if not last_date:
+            return False
+        # 같은 날 커밋은 앞뒤를 모르므로 새 커밋으로 본다
+        return last_date < processed_date
+
+    return False
+
+
+_NEUTRAL_RE = re.compile(
+    r"^(import\s|package\s|//|/\*|\*|\*/|<!--|-->)"
+)
+
+
+def _is_neutral_hunk(h: dict[str, Any]) -> bool:
+    """바뀐 줄(+/-)이 모두 import·package·빈 줄·주석이면 True."""
+    changed = [ln[1:] for ln in h.get("lines", []) if ln[:1] in ("+", "-")]
+    if not changed:
+        return True
+    for body in changed:
+        s = body.strip()
+        if s == "" or _NEUTRAL_RE.match(s) or s.endswith("-->"):
+            continue
+        return False
+    return True
+
+
+def _changed_units_for_file(
+    src_root: Path,
+    rel_p: str,
+    base_commit: str | None,
+    b_hash: str,
+    commit_reachable: bool,
+    ignore_space: bool,
+    strict: bool,
+    git_mode: bool,
+    cache: dict[str, Any],
+) -> list[str] | None:
+    """base 대비 rel_p에서 실제로 변경된 단위(메서드명 또는 SQL ID) 목록을 추출한다.
+
+    단위로 특정할 수 없거나(비-Java/XML, diff 실패, 메서드·SQL 밖의 공통부/필드 변경 포함 등)
+    hunk가 하나라도 단위 밖에 걸쳐 있으면 None을 반환한다(모르면 보고).
+    """
+    if not git_mode:
+        return None
+
+    from yunhee.tools.as_is.drift_ops import (
+        classify_file_kind,
+        parse_diff_hunks,
+        parse_java_methods_positions,
+        parse_xml_statements_positions,
+    )
+
+    ref_key = base_commit if (base_commit and commit_reachable) else b_hash
+    c_key = ("changed_units", rel_p, ref_key, ignore_space, strict)
+    if c_key in cache:
+        return cache[c_key]
+
+    abs_p = src_root / rel_p
+    if not abs_p.is_file():
+        cache[c_key] = None
+        return None
+
+    kind = classify_file_kind(rel_p)
+    ext = abs_p.suffix.lower()
+    if kind != "SQL" and ext != ".java":
+        cache[c_key] = None
+        return None
+
+    diff_args = _diff_ignore_args(ignore_space=ignore_space, strict=strict)
+    if base_commit and commit_reachable:
+        rc_df, diff_out, _ = _run_git(src_root, ["diff", "-U0", *diff_args, base_commit, "--", rel_p])
+    elif b_hash and not b_hash.startswith("sha256:") and len(b_hash) >= 7:
+        curr_blob = compute_git_blob_file(abs_p)
+        rc_df, diff_out, _ = _run_git(src_root, ["diff", "-U0", *diff_args, b_hash, curr_blob])
+    else:
+        cache[c_key] = None
+        return None
+
+    if rc_df != 0 or not diff_out.strip():
+        cache[c_key] = None
+        return None
+
+    parsed_files = parse_diff_hunks(diff_out)
+    hunks = [h for df in parsed_files for h in df.get("hunks", [])]
+    if not hunks:
+        cache[c_key] = None
+        return None
+
+    curr_text = abs_p.read_text(encoding="utf-8", errors="replace")
+    old_text = ""
+    if base_commit and commit_reachable:
+        rc_old, o_out, _ = _run_git(src_root, ["show", f"{base_commit}:{rel_p}"])
+        if rc_old == 0:
+            old_text = o_out
+    elif b_hash and not b_hash.startswith("sha256:") and len(b_hash) >= 7:
+        rc_old, o_out, _ = _run_git(src_root, ["cat-file", "blob", b_hash])
+        if rc_old == 0:
+            old_text = o_out
+
+    matched: set[str] = set()
+    if kind == "SQL":
+        new_units = parse_xml_statements_positions(curr_text)
+        old_units = parse_xml_statements_positions(old_text) if old_text else []
+        name_field = "id"
+    else:
+        cls_name = abs_p.stem
+        new_units = parse_java_methods_positions(curr_text, cls_name)
+        old_units = parse_java_methods_positions(old_text, cls_name) if old_text else []
+        name_field = "name"
+
+    for h in hunks:
+        if _is_neutral_hunk(h):
+            continue
+        h_matched = False
+        if h.get("added", 0) > 0:
+            n_start, n_end = h["new_start"], h["new_end"]
+            for u in new_units:
+                if not (n_end < u["start_line"] or n_start > u["end_line"]):
+                    matched.add(u[name_field])
+                    h_matched = True
+        if h.get("removed", 0) > 0 and old_units:
+            o_start, o_end = h["old_start"], h["old_end"]
+            for u in old_units:
+                if not (o_end < u["start_line"] or o_start > u["end_line"]):
+                    matched.add(u[name_field])
+                    h_matched = True
+        if not h_matched:
+            # 어떤 hunk라도 메서드/SQL 밖(공통부·필드·resultMap 등)이면 단위 특정 불가 -> 제외 금지
+            cache[c_key] = None
+            return None
+
+    result = sorted(matched) if matched else None
+    cache[c_key] = result
+    return result
+
+
+def _screens_using_unit(
+    rel_p: str,
+    unit_name: str,
+    src_root: Path,
+    sql_screens: dict[str, list[str]],
+    method_screens: dict[str, list[str]],
+    xml_ns_cache: dict[str, str],
+) -> set[str]:
+    """파일 경로의 클래스/네임스페이스를 붙여 이 단위를 사용하는 화면 집합을 조회한다.
+
+    맨 메서드명(예: 'update')이나 맨 SQL ID 단독으로는 절대 조회하지 않는다.
+    """
+    p = Path(rel_p)
+    ext = p.suffix.lower()
+    screens: set[str] = set()
+
+    if ext == ".xml":
+        if rel_p not in xml_ns_cache:
+            ns = ""
+            abs_p = src_root / rel_p
+            if abs_p.is_file():
+                try:
+                    txt = abs_p.read_text(encoding="utf-8", errors="replace")
+                    m_ns = re.search(r"<mapper\s+[^>]*?\bnamespace\s*=\s*[\"']([^\"']+)[\"']", txt)
+                    if m_ns:
+                        ns = m_ns.group(1).strip()
+                except OSError:
+                    pass
+            xml_ns_cache[rel_p] = ns
+        ns = xml_ns_cache[rel_p]
+        cand_keys: list[str] = []
+        if ns:
+            cand_keys.extend([f"{ns}.{unit_name}", f"{ns}#{unit_name}"])
+        stem = p.stem
+        cand_keys.extend([f"{stem}.{unit_name}", f"{stem}#{unit_name}"])
+        for k in cand_keys:
+            screens.update(sql_screens.get(k, []) or [])
+        return screens
+
+    # Java 등 클래스 기반 단위
+    cls_name = p.stem
+    parts = list(p.parts)
+    doms: list[str] = []
+    if "server" in parts:
+        s_idx = parts.index("server")
+        if s_idx + 1 < len(parts) - 1:
+            doms.append(parts[s_idx + 1])
+    if p.parent.name and p.parent.name not in doms:
+        doms.append(p.parent.name)
+
+    cand_keys = [f"{dom}.{cls_name}.{unit_name}" for dom in doms]
+    cand_keys.extend([
+        f"{cls_name}.{unit_name}",
+        f"{cls_name}#{unit_name}()",
+        f"{cls_name}#{unit_name}",
+    ])
+    for k in cand_keys:
+        screens.update(method_screens.get(k, []) or [])
+    return screens
+
+
+def _lookup_done_file_entry(mapping: dict[str, Any], rel_p: str) -> Any | None:
+    """rel_p(전체 경로)와 짧은 경로(예: server/apr/Apr01_Appr.java)를 모두 고려해 매핑에서 항목을 찾는다."""
+    if not mapping:
+        return None
+    if rel_p in mapping:
+        return mapping[rel_p]
+    for k, v in mapping.items():
+        if not k or " · " in k:
+            continue
+        k_norm = k.lstrip("./")
+        if rel_p.endswith("/" + k_norm) or k_norm.endswith("/" + rel_p):
+            return v
+    return None
+
+
+def _lookup_done_units_for_file(
+    done_shared_units: dict[str, dict[str, list[dict[str, Any]]]],
+    rel_p: str,
+) -> dict[str, list[dict[str, Any]]]:
+    """rel_p에 해당하는 판단 완료 공유 단위 맵(unit_name -> list[record])을 병합해 반환한다."""
+    merged: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    f_name = Path(rel_p).name
+    for k, unit_map in done_shared_units.items():
+        k_norm = k.lstrip("./")
+        if k_norm == rel_p or rel_p.endswith("/" + k_norm) or k_norm.endswith("/" + rel_p) or k_norm == f_name:
+            for u_name, recs in unit_map.items():
+                merged[u_name].extend(recs)
+    return merged
+
+
+def _find_untracked_commits_summary(
+    src_root: Path,
+    ref_base: str,
+    all_indexed_paths: set[str],
+) -> dict[str, Any] | None:
+    """기준선(ref_base) 뒤 원본 커밋 중 어느 색인 화면에도 걸리지 않은 파일·커밋 요약을 구한다."""
+    if not ref_base or not _commit_object_exists(src_root, ref_base):
+        return None
+    rc, out, _ = _run_git(src_root, ["log", "--name-only", "--format=COMMIT:%h", f"{ref_base}..HEAD"])
+    if rc != 0 or not out.strip():
+        return None
+
+    untracked_commits: set[str] = set()
+    untracked_files: set[str] = set()
+    curr_commit: str | None = None
+    for raw_line in out.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("COMMIT:"):
+            curr_commit = line[7:].strip()
+            continue
+        norm_p = line.strip('"')
+        if norm_p not in all_indexed_paths:
+            untracked_files.add(norm_p)
+            if curr_commit:
+                untracked_commits.add(curr_commit)
+
+    if not untracked_files:
+        return None
+    return {
+        "commits": len(untracked_commits),
+        "files": sorted(untracked_files),
+    }
+
+
 def run_drift(
     screen_args: list[str] | None = None,
     all_screens: bool = False,
@@ -1349,6 +1684,7 @@ def run_drift(
     fail_on_drift: bool = False,
     ignore_space: bool = False,
     strict: bool = False,
+    show_excluded: bool = False,
     work_dir: Path | None = None,
 ) -> tuple[int, str, list[str]]:
     """yunhee drift 실행 본체.
@@ -1500,7 +1836,7 @@ def run_drift(
     units_baseline: dict[str, Any] = baseline_data.get("__units__", {}) if isinstance(baseline_data.get("__units__"), dict) else {}
     files_baseline: dict[str, Any] = baseline_data.get("__files__", {}) if isinstance(baseline_data.get("__files__"), dict) else {}
 
-    # 063 #3: 대장 및 baseline __units__에서 판단 끝난 공유 변경 단위 수집
+    # 063 #3 + 074: 대장 및 baseline __units__에서 판단 끝난 공유 변경 단위 수집 (커밋·처리일·blob 포함)
     from yunhee.tools.as_is.drift_ops import (
         build_unit_screens_map,
         parse_ledger_header,
@@ -1509,7 +1845,8 @@ def run_drift(
     )
 
     sql_screens, method_screens, _ = build_unit_screens_map(src_index)
-    done_shared_units: dict[str, set[str]] = defaultdict(set)
+    # done_shared_units[file_key][unit_name] = list of metadata dicts
+    done_shared_units: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     for u_key, u_val in units_baseline.items():
         if (
             isinstance(u_val, dict)
@@ -1518,13 +1855,25 @@ def run_drift(
         ):
             f_part, u_part = u_key.split(" · ", 1)
             f_clean = re.sub(r"[`*]", "", f_part).strip()
-            u_clean = re.sub(r"[`*]", "", u_part).strip()
-            done_shared_units[f_clean].add(u_clean)
-            done_shared_units[Path(f_clean).name].add(u_clean)
+            u_clean = re.sub(r"[`*]", "", u_part).strip().rstrip("()")
+            rec = {
+                "unit": u_clean,
+                "ledger_key": "__units__",
+                "ledger_commit": u_val.get("commit"),
+                "processed_date": _extract_date_str(str(u_val.get("updated_at") or "")),
+                "blob": u_val.get("blob"),
+                "status": u_val.get("status"),
+            }
+            done_shared_units[f_clean][u_clean].append(rec)
 
     l_path = resolve_ledger_path(wd)
-    if l_path.is_file():
-        l_lines = l_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    ledger_files = [l_path] if l_path.is_file() else []
+    arc_dir = l_path.parent / "보관"
+    if arc_dir.is_dir():
+        ledger_files += sorted(arc_dir.glob("*.md"))
+
+    for lf in ledger_files:
+        l_lines = lf.read_text(encoding="utf-8", errors="replace").splitlines()
         h_idx, c_names, c_map = parse_ledger_header(l_lines)
         if h_idx != -1 and "키" in c_map and "상태" in c_map and "단위" in c_map:
             for l_str in l_lines[h_idx + 1:]:
@@ -1536,11 +1885,27 @@ def run_drift(
                         if " · " in u_raw:
                             f_part, u_part = u_raw.split(" · ", 1)
                             f_clean = re.sub(r"[`*]", "", f_part).strip()
-                            u_clean = re.sub(r"[`*]", "", u_part).strip()
-                            done_shared_units[f_clean].add(u_clean)
-                            done_shared_units[Path(f_clean).name].add(u_clean)
+                            # 단위 칸에 부가 설명이 붙은 경우 첫 토큰/단위명만 취함
+                            u_clean = re.sub(r"[`*]", "", u_part).strip().split()[0].rstrip("()") if u_part.strip() else ""
+                            if not u_clean:
+                                continue
+                            ch_key = parts[c_map["키"]].strip()
+                            raw_commit = parts[c_map["AS-IS 커밋"]].strip() if "AS-IS 커밋" in c_map else ""
+                            raw_date = parts[c_map["처리일"]].strip() if "처리일" in c_map else ""
+                            rec = {
+                                "unit": u_clean,
+                                "ledger_key": ch_key,
+                                "ledger_commit": _extract_commit_hash(raw_commit),
+                                "processed_date": _extract_date_str(raw_date),
+                                "blob": None,
+                                "status": st,
+                            }
+                            done_shared_units[f_clean][u_clean].append(rec)
 
     excluded_done_shared_count = 0
+    excluded_done_shared_records: list[dict[str, Any]] = []
+    drift_check_cache: dict[str, Any] = {}
+    xml_ns_cache: dict[str, str] = {}
 
     for s_name in target_names:
         idx_info = indexed_screens.get(s_name, {})
@@ -1648,6 +2013,7 @@ def run_drift(
                         check_entries.append((rp, bh, True))
 
         file_records: list[dict[str, Any]] = []
+        screen_excluded_done_shared: list[dict[str, Any]] = []
         ded_added = 0
         ded_removed = 0
         ded_changed_paths: list[str] = []
@@ -1699,28 +2065,40 @@ def run_drift(
                 continue
 
             # 파일이 존재하는 경우 해시 비교
+            curr_blob: str | None = compute_git_blob_file(abs_p) if git_mode else None
+
             # baseline의 __files__ 또는 __units__에 이 파일 전체가 등록되어 있고 완료 상태인지 확인
-            # (주의: 파일 내 개별 단위가 완료되었다고 해서 파일 전체를 스킵하면 안 되며,
-            # 모든 하위 단위가 완료되어 __files__에 기록되었거나 파일 자체가 단위로 등록된 경우만 스킵)
-            f_bl = files_baseline.get(rel_p)
+            # 074 #1: 판단 시점(blob/commit/updated_at) 이후 새 커밋·변경이 있으면 무효
+            f_bl = _lookup_done_file_entry(files_baseline, rel_p)
             if f_bl and isinstance(f_bl, dict) and f_bl.get("status") in ("반영", "해당없음", "완료", "넘김", "보류"):
-                continue
-            u_self = units_baseline.get(rel_p)
+                f_bl_rec = {
+                    "blob": f_bl.get("blob"),
+                    "ledger_commit": f_bl.get("commit"),
+                    "processed_date": _extract_date_str(str(f_bl.get("updated_at") or "")),
+                }
+                if _is_done_record_still_valid(eff_src, rel_p, f_bl_rec, git_mode, curr_blob, drift_check_cache):
+                    continue
+            u_self = _lookup_done_file_entry(units_baseline, rel_p)
             if u_self and isinstance(u_self, dict) and u_self.get("status") in ("반영", "해당없음", "완료", "넘김", "보류"):
-                continue
+                u_self_rec = {
+                    "blob": u_self.get("blob"),
+                    "ledger_commit": u_self.get("commit"),
+                    "processed_date": _extract_date_str(str(u_self.get("updated_at") or "")),
+                }
+                if _is_done_record_still_valid(eff_src, rel_p, u_self_rec, git_mode, curr_blob, drift_check_cache):
+                    continue
 
             if not git_mode or b_hash.startswith("sha256:"):
                 curr_hash = compute_sha256_file(abs_p)
                 expected_hash = b_hash if b_hash.startswith("sha256:") else compute_sha256_file(abs_p)
                 # git 색인을 비-git으로 비교하는 예외 상황 대비
                 if not b_hash.startswith("sha256:"):
-                    curr_blob = compute_git_blob_file(abs_p)
-                    is_same = curr_blob == b_hash
+                    curr_blob_cmp = curr_blob or compute_git_blob_file(abs_p)
+                    is_same = curr_blob_cmp == b_hash
                 else:
                     is_same = curr_hash == expected_hash
             else:
-                curr_blob = compute_git_blob_file(abs_p)
-                is_same = curr_blob == b_hash
+                is_same = (curr_blob or compute_git_blob_file(abs_p)) == b_hash
 
             if is_same:
                 continue
@@ -1746,20 +2124,55 @@ def run_drift(
                 })
                 continue
 
-            # 063 #3: 공유 파일이고 대장/단위에서 이미 판단 완료된 단위인데, 이 화면이 그 단위를 안 쓰면 제외
+            # 063 #3 + 074: 공유 파일의 실제 바뀐 단위가 모두 판단 끝났고(새 커밋 없음) 이 화면이 안 쓰는 것이 확실할 때만 제외
             if is_shared and done_shared_units:
-                f_name = Path(rel_p).name
-                done_units_for_f = done_shared_units.get(rel_p) or done_shared_units.get(f_name)
+                done_units_for_f = _lookup_done_units_for_file(done_shared_units, rel_p)
                 if done_units_for_f:
-                    uses_any = False
-                    for u in done_units_for_f:
-                        scs = set(sql_screens.get(u, []) or []) | set(method_screens.get(u, []) or [])
-                        if any(k in scs for k in s_keys):
-                            uses_any = True
-                            break
-                    if not uses_any:
-                        excluded_done_shared_count += 1
-                        continue
+                    changed_units = _changed_units_for_file(
+                        eff_src,
+                        rel_p,
+                        base_commit,
+                        b_hash,
+                        commit_reachable,
+                        ignore_space,
+                        strict,
+                        git_mode,
+                        drift_check_cache,
+                    )
+                    if changed_units:
+                        all_settled_and_unused = True
+                        matched_done_meta: list[dict[str, Any]] = []
+                        for cu in changed_units:
+                            recs = done_units_for_f.get(cu) or []
+                            valid_rec = None
+                            for r in recs:
+                                if _is_done_record_still_valid(
+                                    eff_src, rel_p, r, git_mode, curr_blob, drift_check_cache
+                                ):
+                                    valid_rec = r
+                                    break
+                            if valid_rec is None:
+                                all_settled_and_unused = False
+                                break
+                            scs = _screens_using_unit(
+                                rel_p, cu, eff_src, sql_screens, method_screens, xml_ns_cache
+                            )
+                            # 모르면 보고: 이 단위를 쓰는 화면을 색인에서 찾지 못했거나 이 화면이 쓰면 제외 금지
+                            if not scs or any(k in scs for k in s_keys):
+                                all_settled_and_unused = False
+                                break
+                            matched_done_meta.append({
+                                "path": rel_p,
+                                "unit": cu,
+                                "ledger_key": valid_rec.get("ledger_key") or "",
+                                "ledger_commit": valid_rec.get("ledger_commit") or "",
+                            })
+                        if all_settled_and_unused and matched_done_meta:
+                            excluded_done_shared_count += 1
+                            screen_excluded_done_shared.extend(matched_done_meta)
+                            for m_item in matched_done_meta:
+                                excluded_done_shared_records.append({"screen": s_name, **m_item})
+                            continue
 
             f_add, f_rem = (
                 _file_numstat(eff_src, rel_p, base_commit, b_hash, ignore_space, commit_reachable, strict=strict)
@@ -1830,6 +2243,7 @@ def run_drift(
             "shared_count": len(shared_changed_paths),
             "moved_items": moved_items,
             "base_commit": base_commit,
+            "excluded_done_shared": screen_excluded_done_shared,
         })
 
     if missing_history_commits:
@@ -1880,6 +2294,7 @@ def run_drift(
                 "added": sr["added"],
                 "removed": sr["removed"],
                 "last_commit": sr["last_commit"],
+                "excluded_done_shared": sr.get("excluded_done_shared", []),
             }
             for sr in screen_results
         ]
@@ -1895,6 +2310,35 @@ def run_drift(
             max_lines=max_lines if output_fmt == "diff" else None,
         )
         return exit_code, diff_text, warnings
+
+    # 074 #5: --done-only일 때 기준선 뒤 원본 커밋 중 어느 화면에도 안 걸린 커밋·파일 요약
+    untracked_summary: dict[str, Any] | None = None
+    if done_only and git_mode:
+        ref_base_untracked: str | None = None
+        bl_base = baseline_data.get("__base__")
+        if isinstance(bl_base, dict) and bl_base.get("commit"):
+            ref_base_untracked = bl_base["commit"]
+        elif base_commits_seen:
+            # 가장 오래된 기준 커밋 선택 (commit timestamp 오름차순)
+            best_c = None
+            best_ts = None
+            for c_hash in sorted(base_commits_seen):
+                rc_ts, ts_out, _ = _run_git(eff_src, ["log", "-1", "--format=%ct", c_hash])
+                if rc_ts == 0 and ts_out.strip().isdigit():
+                    ts_val = int(ts_out.strip())
+                    if best_ts is None or ts_val < best_ts:
+                        best_ts = ts_val
+                        best_c = c_hash
+            ref_base_untracked = best_c or min(base_commits_seen)
+        if ref_base_untracked:
+            all_indexed_paths: set[str] = set(files_map.keys())
+            for sc_info in indexed_screens.values():
+                s_files = sc_info.get("source_files") or {}
+                if isinstance(s_files, dict):
+                    all_indexed_paths.update(s_files.keys())
+                elif isinstance(s_files, list):
+                    all_indexed_paths.update(s_files)
+            untracked_summary = _find_untracked_commits_summary(eff_src, ref_base_untracked, all_indexed_paths)
 
     # 기본 table 출력
     s_menu = source_meta.get("screens_menu")
@@ -1915,6 +2359,9 @@ def run_drift(
         screens_menu=s_menu if all_screens and not done_only else None,
         screens_frame=s_frame if all_screens and not done_only else None,
         excluded_done_shared_count=excluded_done_shared_count,
+        show_excluded=show_excluded,
+        excluded_done_shared_records=excluded_done_shared_records,
+        untracked_summary=untracked_summary,
     )
     return exit_code, table_text, warnings
 
@@ -1931,6 +2378,9 @@ def _render_table_output(
     screens_menu: int | None = None,
     screens_frame: int | None = None,
     excluded_done_shared_count: int = 0,
+    show_excluded: bool = False,
+    excluded_done_shared_records: list[dict[str, Any]] | None = None,
+    untracked_summary: dict[str, Any] | None = None,
 ) -> str:
     """기본 1화면 1줄 요약 테이블 출력을 렌더링한다."""
     changed_list = [s for s in screen_results if s["status"] in ("변경", "삭제")]
@@ -1979,7 +2429,10 @@ def _render_table_output(
     else:
         count_label = f"{scope_label} {total_cnt}개"
 
-    extra_suffix = f", 판단 끝난 공유 변경 {excluded_done_shared_count}건 제외" if excluded_done_shared_count > 0 else ""
+    extra_suffix = ""
+    if excluded_done_shared_count > 0:
+        hint = "" if show_excluded else " (--show-excluded)"
+        extra_suffix = f", 판단 끝난 공유 변경 {excluded_done_shared_count}건 제외{hint}"
     lines.append(
         f"기준 대비 변경 {len(changed_list)}개 / {count_label} "
         f"({' · '.join(extra_counts)}) — {head_info}{extra_suffix}"
@@ -2042,6 +2495,24 @@ def _render_table_output(
     if changed_list:
         top_screen = changed_list[0]["screen"]
         lines.append(f"→ yunhee drift {top_screen} -o diff   # 파일별 diff")
+
+    if show_excluded and excluded_done_shared_records:
+        lines.append("")
+        lines.append(f"제외된 판단 끝난 공유 변경 ({len(excluded_done_shared_records)}건):")
+        for rec in excluded_done_shared_records:
+            c_part = f", {rec['ledger_commit'][:9]}" if rec.get("ledger_commit") else ""
+            lines.append(
+                f"  - {rec['screen']}: {rec['path']} · {rec['unit']} ({rec['ledger_key']}{c_part})"
+            )
+
+    if done_only and untracked_summary and untracked_summary.get("files"):
+        u_files = untracked_summary["files"]
+        preview = ", ".join(u_files[:3])
+        if len(u_files) > 3:
+            preview += f" 외 {len(u_files) - 3}"
+        lines.append(
+            f"기준선 뒤 미연결 원본 변경: 커밋 {untracked_summary['commits']}건 · 파일 {len(u_files)}개 ({preview})"
+        )
 
     return "\n".join(lines)
 
