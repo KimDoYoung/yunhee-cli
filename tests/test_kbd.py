@@ -463,3 +463,190 @@ def test_extract_md_inline_codes_ignores_fences_and_double_backticks():
         (1, "0F7F90:check:저장", "저장"),
         (5, "닫기", "닫기"),
     ]
+
+
+def test_check_and_fix_icon_unknown_warning_not_overwritten(tmp_path: Path):
+    """수정사항 077: 아이콘없음 버튼은 ❌가 아닌 ⚠(icon-unknown)로 알리고 --fix가 지우지 않는다."""
+    boxes_dir = tmp_path / "boxes_icon_unknown"
+    boxes_dir.mkdir()
+    (boxes_dir / "01.boxes.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "screen": "1007",
+                "elements": [
+                    {
+                        "name": "수정",
+                        "kind": "button",
+                        "text": "수정",
+                        "box": [100, 100, 70, 32],
+                        "area": "modal",
+                        "parent": "상세 보기(모달)",
+                        "style": {
+                            "bg": "6AB6CF",
+                            "fg": "FFFFFF",
+                            "icon": "anticon-foo",
+                            "fa": None,
+                            "class": ["erp-btn"],
+                        },
+                    },
+                    {
+                        "name": "저장",
+                        "kind": "button",
+                        "text": "저장",
+                        "box": [200, 100, 70, 32],
+                        "area": "modal",
+                        "parent": "문서양식 등록(모달)",
+                        "style": {
+                            "bg": "0F7F90",
+                            "fg": "FFFFFF",
+                            "icon": "anticon-check",
+                            "fa": "check",
+                            "class": ["erp-btn", "erp-btn-type-save"],
+                        },
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    def_file = tmp_path / "defines.json"
+    def_file.write_text(json.dumps(SAMPLE_AMAN_DEFINES, ensure_ascii=False), encoding="utf-8")
+
+    # 1. 3가지 표기(색 같음 / 색 다름 / 글자만·빈 아이콘) 검사 -> 모두 ⚠ icon-unknown, 종료코드 0
+    md1 = tmp_path / "good.md"
+    md1_content = (
+        "1. `6AB6CF:eye:수정`을 누른다.\n"
+        "2. `123456:eye:수정`을 누른다.\n"
+        "3. `수정` 또는 `6AB6CF::수정`을 누른다.\n"
+    )
+    md1.write_text(md1_content, encoding="utf-8")
+
+    runner = CliRunner()
+    r_check = runner.invoke(
+        app,
+        ["kbd", "--check", str(md1), "--boxes", str(boxes_dir), "--defines", str(def_file)],
+    )
+    assert r_check.exit_code == 0
+    assert "❌" not in r_check.output
+    assert "⚠ L1 `6AB6CF:eye:수정` — 아이콘 확인(TOBE anticon-foo, 변환표에 없음)" in r_check.output
+    assert (
+        "⚠ L2 `123456:eye:수정` — 아이콘 확인(TOBE anticon-foo, 변환표에 없음) · 색은 6AB6CF"
+        in r_check.output
+    )
+    assert "⚠ L3 `수정` — 아이콘 확인(TOBE 6AB6CF anticon-foo, 변환표에 없음)" in r_check.output
+    assert "⚠ L3 `6AB6CF::수정` — 아이콘 확인(TOBE 6AB6CF anticon-foo, 변환표에 없음)" in r_check.output
+    assert "아이콘 확인 4" in r_check.output
+
+    # --json status 확인
+    r_json = runner.invoke(
+        app,
+        ["kbd", "--check", str(md1), "--boxes", str(boxes_dir), "--defines", str(def_file), "--json"],
+    )
+    assert r_json.exit_code == 0
+    parsed = json.loads(r_json.output)
+    assert parsed["icon_unknown"] == 4
+    assert parsed["mismatches"] == 0
+    assert all(f["status"] == "icon-unknown" for f in parsed["findings"])
+
+    # 2. --fix 실행 시 파일 변경 없음 & .bak 미생성
+    r_fix1 = runner.invoke(
+        app,
+        ["kbd", "--check", str(md1), "--boxes", str(boxes_dir), "--defines", str(def_file), "--fix"],
+    )
+    assert r_fix1.exit_code == 0
+    assert md1.read_text(encoding="utf-8") == md1_content
+    assert not Path(f"{md1}.bak").exists()
+
+    # 3. `저장`(❌)과 `6AB6CF:eye:수정`(⚠)을 섞어 --fix -> `저장`만 수정되고 `수정`은 그대로
+    md2 = tmp_path / "mixed.md"
+    md2.write_text("`6AB6CF:eye:수정` 후 `저장`을 누른다.\n", encoding="utf-8")
+    r_fix2 = runner.invoke(
+        app,
+        ["kbd", "--check", str(md2), "--boxes", str(boxes_dir), "--defines", str(def_file), "--fix"],
+    )
+    assert r_fix2.exit_code == 0
+    assert md2.read_text(encoding="utf-8") == "`6AB6CF:eye:수정` 후 `0F7F90:check:저장`을 누른다.\n"
+    assert Path(f"{md2}.bak").is_file()
+
+
+def test_render_kbd_markdown_icon_unknown_note_only_in_notation_col(tmp_path: Path):
+    """수정사항 078: 아이콘없음의 ⚠anticon-xxx는 표기 칸에만 1번 나오고 판정 칸에는 겹치지 않는다."""
+    boxes_file = tmp_path / "icon_unknown.boxes.json"
+    boxes_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "screen": "1007",
+                "elements": [
+                    {
+                        "name": "수정",
+                        "kind": "button",
+                        "text": "수정",
+                        "box": [100, 100, 70, 32],
+                        "area": "modal",
+                        "parent": "상세 보기(모달)",
+                        "disabled": False,
+                        "style": {
+                            "bg": "6AB6CF",
+                            "fg": "FFFFFF",
+                            "icon": "anticon-foo",
+                            "fa": None,
+                            "class": ["erp-btn"],
+                        },
+                    },
+                    {
+                        "name": "비활성수정",
+                        "kind": "button",
+                        "text": "비활성수정",
+                        "box": [200, 100, 80, 32],
+                        "area": "modal",
+                        "parent": "상세 보기(모달)",
+                        "disabled": True,
+                        "style": {
+                            "bg": "6AB6CF",
+                            "fg": "FFFFFF",
+                            "icon": "anticon-foo",
+                            "fa": None,
+                            "class": ["erp-btn"],
+                        },
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    def_file = tmp_path / "defines.json"
+    def_file.write_text(
+        json.dumps([{"color": "6AB6CF", "icon": "fas fa-edit", "texts": ["수정"]}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    res = evaluate_buttons([boxes_file], defines=str(def_file))
+    assert res.ok
+    md = render_kbd_markdown(res.data)
+
+    # 1. 켜짐 상태: 판정 칸 == "아이콘없음", 표기 칸은 ⚠anticon-foo로 끝남, 줄 전체 1회만 등장
+    line_on = next(ln for ln in md.splitlines() if ln.startswith("| 수정 |"))
+    cols_on = [c.strip() for c in line_on.strip("|").split("|")]
+    assert cols_on[4] == "아이콘없음"
+    assert cols_on[5] == "`6AB6CF::수정` ⚠anticon-foo"
+    assert line_on.count("anticon-foo") == 1
+
+    # 2. 꺼짐 전용 상태: 판정 칸 == "아이콘없음 ⚠꺼짐", 표기 칸은 ⚠anticon-foo로 끝남, 줄 전체 1회만 등장
+    line_off = next(ln for ln in md.splitlines() if ln.startswith("| 비활성수정 |"))
+    cols_off = [c.strip() for c in line_off.strip("|").split("|")]
+    assert cols_off[4] == "아이콘없음 ⚠꺼짐"
+    assert cols_off[5] == "`6AB6CF::비활성수정` ⚠anticon-foo"
+    assert line_off.count("anticon-foo") == 1
+
+    # 3. --json 형식은 verdict·notation·note 키 유지
+    js = format_kbd_json(res.data)
+    item_on = next(x for x in js if x["text"] == "수정")
+    assert item_on["verdict"] == "아이콘없음"
+    assert item_on["notation"] == "`6AB6CF::수정`"
+    assert item_on["note"] == "⚠anticon-foo"
+
+

@@ -2,6 +2,16 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [1.1.4] - 2026-11-24
+수정사항 078 반영 — `yunhee kbd` 마크다운 표에서 `아이콘없음` 버튼의 `⚠anticon-xxx` 중복 출력 제거 (`src/yunhee/tools/kbd.py`):
+- 판정 칸(`verdict_display`)에는 `⚠꺼짐`만 표시하고 `⚠anticon-xxx`는 표기 칸에만 1회 출력되도록 정리(`--json`·`--check`·`--fix` 동작 불변).
+
+## [1.1.3] - 2026-11-24
+수정사항 077 반영 — `yunhee kbd --check --fix`가 `아이콘없음` 버튼의 md 아이콘을 지우던 버그 수정 (`src/yunhee/tools/kbd.py`):
+- **`아이콘없음` 판정 시 `❌` 대신 `⚠ 아이콘 확인`(`status: "icon-unknown"`)으로 보고**:
+  - `색:아이콘:글자`에서 색 일치/불일치 및 글자만·`색::글자` 세 가지 경우에 맞춰 경고 메시지를 출력하고 요약에 `아이콘 확인 N`을 별도 집계(종료코드 0 유지).
+  - `--fix`가 `아이콘없음` 버튼을 덮어쓰지 않도록 보호(고칠 것이 0이면 `.bak`도 생성하지 않음).
+
 ## [1.1.2] - 2026-11-24
 수정사항 076 반영 — 매뉴얼 버튼 표기 자동화 (`screen-capture --boxes` 버튼 스타일 기록 + `yunhee kbd` 신설):
 - **`screen-capture --boxes` 버튼 `style` 수집 및 hover 색 방지 (`src/yunhee/tools/screen_capture.py`, `docs/boxes-json-규격.md`)**:

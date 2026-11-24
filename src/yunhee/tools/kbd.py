@@ -436,12 +436,7 @@ def _judge_button(btn: CollectedButton, defines: AmanDefines) -> dict[str, Any]:
             verdict = "둘다다름"
             notation = f"`{bg or ''}:{fa}:{display_text}`"
 
-    if btn.disabled_only:
-        verdict_display = f"{verdict} ⚠꺼짐"
-    elif note:
-        verdict_display = f"{verdict} {note}"
-    else:
-        verdict_display = verdict
+    verdict_display = f"{verdict} ⚠꺼짐" if btn.disabled_only else verdict
 
     return {
         "text": btn.text,
@@ -708,6 +703,7 @@ def check_manual_md(
     mismatches = 0
     missing = 0
     ambiguous = 0
+    icon_unknown = 0
 
     # --fix용 줄별 치환 목록: line_no -> list of (start, end, new_text)
     replacements_by_line: dict[int, list[tuple[int, int, str]]] = {}
@@ -731,6 +727,41 @@ def check_manual_md(
                         "current": sp.inner,
                         "expected": None,
                         "message": f"⚠ L{sp.line_no} `{sp.inner}` — 창마다 다름 ({detail})",
+                    }
+                )
+                continue
+
+            if any(r["verdict"] == "아이콘없음" for r in matched_rows):
+                icon_unknown += 1
+                row = next(r for r in matched_rows if r["verdict"] == "아이콘없음")
+                tobe_bg = (row["tobe"]["bg"] or "").upper()
+                tobe_icon = row["tobe"].get("icon") or "아이콘없음"
+                dm = _DIRECT_NOTATION_RE.match(sp.inner)
+                if dm and dm.group(2).strip():
+                    md_color = dm.group(1).upper()
+                    if tobe_bg and md_color == tobe_bg:
+                        msg = (
+                            f"⚠ L{sp.line_no} `{sp.inner}` — "
+                            f"아이콘 확인(TOBE {tobe_icon}, 변환표에 없음)"
+                        )
+                    else:
+                        msg = (
+                            f"⚠ L{sp.line_no} `{sp.inner}` — "
+                            f"아이콘 확인(TOBE {tobe_icon}, 변환표에 없음) · 색은 {tobe_bg or '-'}"
+                        )
+                else:
+                    tobe_desc = " ".join(p for p in (tobe_bg, tobe_icon) if p)
+                    msg = (
+                        f"⚠ L{sp.line_no} `{sp.inner}` — "
+                        f"아이콘 확인(TOBE {tobe_desc}, 변환표에 없음)"
+                    )
+                findings.append(
+                    {
+                        "status": "icon-unknown",
+                        "line": sp.line_no,
+                        "current": sp.inner,
+                        "expected": None,
+                        "message": msg,
                     }
                 )
                 continue
@@ -785,7 +816,7 @@ def check_manual_md(
             lines[line_idx] = line_str
         mp.write_text("".join(lines), encoding="utf-8")
 
-    total = passed + mismatches + missing + ambiguous
+    total = passed + mismatches + missing + ambiguous + icon_unknown
     return ToolResult(
         ok=True,
         data={
@@ -798,6 +829,7 @@ def check_manual_md(
             "mismatches": mismatches,
             "missing": missing,
             "ambiguous": ambiguous,
+            "icon_unknown": icon_unknown,
             "fixed_count": fixed_count,
             "backup_path": backup_path,
             "findings": findings,
@@ -818,10 +850,13 @@ def render_check_report(data: dict[str, Any]) -> str:
     mismatches = data["mismatches"]
     missing = data["missing"]
     ambiguous = data.get("ambiguous", 0)
+    icon_unknown = data.get("icon_unknown", 0)
 
     summary = f"버튼 표기 {total}개: 통과 {passed} · 고칠 것 {mismatches} · 캡처에 없음 {missing}"
     if ambiguous:
         summary += f" · 창마다 다름 {ambiguous}"
+    if icon_unknown:
+        summary += f" · 아이콘 확인 {icon_unknown}"
     lines.append(summary)
 
     if data.get("fixed_count"):
