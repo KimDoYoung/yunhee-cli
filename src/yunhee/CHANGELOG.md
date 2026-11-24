@@ -2,6 +2,15 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [1.1.2] - 2026-11-24
+수정사항 076 반영 — 매뉴얼 버튼 표기 자동화 (`screen-capture --boxes` 버튼 스타일 기록 + `yunhee kbd` 신설):
+- **`screen-capture --boxes` 버튼 `style` 수집 및 hover 색 방지 (`src/yunhee/tools/screen_capture.py`, `docs/boxes-json-규격.md`)**:
+  - `button`·`icon-button` 요소에 브라우저 계산 스타일 `style: {bg, fg, icon, fa, class}` 기록 (Ant Design → FontAwesome 25개 기본 매핑 + `YUNHEE_KBD_ICON_MAP` 오버라이드).
+  - 캡처·수집 전 `page.mouse.move(0, 0)`으로 마우스를 이동해 버튼 hover 색 잔상 차단.
+- **`yunhee kbd` 신설 (`src/yunhee/tools/kbd.py`, `src/yunhee/cli.py`, `src/yunhee/config.py`)**:
+  - `yunhee kbd <boxes|폴더>... [--defines <URL|파일>] [--json]`: boxes.json의 버튼 스타일과 A-Man `button-defines.json`(`YUNHEE_AMAN_URL`, `~/.yunhee/cache/button-defines.json` 오프라인 캐시 폴백)을 대조해 매뉴얼 버튼 표기 표/JSON 생성.
+  - `yunhee kbd --check <md> --boxes <경로> [--fix]`: 매뉴얼 마크다운의 인라인 버튼 표기를 검사(불일치 시 종료코드 1)하고 `--fix`로 `❌` 항목만 자동 수정(원본 `<md>.bak` 백업).
+
 ## [1.1.1] - 2026-11-24
 Docker Tomcat 로그 자동 탐색 보완 (`src/yunhee/tools/log_reader.py`):
 - **`_resolve_log_dir_docker()` 탐색 범위 확장**: `find` 깊이를 `-maxdepth 4` → `-maxdepth 6`으로 확장(`/home/<user>/tmp/asseterp-data/logs/*-info.log` 등 depth 5 경로 탐색 지원)하고, 탐색 루트에 `/data`, `/logs` 추가 및 빈 `default_dir` 체크 보강.

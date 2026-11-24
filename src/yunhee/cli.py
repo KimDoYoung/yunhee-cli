@@ -60,7 +60,7 @@ def main(
   4. [bold green]API/로그[/bold green]: [cyan]yunhee api <METHOD> <경로> [--log] [--track <테이블>][/cyan] · [cyan]yunhee log trace|req|errors|tail[/cyan]
   5. [bold green]화면/업무 분석[/bold green]: [cyan]yunhee screen-desc <번호>[/cyan] · [cyan]yunhee analysis screen|ui|method|sql|grid|callers|function <대상>[/cyan] · [cyan]yunhee page-style <화면>[/cyan]
   6. [bold green]미연결/원본변경[/bold green]: [cyan]yunhee trace-gap --stubs[/cyan] · [cyan]yunhee drift --all --base baseline[/cyan] · [cyan]yunhee sql-check --new-since-index[/cyan]
-  7. [bold green]비즈니스/시험 자동화[/bold green]: [cyan]yunhee biz-*[/cyan] · [cyan]yunhee test-*[/cyan] · [cyan]yunhee screen-capture <번호> [--boxes][/cyan] · [cyan]yunhee mark <png> <draw.json>[/cyan]
+  7. [bold green]비즈니스/시험 자동화[/bold green]: [cyan]yunhee biz-*[/cyan] · [cyan]yunhee test-*[/cyan] · [cyan]yunhee screen-capture <번호> [--boxes][/cyan] · [cyan]yunhee mark <png> <draw.json>[/cyan] · [cyan]yunhee kbd <boxes|폴더>[/cyan]
   8. [bold green]설정/이력[/bold green]: [cyan]yunhee config[/cyan] · [cyan]yunhee value [KEY][/cyan] · [cyan]yunhee changelog --since <버전>[/cyan]
 """
     if ctx.invoked_subcommand != "init" and config.needs_global_init():
@@ -4339,6 +4339,95 @@ def test_rollback_data_cmd(
             fg=typer.colors.GREEN,
             bold=True,
         )
+
+
+@app.command(name="kbd")
+def kbd_cmd(
+    paths: Annotated[
+        list[str] | None,
+        typer.Argument(help="boxes.json 파일 또는 폴더 경로 (복수 지정 가능)"),
+    ] = None,
+    defines: Annotated[
+        str | None,
+        typer.Option("--defines", help="A-Man button-defines.json URL 또는 로컬 파일 경로"),
+    ] = None,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="결과를 JSON으로 출력"),
+    ] = False,
+    check: Annotated[
+        Path | None,
+        typer.Option("--check", help="버튼 표기를 검사할 매뉴얼 마크다운(.md) 파일 경로"),
+    ] = None,
+    boxes: Annotated[
+        list[str] | None,
+        typer.Option("--boxes", help="--check 시 참조할 boxes.json 파일 또는 폴더 경로 (반복 가능)"),
+    ] = None,
+    fix: Annotated[
+        bool,
+        typer.Option("--fix", help="--check에서 ❌로 판정된 버튼 표기를 자동 수정 (원본은 <md>.bak 백업)"),
+    ] = False,
+) -> None:
+    """screen-capture --boxes 결과와 A-Man button-defines.json을 비교해 매뉴얼 버튼 표기 생성·검사·수정"""
+    import json as _json
+
+    from yunhee.tools.kbd import (
+        check_manual_md,
+        evaluate_buttons,
+        format_kbd_json,
+        render_check_report,
+        render_kbd_markdown,
+    )
+
+    target_boxes: list[str] = []
+    if boxes:
+        target_boxes.extend(boxes)
+    if paths:
+        target_boxes.extend(paths)
+
+    if not target_boxes:
+        typer.secho(
+            "오류: boxes.json 파일 또는 폴더 경로를 지정하세요 (예: yunhee kbd <폴더> 또는 --boxes <폴더>).",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if check is not None:
+        res = check_manual_md(
+            md_path=check,
+            boxes_paths=target_boxes,
+            defines=defines,
+            fix=fix,
+        )
+        if not res.ok or not isinstance(res.data, dict):
+            typer.secho(f"오류: {res.error}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1)
+
+        if as_json:
+            typer.echo(_json.dumps(res.data, ensure_ascii=False, indent=2))
+        else:
+            typer.echo(render_check_report(res.data))
+
+        if res.data["mismatches"] > 0 and not fix:
+            raise typer.Exit(code=1)
+        return
+
+    res = evaluate_buttons(paths=target_boxes, defines=defines)
+    if not res.ok or not isinstance(res.data, dict):
+        typer.secho(f"오류: {res.error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    if as_json:
+        if res.data.get("used_cache"):
+            typer.secho(
+                f"ℹ A-Man 캐시 사용({res.data.get('cache_date') or '날짜미상'})",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+        typer.echo(_json.dumps(format_kbd_json(res.data), ensure_ascii=False, indent=2))
+    else:
+        typer.echo(render_kbd_markdown(res.data))
 
 
 if __name__ == "__main__":

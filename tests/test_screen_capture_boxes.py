@@ -362,3 +362,83 @@ def test_boxes_viewport_custom():
 
         browser.close()
 
+
+def test_boxes_button_style_extraction():
+    """수정사항 076 A: button / icon-button 요소의 style(bg, fg, icon, fa, class) 수집 검증."""
+    from playwright.sync_api import sync_playwright
+
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        .erp-btn-save { background-color: rgb(15, 127, 144); color: rgb(255, 255, 255); }
+        .erp-btn-view { background-color: #6ab6cf; color: #ffffff; }
+        .transparent-btn { background-color: rgba(0, 0, 0, 0); color: #333333; }
+        .erp-btn-disabled { background-color: #d9d9d9; color: #8c8c8c; }
+      </style>
+    </head>
+    <body>
+      <button class="ant-btn erp-btn erp-btn-mint erp-btn-type-save erp-btn-save">
+        <span class="anticon anticon-check"><svg></svg></span>저장
+      </button>
+      <button class="ant-btn erp-btn erp-btn-type-view erp-btn-view">
+        <span class="anticon anticon-eye"><svg></svg></span>구분추가
+      </button>
+      <button class="ant-btn transparent-btn" aria-label="search">
+        <span class="anticon anticon-plus-square"><svg></svg></span>
+      </button>
+      <button class="ant-btn erp-btn erp-btn-disabled" disabled>
+        <span class="anticon anticon-unknown-xyz"><svg></svg></span>꺼진버튼
+      </button>
+      <input class="ant-input" type="text" value="non-button" />
+    </body>
+    </html>
+    """
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1280, "height": 800})
+        page.set_content(html)
+
+        res = page.evaluate(COLLECT_BOXES_JS, None)
+        by_name = {e["name"]: e for e in res["elements"]}
+
+        save_el = by_name["저장"]
+        assert save_el["kind"] == "button"
+        assert save_el["style"] == {
+            "bg": "0F7F90",
+            "fg": "FFFFFF",
+            "icon": "anticon-check",
+            "fa": "check",
+            "class": ["erp-btn", "erp-btn-mint", "erp-btn-type-save", "erp-btn-save"],
+        }
+
+        view_el = by_name["구분추가"]
+        assert view_el["style"]["bg"] == "6AB6CF"
+        assert view_el["style"]["icon"] == "anticon-eye"
+        assert view_el["style"]["fa"] == "eye"
+
+        icon_el = by_name["search"]
+        assert icon_el["kind"] == "icon-button"
+        assert icon_el["style"]["bg"] is None  # rgba(0,0,0,0) -> null
+        assert icon_el["style"]["fg"] == "333333"
+        assert icon_el["style"]["icon"] == "anticon-plus-square"
+        assert icon_el["style"]["fa"] == "far fa-plus-square"
+        assert icon_el["style"]["class"] == []
+
+        dis_el = by_name["꺼진버튼"]
+        assert dis_el["disabled"] is True
+        assert dis_el["style"]["bg"] == "D9D9D9"
+        assert dis_el["style"]["icon"] == "anticon-unknown-xyz"
+        assert dis_el["style"]["fa"] is None
+
+        # input 등 비버튼 요소에는 style이 없어야 함
+        input_els = [e for e in res["elements"] if e["kind"] == "input"]
+        assert input_els
+        assert "style" not in input_els[0]
+
+        browser.close()
+
+

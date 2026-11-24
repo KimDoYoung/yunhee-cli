@@ -300,6 +300,10 @@ LOG_ACCESS_LOGGER = (
 CAPTURE_BASE_URL = os.getenv("YUNHEE_CAPTURE_URL") or API_BASE_URL
 CAPTURE_OUT_DIR = os.getenv("YUNHEE_CAPTURE_OUT_DIR", ".yunhee/screen-capture")
 
+# A-Man 도움말 시스템 및 버튼 표기 (yunhee kbd) 기본 설정
+AMAN_URL = os.getenv("YUNHEE_AMAN_URL", "http://localhost:8081/aman").strip()
+KBD_ICON_MAP = os.getenv("YUNHEE_KBD_ICON_MAP", "").strip()
+
 
 
 def redact(url: str | None) -> str:
@@ -367,6 +371,8 @@ def summary() -> dict[str, str]:
         ),
         "log-dir": LOG_DIR or "(not set)",
         "log-app": LOG_APP,
+        "aman-url": AMAN_URL or "(not set)",
+        "kbd-icon-map": KBD_ICON_MAP or "(default)",
     }
 
 
@@ -669,6 +675,18 @@ CONFIG_ITEMS: list[ConfigItem] = [
         aliases=["CAPTURE_OUT_DIR", "capture-out-dir", "capture_out_dir"],
         getter=lambda: CAPTURE_OUT_DIR,
         description="화면 캡처 저장 디렉터리",
+    ),
+    ConfigItem(
+        key="YUNHEE_AMAN_URL",
+        aliases=["AMAN_URL", "aman-url", "aman_url"],
+        getter=lambda: AMAN_URL,
+        description="A-Man 도움말 서버 기본 URL (button-defines.json 조회)",
+    ),
+    ConfigItem(
+        key="YUNHEE_KBD_ICON_MAP",
+        aliases=["KBD_ICON_MAP", "kbd-icon-map", "kbd_icon_map"],
+        getter=lambda: KBD_ICON_MAP,
+        description="Ant Design → FontAwesome 아이콘 매핑 오버라이드 JSON 경로",
     ),
 ]
 

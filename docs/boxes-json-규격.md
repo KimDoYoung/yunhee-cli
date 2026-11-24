@@ -81,6 +81,7 @@ yunhee mark 01_initial.png draw.json --out 01_initial-alpha.png
 | `row` | | 그리드 행 번호(1부터). 그리드 요소에만. |
 | `col` | | 그리드 컬럼 헤더 이름. 그리드 요소에만. |
 | `disabled` | | 비활성이면 `true`. 아니면 생략. |
+| `style` | | 버튼 계산 스타일 (`kind`가 `button`·`icon-button`일 때만). `{bg, fg, icon, fa, class}`: `bg`·`fg`는 6자리 대문자 HEX(투명=`null`), `icon`은 `.anticon`의 `anticon-*` 클래스(`null` 가능), `fa`는 FontAwesome 매핑 이름(`null` 가능), `class`는 `erp-btn*` 클래스 배열. |
 
 ## 5. 이름(`name`) 규칙
 
@@ -105,8 +106,8 @@ yunhee mark 01_initial.png draw.json --out 01_initial-alpha.png
 
 | kind | 대상 | 비고 |
 |:---|:---|:---|
-| `button` | 글자가 있는 버튼 (`<Button>`, ColorButtonBar 버튼 포함) | 글자는 `text` |
-| `icon-button` | 아이콘만 있는 버튼(연필·돋보기·달력 등) | |
+| `button` | 글자가 있는 버튼 (`<Button>`, ColorButtonBar 버튼 포함) | 글자는 `text`, 계산 스타일은 `style` |
+| `icon-button` | 아이콘만 있는 버튼(연필·돋보기·달력 등) | 계산 스타일은 `style` |
 | `input` | 입력칸(텍스트·숫자·textarea) | `name`은 앞 라벨 글자 |
 | `select` | 드롭다운 | 〃 |
 | `date` | 날짜 선택칸 | 〃 |

@@ -1795,6 +1795,73 @@ COLLECT_BOXES_JS = r"""
         return txt.replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
     }
 
+    const FA_ICON_MAP = {
+        "anticon-search": "search",
+        "anticon-plus": "plus",
+        "anticon-user-delete": "user-times",
+        "anticon-mail": "envelope",
+        "anticon-calculator": "calculator",
+        "anticon-check": "check",
+        "anticon-plus-square": "far fa-plus-square",
+        "anticon-minus-square": "far fa-minus-square",
+        "anticon-book": "bookmark",
+        "anticon-minus": "minus",
+        "anticon-delete": "trash",
+        "anticon-stop": "ban",
+        "anticon-swap": "exchange-alt",
+        "anticon-upload": "upload",
+        "anticon-download": "download",
+        "anticon-eye": "eye",
+        "anticon-arrow-right": "arrow-right",
+        "anticon-team": "users",
+        "anticon-printer": "print",
+        "anticon-folder-add": "folder-plus",
+        "anticon-undo": "undo-alt",
+        "anticon-edit": "edit",
+        "anticon-aim": "bullseye",
+        "anticon-left-circle": "arrow-alt-circle-left",
+        "anticon-setting": "cog",
+    };
+
+    function cssColorToHex(colorStr) {
+        if (!colorStr || colorStr === "transparent") return null;
+        const m = colorStr.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([0-9.]+))?\s*\)/i);
+        if (!m) return null;
+        if (m[4] !== undefined && parseFloat(m[4]) === 0) return null;
+        const toHex = (v) => Math.max(0, Math.min(255, parseInt(v, 10))).toString(16).padStart(2, '0').toUpperCase();
+        return toHex(m[1]) + toHex(m[2]) + toHex(m[3]);
+    }
+
+    function extractButtonIconClass(btn) {
+        const iconEls = btn.querySelectorAll('.anticon, svg');
+        for (const el of iconEls) {
+            const cls = (typeof el.className === 'string') ? el.className : (el.getAttribute('class') || "");
+            const matches = cls.match(/anticon-[a-z0-9-]+/g);
+            if (matches) {
+                for (const tok of matches) {
+                    if (tok !== 'anticon-spin') return tok;
+                }
+            }
+        }
+        return null;
+    }
+
+    function extractButtonStyle(btn) {
+        const cs = window.getComputedStyle(btn);
+        const bg = cssColorToHex(cs.backgroundColor);
+        const fg = cssColorToHex(cs.color);
+        const icon = extractButtonIconClass(btn);
+        const fa = (icon && Object.prototype.hasOwnProperty.call(FA_ICON_MAP, icon)) ? FA_ICON_MAP[icon] : null;
+        const erpClasses = Array.from(btn.classList || []).filter((c) => c.startsWith('erp-btn'));
+        return {
+            bg: bg,
+            fg: fg,
+            icon: icon,
+            fa: fa,
+            class: erpClasses,
+        };
+    }
+
     // 1. Identify active visible modals
     const modalContentEls = Array.from(document.querySelectorAll('.ant-modal-content')).filter(isVisible);
     const modalMap = new Map();
@@ -1947,6 +2014,8 @@ COLLECT_BOXES_JS = r"""
         const parent = mInfo ? mInfo.name : undefined;
         const disabled = btn.disabled || btn.classList.contains('ant-btn-disabled') || btn.getAttribute('aria-disabled') === 'true';
 
+        const btnStyle = extractButtonStyle(btn);
+
         const isClose = btn.classList.contains('ant-modal-close') || btn.closest('.ant-modal-close');
         if (isClose) {
             rawElements.push({
@@ -1957,6 +2026,7 @@ COLLECT_BOXES_JS = r"""
                 area: area,
                 parent: parent,
                 disabled: disabled,
+                style: btnStyle,
             });
             continue;
         }
@@ -1971,6 +2041,7 @@ COLLECT_BOXES_JS = r"""
                 area: area,
                 parent: parent,
                 disabled: disabled,
+                style: btnStyle,
             });
         } else {
             let iconName = "";
@@ -2002,6 +2073,7 @@ COLLECT_BOXES_JS = r"""
                 area: area,
                 parent: parent,
                 disabled: disabled,
+                style: btnStyle,
             });
         }
     }
@@ -2327,6 +2399,7 @@ COLLECT_BOXES_JS = r"""
         if (item.row !== undefined) outItem.row = item.row;
         if (item.col !== undefined && item.col !== "") outItem.col = item.col;
         if (item.disabled) outItem.disabled = true;
+        if (item.style) outItem.style = item.style;
 
         finalElements.push(outItem);
     }
@@ -2426,6 +2499,13 @@ def capture_screen(
         description: str,
         clip_locator: Any | None = None,
     ) -> None:
+        # 캡처 및 boxes 스타일 수집 전 마우스를 화면 밖으로 옮겨 버튼 hover 색이 찍히지 않도록 방지
+        try:
+            page.mouse.move(0, 0)
+            page.wait_for_timeout(250)
+        except Exception:  # noqa: BLE001, S110
+            pass
+
         img_path = screen_out_dir / filename
         saved = False
         if clip_locator is not None:
@@ -2451,6 +2531,16 @@ def capture_screen(
                         clip_handle = None
 
                 boxes_data = page.evaluate(COLLECT_BOXES_JS, clip_handle)
+                elements = boxes_data.get("elements", [])
+                if config.KBD_ICON_MAP and elements:
+                    from yunhee.tools.kbd import load_icon_map
+
+                    icon_map = load_icon_map()
+                    for el in elements:
+                        st = el.get("style")
+                        if isinstance(st, dict) and st.get("icon"):
+                            st["fa"] = icon_map.get(st["icon"])
+
                 img_w, img_h = get_png_dimensions(img_path)
                 if img_w <= 0 or img_h <= 0:
                     img_w, img_h = boxes_data.get("viewport", [viewport_width, viewport_height])
@@ -2463,7 +2553,7 @@ def capture_screen(
                     "scale": float(boxes_data.get("scale", 1.0)),
                     "origin": boxes_data.get("origin", [0, 0]),
                     "screen": str(screen_id),
-                    "elements": boxes_data.get("elements", []),
+                    "elements": elements,
                 }
                 boxes_path.write_text(
                     json.dumps(boxes_payload, ensure_ascii=False, indent=2),
