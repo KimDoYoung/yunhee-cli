@@ -369,6 +369,11 @@ def read_logs_docker(
     log_tz: str = "UTC",
 ) -> str:
     """Docker 컨테이너 안의 로그 파일을 읽는다."""
+    if not log_dir:
+        raise DockerExecError(
+            f"로그 디렉터리를 찾을 수 없습니다 ({container}, {app}-info.log). "
+            "YUNHEE_LOG_DIR 환경변수나 --dir 옵션으로 로그 경로를 지정하세요."
+        )
     info_file = f"{log_dir}/{app}-info.log"
     error_file = f"{log_dir}/{app}-error.log"
 
@@ -686,6 +691,13 @@ def format_time_pair(dt_log: datetime, log_tz_is_utc: bool) -> str:
 
 
 def find_deploy_time_docker(container: str, log_dir: str, app: str, raise_on_error: bool = True) -> datetime | None:
+    if not log_dir:
+        if raise_on_error:
+            raise DockerExecError(
+                f"로그 디렉터리를 찾을 수 없습니다 ({container}, {app}-info.log). "
+                "YUNHEE_LOG_DIR 환경변수나 --dir 옵션으로 로그 경로를 지정하세요."
+            )
+        return None
     info_file = f"{log_dir}/{app}-info.log"
     cmd = ["docker", "exec", container, "sh", "-c", f"grep -E 'Started \\w+ in [0-9.]+ seconds' '{info_file}' | tail -n 1"]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -1278,9 +1290,9 @@ def _resolve_log_dir_docker(container: str, default_dir: str, app: str) -> str:
     """컨테이너 내부에서 로그 디렉터리를 결정한다 (설정값 우선, 없을 시 마운트/탐색 fallback)."""
     # 1. default_dir 안에 로그 파일이나 디렉터리가 존재하거나 마운트되어 있는지 확인
     check_cmd = (
-        f'if [ -d "{default_dir}" ]; then echo "{default_dir}"; '
+        f'if [ -n "{default_dir}" ] && [ -d "{default_dir}" ]; then echo "{default_dir}"; '
         f'else '
-        f'found=$(find /home /usr/local/tomcat /var/log /tmp -maxdepth 4 -name "{app}-info.log" 2>/dev/null | head -n 1); '
+        f'found=$(find /home /usr/local/tomcat /var/log /tmp /data /logs -maxdepth 6 -name "{app}-info.log" 2>/dev/null | head -n 1); '
         f'if [ -n "$found" ]; then dirname "$found"; else echo "{default_dir}"; fi; '
         f'fi'
     )

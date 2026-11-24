@@ -2,6 +2,11 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [1.1.1] - 2026-11-24
+Docker Tomcat 로그 자동 탐색 보완 (`src/yunhee/tools/log_reader.py`):
+- **`_resolve_log_dir_docker()` 탐색 범위 확장**: `find` 깊이를 `-maxdepth 4` → `-maxdepth 6`으로 확장(`/home/<user>/tmp/asseterp-data/logs/*-info.log` 등 depth 5 경로 탐색 지원)하고, 탐색 루트에 `/data`, `/logs` 추가 및 빈 `default_dir` 체크 보강.
+- **빈 `log_dir` 가드 추가**: `read_logs_docker()`, `find_deploy_time_docker()`에서 `log_dir`이 비어 있을 때 `/AssetERP-backend-info.log` 대신 `YUNHEE_LOG_DIR` / `--dir` 설정 안내 에러를 반환하도록 수정.
+
 ## [1.1.0] - 2026-11-23
 전역 설정 부트스트랩(`yunhee init --global`) 및 설정 로드 보완:
 - **`yunhee init --global` (`-g`, `--force`/`-f`) 추가 (`src/yunhee/project.py`, `src/yunhee/cli.py`)**:

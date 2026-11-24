@@ -515,6 +515,40 @@ def test_resolve_log_source_from_env_and_docker(monkeypatch):
     assert tz_loc == "KST"
 
 
+def test_resolve_log_dir_docker_depth_and_empty_guard(monkeypatch):
+    import subprocess
+
+    captured_cmds = []
+
+    class DummyProc:
+        def __init__(self, stdout="", returncode=0):
+            self.stdout = stdout
+            self.stderr = ""
+            self.returncode = returncode
+
+    def fake_run(cmd, **kwargs):
+        captured_cmds.append(cmd)
+        return DummyProc(stdout="/home/yichun/tmp/asseterp-data/logs\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    resolved = log_reader._resolve_log_dir_docker("dell6820-tomcat", "", "AssetERP-backend")
+    assert resolved == "/home/yichun/tmp/asseterp-data/logs"
+    assert len(captured_cmds) == 1
+    assert "-maxdepth 6" in captured_cmds[0][5]
+    assert '[ -n "" ] && [ -d "" ]' in captured_cmds[0][5]
+
+    # log_dir가 비어 있을 때 루트 경로(/AssetERP-backend-info.log) 대신 명확한 안내 에러 발생
+    with pytest.raises(log_reader.DockerExecError, match="YUNHEE_LOG_DIR"):
+        log_reader.read_logs_docker("dell6820-tomcat", "", "AssetERP-backend")
+
+    with pytest.raises(log_reader.DockerExecError, match="YUNHEE_LOG_DIR"):
+        log_reader.find_deploy_time_docker("dell6820-tomcat", "", "AssetERP-backend", raise_on_error=True)
+
+    assert log_reader.find_deploy_time_docker("dell6820-tomcat", "", "AssetERP-backend", raise_on_error=False) is None
+
+
+
 
 
 
