@@ -2,6 +2,12 @@
 
 버전을 올릴 때 맨 위에 `## [버전] - YYYY-MM-DD` 항목을 추가한다 (`yunhee changelog`가 이 파일을 읽는다).
 
+## [1.1.5] - 2026-11-25
+`test-insert-data` 상시 가명화(매뉴얼 유출 방지용 살짝 바꾸기) 및 JOIN 마스터 FK 재매핑 적용 (`src/yunhee/tools/biz/testdata.py`, `src/yunhee/cli.py`):
+- **상시 가명화 적용 (`pseudonymize_text`)**: 기존 `[TEST-...]` 접두사 방식 제거. 가상임이 명백한 가명 풀(`샘플`, `예시`, `데모`, `가나다`, `ABC`, `견본`, `가상`, `임시` 등)을 행마다 순환 적용해, `sys01_company` 실제 고객사명 전면 치환 및 금융·업무 공통 키워드 앞 고유명사만 살짝 교체(예: `엘엔에스전문투자형사모투자신탁 제1호` → `샘플전문투자형사모투자신탁 제1호`).
+- **식별번호·금액 변형 (`pseudonymize_identifier`, `pseudonymize_numeric`)**: 사업자/법인/계좌/전화번호·이메일·주소는 원본 포맷 유지 더미화, 금액·수량·비율은 자릿수 유지 라운드 값으로 변형.
+- **JOIN 마스터 FK 재매핑 및 경고**: 타 회사 샘플 복제 시 `*_company_id`를 가진 부모 FK를 현재 회사 소속 ID로 자동 재매핑하고, 불가 시 CLI에 경고 출력.
+
 ## [1.1.4] - 2026-11-24
 수정사항 078 반영 — `yunhee kbd` 마크다운 표에서 `아이콘없음` 버튼의 `⚠anticon-xxx` 중복 출력 제거 (`src/yunhee/tools/kbd.py`):
 - 판정 칸(`verdict_display`)에는 `⚠꺼짐`만 표시하고 `⚠anticon-xxx`는 표기 칸에만 1회 출력되도록 정리(`--json`·`--check`·`--fix` 동작 불변).

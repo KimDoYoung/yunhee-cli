@@ -4233,6 +4233,10 @@ def test_insert_data_cmd(
         )
         typer.echo(f"  - {op['table']}: {op['row_count']}건 INSERT (pk: {pk_preview})")
 
+    if d.get("warnings"):
+        for warn_msg in d["warnings"]:
+            typer.secho(f"⚠ {warn_msg}", fg=typer.colors.YELLOW)
+
     if d.get("api_verification"):
         typer.secho(f"✅ 화면 조회 검증: {d['api_verification']}", fg=typer.colors.GREEN)
 

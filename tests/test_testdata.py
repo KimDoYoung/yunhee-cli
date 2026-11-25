@@ -21,6 +21,9 @@ from yunhee.tools.biz.testdata import (
     insert_test_data,
     list_test_transactions,
     parse_login_spec,
+    pseudonymize_identifier,
+    pseudonymize_numeric,
+    pseudonymize_text,
     rollback_test_data,
     synthesize_table_rows,
 )
@@ -129,8 +132,116 @@ def test_synthesize_table_rows_clone_and_mutate() -> None:
     assert rows[0]["ast01_std_dt"] == "20261116"
     assert rows[1]["ast01_std_dt"] == "20261114"
     assert rows[0]["ast01_del_yn"] == "N"
-    assert rows[0]["ast01_asset_nm"].startswith("[TEST-1234-1]")
-    assert rows[0]["ast01_amt"] == 500000
+    # 상시 가명화 적용: [TEST-...] 대신 가상임이 명백한 가명으로 살짝 치환
+    assert rows[0]["ast01_asset_nm"] == "샘플자산명"
+    assert rows[1]["ast01_asset_nm"] == "예시자산명"
+    # 금액은 자릿수(6자리)를 유지하면서 깔끔한 라운드 금액으로 변형
+    assert rows[0]["ast01_amt"] == 100000
+    assert rows[1]["ast01_amt"] == 200000
+
+
+def test_pseudonymize_text_subtle_replacement() -> None:
+    """펀드명·법인명·인명·영문·회사명 포함 텍스트가 구조는 유지하되 확실한 가명으로 치환되는지 검증."""
+    # 금융/업무 키워드 앞 고유명사 살짝 바꾸기
+    assert (
+        pseudonymize_text("엘엔에스전문투자형사모투자신탁 제1호(부동산)_제2종", 0)
+        == "샘플전문투자형사모투자신탁 제1호(부동산)_제2종"
+    )
+    assert (
+        pseudonymize_text("엘엔에스전문투자형사모투자신탁 제1호(부동산)_제2종", 1)
+        == "예시전문투자형사모투자신탁 제1호(부동산)_제2종"
+    )
+
+    # 법인 표기((주), 주식회사) 보존 + 고유명사 교체
+    assert pseudonymize_text("(주)미래에셋부동산", 2) == "(주)데모부동산"
+    assert pseudonymize_text("주식회사 에이비씨자산운용", 3) == "주식회사 가나다자산운용"
+
+    # DB 실제 고객사명 사전 우선 치환 (중간 등장 포함)
+    assert (
+        pseudonymize_text("2026년 엘엔에스 정기 리포트", 0, company_names=["엘엔에스"])
+        == "2026년 샘플 정기 리포트"
+    )
+
+    # 사람 이름 / 영문 명칭 / 일반 문장
+    assert pseudonymize_text("김실명", 0, col_name="emp01_emp_nm") == "홍길동"
+    assert pseudonymize_text("박실명", 1, col_name="ast01_mngr_nm") == "김샘플"
+    assert pseudonymize_text("LNS Global Fund 1", 0, col_name="fnd01_eng_nm") == "Sample Global Fund 1"
+    assert pseudonymize_text("강남빌딩 매입 검토", 1, col_name="ast01_title") == "예시빌딩 매입 검토"
+    assert pseudonymize_text("신규 거래처 승인 요청", 1, col_name="ast01_title") == "예시 거래처 승인 요청"
+
+
+def test_pseudonymize_identifier_and_numeric() -> None:
+    """식별번호 포맷 유지 더미화 및 금액·수량·비율 변형 검증."""
+    assert pseudonymize_identifier("crm01_biz_no", "211-86-12345", 0) == "123-45-00001"
+    assert pseudonymize_identifier("crm01_biz_no", "2118612345", 0) == "1234500001"
+    assert pseudonymize_identifier("crm01_tel_no", "02-3456-7890", 1) == "02-0000-0002"
+    assert pseudonymize_identifier("emp01_hp_no", "010-1234-5678", 0) == "010-0000-0001"
+    assert pseudonymize_identifier("emp01_email_addr", "real@company.co.kr", 0) == "sample1@example.com"
+    assert pseudonymize_identifier("crm01_acct_no", "110-123-456789", 0) == "100-000-000001"
+    assert pseudonymize_identifier("crm01_addr1", "서울시 강남구 테헤란로 999", 0) == "서울특별시 영등포구 샘플로 100"
+
+    assert pseudonymize_numeric("fnd01_eval_amt", 12345670000, 0, "numeric") == 10000000000
+    assert pseudonymize_numeric("fnd01_eval_amt", Decimal(0), 0, "numeric") == Decimal(0)
+    assert pseudonymize_numeric("ast01_qty", 55, 1, "integer") == 20
+    assert pseudonymize_numeric("fnd01_yield_rate", Decimal("7.42"), 0, "numeric") == Decimal("1.5")
+
+
+def test_synthesize_fk_remap_and_warning() -> None:
+    """타 회사 샘플 복제 시 부모 FK가 현재 회사 소속 ID로 재매핑되고, 없으면 경고가 기록되는지 검증."""
+    meta = TableMeta(
+        name="ast01_asset",
+        columns=[
+            ColumnMeta("ast01_asset_id", "bigint", "int8", None, False, None, is_pk=True),
+            ColumnMeta("ast01_company_id", "bigint", "int8", None, False, None),
+            ColumnMeta("ast01_fund_id", "bigint", "int8", None, True, None),
+            ColumnMeta("ast01_cust_id", "bigint", "int8", None, True, None),
+        ],
+        pk_cols=["ast01_asset_id"],
+        fk_map={
+            "ast01_fund_id": ("fnd01_fund", "fnd01_fund_id"),
+            "ast01_cust_id": ("crm01_cust", "crm01_cust_id"),
+        },
+    )
+    ctx = LoginContext(
+        raw="kfstest-121-1111",
+        company_cd="kfstest",
+        user="121",
+        password="1111",
+        company_id=1004,
+        emp_id=5021,
+        emp_no="121",
+        org_id=3012,
+        today=date(2026, 11, 17),
+    )
+    sample_rows = [
+        {"ast01_asset_id": 1, "ast01_company_id": 28000, "ast01_fund_id": 777, "ast01_cust_id": 888}
+    ]
+    warnings: list[str] = []
+
+    def _fake_lookup(_conn: Any, ptbl: str, _ppk: str, _cid: int, _cache: Any) -> tuple[bool, list[Any]]:
+        if ptbl == "fnd01_fund":
+            return (True, [555])
+        return (True, [])
+
+    with (
+        patch("yunhee.tools.biz.testdata._fetch_sample_rows", return_value=sample_rows),
+        patch("yunhee.tools.biz.testdata._allocate_next_numeric_pk", return_value=[900001]),
+        patch("yunhee.tools.biz.testdata._lookup_company_parent_ids", side_effect=_fake_lookup),
+    ):
+        rows = synthesize_table_rows(
+            conn=MagicMock(),
+            meta=meta,
+            ctx=ctx,
+            screen_no="1234",
+            count=1,
+            company_names=[],
+            warnings=warnings,
+        )
+
+    assert rows[0]["ast01_fund_id"] == 555
+    assert rows[0]["ast01_cust_id"] == 888
+    assert len(warnings) == 1
+    assert "crm01_cust" in warnings[0]
 
 
 def test_insert_and_rollback_cycle(tmp_path: Path) -> None:

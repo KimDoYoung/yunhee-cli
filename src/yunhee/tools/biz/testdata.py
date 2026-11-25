@@ -16,6 +16,7 @@ import json
 import os
 import re
 import secrets
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -63,6 +64,155 @@ CROSS_DOMAIN_MASTER_TABLES: frozenset[str] = frozenset(
         "org02_org_tree",
     }
 )
+
+# 매뉴얼·테스트 겸용 상시 가명 풀 (실제 회사/펀드명과 겹치지 않는 가상임이 명백한 단어만 사용)
+PSEUDO_KO_POOL: tuple[str, ...] = (
+    "샘플",
+    "예시",
+    "데모",
+    "가나다",
+    "ABC",
+    "견본",
+    "가상",
+    "임시",
+    "예제",
+    "모의",
+    "알파",
+    "베타",
+    "모모",
+    "테스트",
+    "XYZ",
+    "XX",
+)
+
+PSEUDO_EN_POOL: tuple[str, ...] = (
+    "Sample",
+    "Demo",
+    "Example",
+    "ABC",
+    "XYZ",
+    "Alpha",
+    "Beta",
+    "Test",
+)
+
+PSEUDO_PERSON_POOL: tuple[str, ...] = (
+    "홍길동",
+    "김샘플",
+    "이예시",
+    "박데모",
+    "최가상",
+    "정임시",
+    "김철수",
+    "이영희",
+)
+
+# 금융/업무 공통 키워드 (길이 내림차순으로 매칭해 앞부분 고유명사만 가명으로 치환)
+_DOMAIN_KEYWORDS: tuple[str, ...] = tuple(
+    sorted(
+        (
+            "전문투자형사모투자신탁",
+            "일반사모투자신탁",
+            "전문투자형",
+            "일반사모",
+            "사모투자신탁",
+            "사모투자",
+            "투자신탁",
+            "투자자산운용",
+            "자산운용",
+            "투자증권",
+            "투자회사",
+            "부동산신탁",
+            "부동산",
+            "특별자산",
+            "혼합자산",
+            "인베스트먼트",
+            "파트너스",
+            "캐피탈",
+            "홀딩스",
+            "어드바이저스",
+            "자산관리",
+            "펀드",
+            "신탁",
+            "투자",
+            "증권",
+            "운용",
+            "조합",
+            "빌딩",
+            "타워",
+            "센터",
+            "프로젝트",
+            "계약",
+            "제1호",
+            "제2호",
+            "제3호",
+            "1호",
+            "2호",
+            "3호",
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+
+_CORP_PREFIX_RE = re.compile(
+    r"^(?P<corp>(?:\(주\)|㈜|\(유\)|주식회사\s*|유한회사\s*|\(사\)|\(재\)|\[[^\]]+\]\s*))(?P<rest>.*)$"
+)
+_HANGUL_RE = re.compile(r"[가-힣]")
+_LEADING_EN_WORD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9&._-]*")
+_LEADING_HANGUL_BEFORE_NUM_RE = re.compile(r"^[가-힣A-Za-z]{2,6}(?=\d|제\d|호|차|\()")
+
+_PERSON_NAME_SUFFIXES: tuple[str, ...] = (
+    "_emp_nm",
+    "_person_nm",
+    "_user_nm",
+    "_ceo_nm",
+    "_mngr_nm",
+    "_writer_nm",
+    "_reg_nm",
+    "_mod_nm",
+    "_owner_nm",
+    "_repr_nm",
+    "_chrg_nm",
+    "_appr_nm",
+    "_req_nm",
+)
+
+_TEXT_NAME_SUFFIXES: tuple[str, ...] = (
+    "_nm",
+    "_name",
+    "_title",
+    "_title_text",
+    "_subj",
+    "_subject",
+    "_rmk",
+    "_remark",
+    "_note",
+    "_desc",
+    "_memo",
+    "_reason",
+    "_content",
+    "_contents",
+    "_summary",
+)
+
+_AMOUNT_SUFFIXES: tuple[str, ...] = (
+    "_amt",
+    "_amount",
+    "_bal",
+    "_balance",
+    "_cost",
+    "_fee",
+    "_tax",
+    "_price",
+    "_eval_amt",
+    "_book_amt",
+    "_acq_amt",
+    "_settle_amt",
+)
+
+_QTY_SUFFIXES: tuple[str, ...] = ("_qty", "_cnt", "_count", "_vol", "_volume")
+_RATE_SUFFIXES: tuple[str, ...] = ("_rate", "_ratio", "_pct", "_rt")
 
 
 @dataclass
@@ -642,6 +792,325 @@ def _json_default(obj: Any) -> Any:
     return str(obj)
 
 
+def _fetch_company_names(conn: psycopg.Connection) -> list[str]:
+    """sys01_company에 등록된 실제 고객사명/약칭 목록을 길이 내림차순으로 조회한다."""
+    names: set[str] = set()
+    try:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'sys01_company'
+                  AND data_type IN ('character varying', 'character', 'text');
+                """
+            )
+            col_rows = cur.fetchall()
+            target_cols = [
+                r["column_name"]
+                for r in col_rows
+                if isinstance(r, dict)
+                and isinstance(r.get("column_name"), str)
+                and any(k in r["column_name"].lower() for k in ("nm", "name", "loc"))
+            ]
+            if not target_cols:
+                return []
+
+            cols_sql = ", ".join(f'"{c}"' for c in target_cols)
+            cur.execute(f"SELECT {cols_sql} FROM sys01_company;")
+            for row in cur.fetchall():
+                if not isinstance(row, dict):
+                    continue
+                for val in row.values():
+                    if not isinstance(val, str):
+                        continue
+                    cleaned = val.strip()
+                    if len(cleaned) < 2:
+                        continue
+                    names.add(cleaned)
+                    # 법인 표기 및 금융 접미어를 떼어낸 브랜드 코어도 함께 수집
+                    core = _CORP_PREFIX_RE.sub(lambda m: m.group("rest"), cleaned).strip()
+                    for kw in ("투자자산운용", "자산운용", "투자증권", "인베스트먼트", "파트너스", "캐피탈", "홀딩스"):
+                        if core.endswith(kw) and len(core) > len(kw) + 1:
+                            names.add(core[: -len(kw)].strip())
+                    if len(core) >= 2:
+                        names.add(core)
+    except Exception:  # noqa: BLE001
+        return []
+
+    pseudo_lower = {p.lower() for p in PSEUDO_KO_POOL + PSEUDO_EN_POOL}
+    filtered = [n for n in names if len(n) >= 2 and n.lower() not in pseudo_lower]
+    filtered.sort(key=len, reverse=True)
+    return filtered
+
+
+def _is_person_name_col(col_name: str) -> bool:
+    clower = col_name.lower()
+    if clower.endswith(_PERSON_NAME_SUFFIXES):
+        return True
+    return clower in ("emp_nm", "person_nm", "user_nm", "ceo_nm", "mngr_nm", "writer_nm")
+
+
+def _is_english_name_col(col_name: str) -> bool:
+    clower = col_name.lower()
+    return any(k in clower for k in ("_eng_", "_en_")) or clower.endswith(("_eng_nm", "_en_nm"))
+
+
+def pseudonymize_text(
+    orig: str,
+    idx: int,
+    *,
+    col_name: str = "",
+    company_names: Sequence[str] = (),
+    max_length: int | None = None,
+) -> str:
+    """원본 텍스트의 업무 구조는 살리면서 고유명사/앞부분만 가상임이 명백한 가명으로 살짝 치환한다."""
+    tag_ko = PSEUDO_KO_POOL[idx % len(PSEUDO_KO_POOL)]
+    tag_en = PSEUDO_EN_POOL[idx % len(PSEUDO_EN_POOL)]
+    person_nm = PSEUDO_PERSON_POOL[idx % len(PSEUDO_PERSON_POOL)]
+
+    if _is_person_name_col(col_name):
+        if _is_english_name_col(col_name):
+            return _truncate_str(f"{tag_en} User {idx + 1}", max_length)
+        return _truncate_str(person_nm, max_length)
+
+    text = orig.strip()
+    is_en_col = _is_english_name_col(col_name)
+
+    if not text:
+        fallback = f"{tag_en} Item {idx + 1}" if is_en_col else f"{tag_ko} 항목 {idx + 1}"
+        return _truncate_str(fallback, max_length)
+
+    # 1순위: DB에 등록된 실제 고객사명/약칭이 문자열 어디에 있든 가명으로 치환
+    replaced_company = False
+    is_en_text = is_en_col or (not _HANGUL_RE.search(text) and bool(re.search(r"[A-Za-z]", text)))
+    repl_tag = tag_en if is_en_text else tag_ko
+
+    for comp_nm in company_names:
+        if len(comp_nm) < 2:
+            continue
+        pattern = re.compile(re.escape(comp_nm), re.IGNORECASE)
+        if pattern.search(text):
+            text = pattern.sub(repl_tag, text)
+            replaced_company = True
+
+    # 이미 가명 풀 단어로 시작하고 회사명 치환도 끝났다면 그대로 유지
+    all_tags = PSEUDO_KO_POOL + PSEUDO_EN_POOL
+    m_corp = _CORP_PREFIX_RE.match(text)
+    corp_prefix = m_corp.group("corp") if m_corp else ""
+    rest = m_corp.group("rest").strip() if m_corp else text
+
+    if any(rest.startswith(t) for t in all_tags):
+        return _truncate_str(f"{corp_prefix}{rest}", max_length)
+
+    # 2순위: 영문 명칭/문장 — 첫 영문 단어를 영문 가명으로 교체
+    if is_en_text:
+        if not replaced_company:
+            if _LEADING_EN_WORD_RE.match(rest):
+                rest = _LEADING_EN_WORD_RE.sub(tag_en, rest, count=1)
+            else:
+                rest = f"{tag_en} {rest}"
+        return _truncate_str(f"{corp_prefix}{rest}", max_length)
+
+    # 3순위: 한글 금융/업무 공통 키워드 앞부분(고유명사)만 가명으로 살짝 교체
+    # 예: '엘엔에스전문투자형사모투자신탁 제1호(부동산)_제2종' -> '샘플전문투자형사모투자신탁 제1호(부동산)_제2종'
+    best_pos: int | None = None
+    for kw in _DOMAIN_KEYWORDS:
+        pos = rest.find(kw)
+        if pos > 0 and (best_pos is None or pos < best_pos):
+            best_pos = pos
+
+    if best_pos is not None:
+        had_space = rest[best_pos - 1].isspace()
+        sep = " " if had_space else ""
+        result = f"{corp_prefix}{tag_ko}{sep}{rest[best_pos:]}"
+        return _truncate_str(result, max_length)
+
+    # 4순위: 일반 한글/혼합 문자열 살짝 바꾸기
+    if not replaced_company:
+        tokens = rest.split()
+        if len(tokens) >= 2:
+            rest = " ".join([tag_ko, *tokens[1:]])
+        else:
+            m_lead = _LEADING_HANGUL_BEFORE_NUM_RE.match(rest)
+            if m_lead:
+                rest = f"{tag_ko}{rest[m_lead.end():]}"
+            elif len(rest) >= 4:
+                cut = 2 if len(rest) <= 5 else 3
+                rest = f"{tag_ko}{rest[cut:]}"
+            else:
+                rest = f"{tag_ko}{idx + 1}"
+
+    return _truncate_str(f"{corp_prefix}{rest}", max_length)
+
+
+def pseudonymize_identifier(
+    col_name: str,
+    orig: Any,
+    idx: int,
+    max_length: int | None = None,
+) -> str | None:
+    """전화번호·계좌번호·사업자번호·이메일·주소 등 민감 식별 컬럼이면 포맷을 유지한 더미 값으로 치환한다."""
+    clower = col_name.lower()
+    orig_str = str(orig or "").strip()
+    has_hyphen = "-" in orig_str
+
+    if clower.endswith(("_email", "_email_addr", "_mail", "_mail_addr")) or clower in ("email", "email_addr"):
+        return _truncate_str(f"sample{idx + 1}@example.com", max_length)
+
+    if clower.endswith(("_url", "_homepage", "_home_url", "_web_url")) or clower in ("url", "homepage"):
+        return _truncate_str(f"https://sample{idx + 1}.example.com", max_length)
+
+    if clower.endswith(("_zip", "_zip_cd", "_zip_no", "_post_no", "_post_cd")):
+        return _truncate_str(f"0730{idx + 1}", max_length)
+
+    if clower.endswith(("_addr2", "_dtl_addr", "_detail_addr", "_addr_dtl")):
+        return _truncate_str(f"샘플빌딩 {idx + 1}층", max_length)
+    if clower.endswith(("_addr", "_addr1", "_address")) or clower in ("addr", "address"):
+        return _truncate_str(f"서울특별시 영등포구 샘플로 {100 + idx}", max_length)
+
+    if (
+        clower.endswith(("_hp", "_hp_no", "_mobile", "_mobile_no", "_cell_no")) or orig_str.startswith("010")
+    ) and any(k in clower for k in ("_tel", "_hp", "_phone", "_mobile", "_cell", "_fax")):
+        val = f"010-0000-{idx + 1:04d}" if (has_hyphen or not orig_str) else f"0100000{idx + 1:04d}"
+        return _truncate_str(val, max_length)
+
+    if clower.endswith(("_tel", "_tel_no", "_phone", "_phone_no", "_fax", "_fax_no")) or clower in (
+        "tel",
+        "tel_no",
+        "phone",
+        "fax",
+    ):
+        val = f"02-0000-{idx + 1:04d}" if (has_hyphen or not orig_str) else f"020000{idx + 1:04d}"
+        return _truncate_str(val, max_length)
+
+    if clower.endswith(("_biz_no", "_saup_no", "_bsn_no", "_bizno", "_business_no")):
+        val = f"123-45-{idx + 1:05d}" if (has_hyphen or not orig_str) else f"12345{idx + 1:05d}"
+        return _truncate_str(val, max_length)
+
+    if clower.endswith(("_corp_no", "_corp_reg_no", "_jumin_no", "_res_no", "_rrn", "_ssn")):
+        val = f"110111-{idx + 1:07d}" if (has_hyphen or not orig_str) else f"110111{idx + 1:07d}"
+        return _truncate_str(val, max_length)
+
+    if clower.endswith(("_acct_no", "_acc_no", "_account_no", "_bank_acct", "_bank_acct_no")):
+        val = f"100-000-{idx + 1:06d}" if (has_hyphen or not orig_str) else f"100000{idx + 1:06d}"
+        return _truncate_str(val, max_length)
+
+    return None
+
+
+def pseudonymize_numeric(
+    col_name: str,
+    orig: Any,
+    idx: int,
+    dtype: str,
+) -> int | float | Decimal | None:
+    """금액·수량·비율 컬럼의 실제 규모 유추를 막기 위해 자릿수만 비슷하게 유지한 깔끔한 라운드 값으로 변형한다."""
+    clower = col_name.lower()
+    is_amt = clower.endswith(_AMOUNT_SUFFIXES) or clower in ("amt", "amount", "price", "balance")
+    is_qty = clower.endswith(_QTY_SUFFIXES) or clower in ("qty", "cnt", "count")
+    is_rate = clower.endswith(_RATE_SUFFIXES) or clower in ("rate", "ratio")
+
+    if not (is_amt or is_qty or is_rate):
+        return None
+
+    is_int_type = dtype in ("integer", "bigint", "smallint")
+    is_decimal = isinstance(orig, Decimal)
+
+    if orig is not None:
+        try:
+            num = float(orig)
+        except (TypeError, ValueError):
+            num = 0.0
+        if num == 0:
+            return 0 if is_int_type else (Decimal(0) if is_decimal else 0)
+        sign = -1 if num < 0 else 1
+        abs_num = abs(num)
+    else:
+        sign = 1
+        abs_num = 0.0
+
+    if is_rate:
+        val = round(1.5 + (idx % 7) * 1.0, 2) * sign
+        if is_int_type:
+            return round(val)
+        return Decimal(str(val)) if is_decimal else val
+
+    if is_qty:
+        if abs_num >= 1000:
+            base = 10 ** max(2, len(str(int(abs_num))) - 1)
+            q_val = sign * base * ((idx % 5) + 1)
+        else:
+            q_val = sign * 10 * ((idx % 9) + 1)
+        return Decimal(q_val) if is_decimal else q_val
+
+    # is_amt: 원본 자릿수(규모감)를 비슷하게 유지하되 깔끔한 라운드 금액으로 치환
+    if abs_num >= 10:
+        digits = len(str(int(abs_num)))
+        unit = 10 ** max(3, digits - 1)
+        a_val = sign * unit * ((idx % 5) + 1)
+    else:
+        a_val = sign * 1_000_000 * ((idx % 5) + 1)
+    return Decimal(a_val) if is_decimal else a_val
+
+
+def _lookup_company_parent_ids(
+    conn: psycopg.Connection,
+    parent_table: str,
+    parent_pk: str,
+    company_id: int,
+    cache: dict[tuple[str, str], tuple[bool, list[Any]]],
+) -> tuple[bool, list[Any]]:
+    """부모 테이블이 회사 ID 컬럼을 가지면 현재 회사 소속 PK 목록을 조회해 반환한다.
+
+    Returns:
+        (has_company_col, pk_values)
+    """
+    key = (parent_table, parent_pk)
+    if key in cache:
+        return cache[key]
+
+    try:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = %s;
+                """,
+                (parent_table,),
+            )
+            cols = [
+                r["column_name"]
+                for r in cur.fetchall()
+                if isinstance(r, dict) and isinstance(r.get("column_name"), str)
+            ]
+            comp_cols = [
+                c for c in cols if c.endswith(("_company_id", "_comp_id")) or c in ("company_id", "comp_id")
+            ]
+            if not comp_cols:
+                cache[key] = (False, [])
+                return cache[key]
+
+            comp_col = comp_cols[0]
+            cur.execute(
+                f'SELECT "{parent_pk}" FROM "{parent_table}" WHERE "{comp_col}" = %s ORDER BY "{parent_pk}" DESC LIMIT 5;',
+                (company_id,),
+            )
+            vals = [
+                r[parent_pk]
+                for r in cur.fetchall()
+                if isinstance(r, dict) and r.get(parent_pk) is not None
+            ]
+            cache[key] = (True, vals)
+            return cache[key]
+    except Exception:  # noqa: BLE001
+        cache[key] = (False, [])
+        return cache[key]
+
+
 def synthesize_table_rows(
     conn: psycopg.Connection,
     meta: TableMeta,
@@ -649,10 +1118,15 @@ def synthesize_table_rows(
     screen_no: str,
     count: int = 3,
     parent_inserted_pks: dict[str, list[Any]] | None = None,
+    company_names: Sequence[str] | None = None,
+    warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Clone & Mutate(1순위) 및 스키마 합성(2순위) 전략으로 삽입할 행 데이터를 생성한다."""
+    """Clone & Mutate(1순위) 및 스키마 합성(2순위) 전략으로 삽입할 행 데이터를 생성하며, 항상 가명화를 적용한다."""
     samples = _fetch_sample_rows(conn, meta, ctx.company_id, limit=max(count, 5))
     parent_inserted_pks = parent_inserted_pks or {}
+    comp_names = list(company_names) if company_names is not None else _fetch_company_names(conn)
+    fk_parent_cache: dict[tuple[str, str], tuple[bool, list[Any]]] = {}
+    warned_fks: set[str] = set()
 
     # PK가 단일 숫자형 컬럼인지 확인
     numeric_pk_values: dict[str, list[int]] = {}
@@ -672,14 +1146,16 @@ def synthesize_table_rows(
             cname = col.name
             clower = cname.lower()
             dtype = col.data_type.lower()
+            is_str_type = dtype in ("character varying", "varchar", "character", "char", "text")
+            is_num_type = dtype in ("integer", "bigint", "smallint", "numeric", "decimal", "real", "double precision")
 
-            # 0. GENERATED ALWAYS 컬럼이나 serial/nextval은 수동 지정 또는 생략 판단
+            # 0. PK 컬럼
             if col.is_pk:
                 if cname in numeric_pk_values:
                     new_row[cname] = numeric_pk_values[cname][idx]
                 else:
                     # 문자열 PK
-                    candidate = f"T{screen_no}_{short_tag}_{idx + 1}"
+                    candidate = f"S{screen_no}_{short_tag}_{idx + 1}"
                     new_row[cname] = _truncate_str(candidate, col.max_length)
                 continue
 
@@ -711,7 +1187,7 @@ def synthesize_table_rows(
                 new_row[cname] = _truncate_str(ctx.company_cd, col.max_length)
                 continue
 
-            # 3. 사원 ID / 등록자 / 담당자 / 사번 치환
+            # 3. 사원 ID / 등록자 / 담당자 / 사번 치환 (텍스트 이름·이메일은 아래 가명화 단계에서 처리)
             if (
                 (
                     clower.endswith(
@@ -736,12 +1212,6 @@ def synthesize_table_rows(
                 continue
             if clower.endswith("_emp_no") or clower == "emp_no":
                 new_row[cname] = _truncate_str(ctx.emp_no, col.max_length)
-                continue
-            if clower.endswith(("_emp_nm", "_writer_nm", "_reg_nm")) and ctx.emp_nm:
-                new_row[cname] = _truncate_str(ctx.emp_nm, col.max_length)
-                continue
-            if clower.endswith(("_sender_email", "_email_addr")) and ctx.emp_email:
-                new_row[cname] = _truncate_str(ctx.emp_email, col.max_length)
                 continue
 
             # 4. 부서 / 조직 ID 치환
@@ -783,7 +1253,7 @@ def synthesize_table_rows(
             if "timestamp" in dtype:
                 new_row[cname] = datetime.datetime.combine(target_date, datetime.time(9, 0, 0))
                 continue
-            if dtype in ("character varying", "varchar", "character", "char", "text"):
+            if is_str_type:
                 sample_val = str(base_row.get(cname) or "")
                 if (
                     clower.endswith(("_dt", "_date", "_ymd")) or re.fullmatch(r"20\d{6}", sample_val)
@@ -799,39 +1269,90 @@ def synthesize_table_rows(
                 ) and (col.max_length is None or col.max_length >= 6):
                     new_row[cname] = target_date.strftime("%Y%m")
                     continue
-                if clower.endswith(("_year", "_yyyy", "_yy")) and (col.max_length == 4 or re.fullmatch(r"20\d{2}", sample_val)):
+                if clower.endswith(("_year", "_yyyy", "_yy")) and (
+                    col.max_length == 4 or re.fullmatch(r"20\d{2}", sample_val)
+                ):
                     new_row[cname] = target_date.strftime("%Y")
                     continue
 
-            # 7. 제목/명칭/비고 컬럼에 테스트 데이터 식별 표시 추가
-            if dtype in ("character varying", "varchar", "character", "char", "text") and clower.endswith(
-                ("_nm", "_title", "_title_text", "_subj", "_rmk", "_note", "_desc", "_memo", "_reason", "_content")
-            ):
-                orig = str(base_row.get(cname) or "").strip()
-                prefix = f"[TEST-{screen_no}-{idx + 1}]"
-                if orig and not orig.startswith("[TEST"):
-                    candidate = f"{prefix} {orig}"
+            # 7. 민감 식별번호·이메일·전화·주소 컬럼 더미 치환 (원본 포맷 유지)
+            if is_str_type and (cname in base_row or not col.is_nullable):
+                ident_val = pseudonymize_identifier(cname, base_row.get(cname), idx, col.max_length)
+                if ident_val is not None:
+                    # 원본이 NULL이고 nullable 컬럼이면 NULL 유지
+                    if cname in base_row and base_row[cname] is None and col.is_nullable:
+                        new_row[cname] = None
+                    else:
+                        new_row[cname] = ident_val
+                    continue
+
+            # 8. 제목/명칭/비고/인명 컬럼 상시 가명화 (원본 구조 유지 + 고유명사만 살짝 교체)
+            if is_str_type and (clower.endswith(_TEXT_NAME_SUFFIXES) or _is_person_name_col(cname)):
+                orig_raw = base_row.get(cname)
+                if cname in base_row and orig_raw is None and col.is_nullable:
+                    new_row[cname] = None
                 else:
-                    candidate = f"{prefix} 테스트데이터"
-                new_row[cname] = _truncate_str(candidate, col.max_length)
+                    new_row[cname] = pseudonymize_text(
+                        str(orig_raw or ""),
+                        idx,
+                        col_name=cname,
+                        company_names=comp_names,
+                        max_length=col.max_length,
+                    )
                 continue
 
-            # 8. Unique 제약이 걸린 컬럼은 행마다 고유값 변형
+            # 9. 금액/수량/비율 컬럼 자릿수 유지 라운드 변형
+            if is_num_type and (cname in base_row or not col.is_nullable):
+                orig_num = base_row.get(cname)
+                if cname in base_row and orig_num is None and col.is_nullable:
+                    new_row[cname] = None
+                else:
+                    p_num = pseudonymize_numeric(cname, orig_num, idx, dtype)
+                    if p_num is not None:
+                        new_row[cname] = p_num
+                        continue
+
+            # 10. Unique 제약이 걸린 컬럼은 행마다 고유값 변형
             if cname in meta.unique_cols:
-                if dtype in ("character varying", "varchar", "character", "char", "text"):
-                    u_val = f"T{screen_no}_{short_tag}_{idx + 1}"
+                if is_str_type:
+                    u_val = f"S{screen_no}_{short_tag}_{idx + 1}"
                     new_row[cname] = _truncate_str(u_val, col.max_length)
                     continue
                 if dtype in ("integer", "bigint", "smallint", "numeric"):
                     new_row[cname] = 90000 + idx + 1
                     continue
 
-            # 9. 기존 샘플 행에 값이 있으면 그대로 계승
+            # 11. 타 회사 마스터를 가리킬 수 있는 FK 컬럼은 현재 회사 소속 부모 ID로 자동 재매핑
+            if cname in meta.fk_map and base_row.get(cname) is not None:
+                ptbl, ppk = meta.fk_map[cname]
+                if ptbl not in SYSTEM_MASTER_TABLES:
+                    has_comp_col, comp_parent_ids = _lookup_company_parent_ids(
+                        conn, ptbl, ppk, ctx.company_id, fk_parent_cache
+                    )
+                    if has_comp_col:
+                        if comp_parent_ids:
+                            new_row[cname] = comp_parent_ids[idx % len(comp_parent_ids)]
+                            continue
+                        if warnings is not None and cname not in warned_fks:
+                            warned_fks.add(cname)
+                            warnings.append(
+                                f"{meta.name}.{cname} → 부모 테이블({ptbl})에 현재 회사({ctx.company_cd}) "
+                                f"데이터가 없어 원본 참조를 유지했습니다 (실제 마스터 명칭 노출 주의)."
+                            )
+
+            # 12. 기존 샘플 행에 값이 있으면 계승 (단, 문자열에 실제 회사명이 포함돼 있으면 치환)
             if cname in base_row and base_row[cname] is not None:
-                new_row[cname] = base_row[cname]
+                val = base_row[cname]
+                if is_str_type and isinstance(val, str) and comp_names:
+                    tag_ko = PSEUDO_KO_POOL[idx % len(PSEUDO_KO_POOL)]
+                    for comp_nm in comp_names:
+                        if len(comp_nm) >= 2 and comp_nm.lower() in val.lower():
+                            val = re.sub(re.escape(comp_nm), tag_ko, val, flags=re.IGNORECASE)
+                    val = _truncate_str(val, col.max_length)
+                new_row[cname] = val
                 continue
 
-            # 10. 샘플 행이 없거나 NULL인데 NOT NULL 제약이 있는 컬럼 폴백 합성
+            # 13. 샘플 행이 없거나 NULL인데 NOT NULL 제약이 있는 컬럼 폴백 합성
             if not col.is_nullable and col.column_default is None:
                 new_row[cname] = _fallback_value_for_column(conn, meta, col, ctx, screen_no, idx)
             elif cname in base_row:
@@ -875,7 +1396,8 @@ def _fallback_value_for_column(
         return datetime.datetime.now(tz=datetime.UTC)
     if col.max_length == 1:
         return "Y"
-    return _truncate_str(f"TEST_{screen_no}_{idx + 1}", col.max_length)
+    tag_ko = PSEUDO_KO_POOL[idx % len(PSEUDO_KO_POOL)]
+    return _truncate_str(f"{tag_ko}_{screen_no}_{idx + 1}", col.max_length)
 
 
 def insert_test_data(
@@ -927,6 +1449,8 @@ def insert_test_data(
             operations: list[dict[str, Any]] = []
             parent_inserted_pks: dict[str, list[Any]] = {}
             generated_sql_preview: list[str] = []
+            warnings: list[str] = []
+            company_names = _fetch_company_names(conn)
 
             # 3. 테이블별 행 합성 및 INSERT ... RETURNING 실행
             with conn.cursor(row_factory=dict_row) as cur:
@@ -939,6 +1463,8 @@ def insert_test_data(
                         screen_no=clean_screen,
                         count=count,
                         parent_inserted_pks=parent_inserted_pks,
+                        company_names=company_names,
+                        warnings=warnings,
                     )
                     if not rows_to_insert:
                         continue
@@ -1007,6 +1533,7 @@ def insert_test_data(
                 "created_at": now.isoformat(timespec="seconds"),
                 "rolled_back_at": None,
                 "operations": operations,
+                "warnings": warnings,
                 "sql_preview": generated_sql_preview[:5],
             }
 
